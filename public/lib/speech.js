@@ -83,7 +83,7 @@ export function createSpeechController({ speechSynthesis, Utterance } = {}) {
     completion = {
       reachedEnd,
       coverage,
-      counted: reachedEnd && coverage >= 0.8
+      counted: reachedEnd && session.startIndex === 0
     };
   }
 
@@ -195,7 +195,7 @@ export function createSpeechController({ speechSynthesis, Utterance } = {}) {
       settleActiveOnce();
       invalidateActive();
       cancelEngine();
-      session = { completed: new Set() };
+      session = { completed: new Set(), startIndex: nextIndex };
       completion = emptyCompletion();
       currentIndex = nextIndex;
       state = 'speaking';

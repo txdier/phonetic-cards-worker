@@ -1,7 +1,7 @@
 import { findTermMatches, normalizeTerm, splitSentences, validateSelection } from './lib/text.js';
 import { mountConversionForm } from './pending-view.js';
 import { createReadingSession } from './lib/reading-session.js';
-import { renderInlineError } from './lib/dom.js';
+import { renderInlineError, showToast } from './lib/dom.js';
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -229,6 +229,8 @@ export function createReaderView({
   function renderSentence(sentence, candidates) {
     const sentenceNode = element('span', 'pc-reader-sentence');
     sentenceNode.dataset.sentenceIndex = String(sentence.index);
+    sentenceNode.tabIndex = 0;
+    sentenceNode.setAttribute('role', 'button');
     const matches = findTermMatches(sentence.text, candidates);
     let offset = 0;
     for (const match of matches) {
@@ -241,6 +243,7 @@ export function createReaderView({
       offset = match.end;
     }
     if (offset < sentence.text.length) sentenceNode.append(document.createTextNode(sentence.text.slice(offset)));
+    sentenceNode.setAttribute('aria-label', `朗读本句：${sentence.text.trim()}`);
     return sentenceNode;
   }
 
@@ -385,8 +388,11 @@ export function createReaderView({
 
   function placePopover(panel, rect) {
     if (!rect || !Number.isFinite(rect.left)) return;
+    const top = Number.isFinite(rect.bottom) ? rect.bottom : Number.isFinite(rect.top) ? rect.top : 0;
+    panel.dataset.anchorLeft = String(rect.left);
+    panel.dataset.anchorTop = String(top);
     panel.style.setProperty('--popover-left', `${rect.left}px`);
-    panel.style.setProperty('--popover-top', `${rect.bottom || rect.top || 0}px`);
+    panel.style.setProperty('--popover-top', `${top}px`);
   }
 
   function buildReaderPopover({
@@ -604,7 +610,16 @@ export function createReaderView({
     if (!host) return;
     host.replaceChildren();
     suppressNextSentenceClick = false;
-    if (!result.ok || !startNode) return;
+    if (!result.ok || !startNode) {
+      const messages = {
+        'cross-sentence': '一次只能选择同一句中的文本',
+        'no-letters': '请选择包含英文字母的文本',
+        'empty-after-trim': '所选内容去除标点后为空',
+        'invalid-sentence': '请在文章句子内选择文本'
+      };
+      showToast({ message: messages[result.reason] || '无法处理这段选中文本', duration: 1800 });
+      return;
+    }
     const rangeRect = selection.getRangeAt(0)?.getBoundingClientRect?.();
     const body = element('div');
     body.append(actionButton('mark-selection', '标记为生词', 'pc-btn-primary pc-reader-popover-primary-action'));
@@ -630,12 +645,16 @@ export function createReaderView({
 
   async function markSelection(panel, trigger) {
     if (!panel) return;
+    const hasAnchor = panel.dataset.anchorLeft != null && panel.dataset.anchorTop != null;
     const popoverContext = {
       sentenceIndex: Number(panel.dataset.sentenceIndex),
       displayText: panel.dataset.selectedText,
       speechText: panel.dataset.speechText || panel.dataset.selectedText,
       contextSentence: panel.dataset.contextSentence,
-      rect: null
+      rect: hasAnchor ? {
+        left: Number(panel.dataset.anchorLeft),
+        bottom: Number(panel.dataset.anchorTop)
+      } : null
     };
     trigger.disabled = true;
     try {
@@ -789,6 +808,13 @@ export function createReaderView({
   }
 
   function onKeyDown(event) {
+    const sentence = event.target.closest?.('[data-sentence-index]');
+    if (event.target === sentence && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      readingSession.interact();
+      speech.speakOnce(sentence.textContent);
+      return;
+    }
     if (event.key !== 'Escape') return;
     if (root.querySelector('[data-role="selection-action"]')) {
       event.preventDefault();

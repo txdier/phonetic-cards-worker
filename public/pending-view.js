@@ -1,4 +1,4 @@
-import { renderInlineError } from './lib/dom.js';
+import { renderInlineError, requestConfirmation } from './lib/dom.js';
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -256,7 +256,14 @@ export function createPendingView({ root, api }) {
 
   async function deleteGlobal(term) {
     if (mutationBusy) return;
-    if (!confirm(`确定取消“${term.display_text}”的全部文章标记吗？`)) return;
+    const sourceCount = Number(term.source_count) || 0;
+    const confirmed = await requestConfirmation({
+      title: '取消全部文章标记',
+      message: `确定取消“${term.display_text}”的全部文章标记吗？该词共有 ${sourceCount} 个来源，取消后将全部清除。`,
+      confirmLabel: '全部清除',
+      danger: true
+    });
+    if (!confirmed || !mounted || mutationBusy) return;
     setMutationBusy(true);
     try {
       await api(`/api/marked-terms/${encodeURIComponent(term.id)}`, { method: 'DELETE' });

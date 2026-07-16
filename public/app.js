@@ -80,7 +80,9 @@ function mountRoute() {
   const modules = document.createElement('div'); modules.className = 'pc-module-tabs';
   for (const item of [{ module: 'words', label: '记词本' }, { module: 'articles', label: '文章练习' }]) {
     const button = document.createElement('button');
-    button.className = `pc-module-tab${route.module === item.module ? ' active' : ''}`;
+    const active = route.module === item.module;
+    button.className = `pc-module-tab${active ? ' active' : ''}`;
+    if (active) button.setAttribute('aria-current', 'page');
     button.textContent = item.label;
     button.addEventListener('click', () => navigate(item.module === 'words' ? { module: 'words' } : { module: 'articles', page: 'library' }));
     modules.append(button);
@@ -107,7 +109,11 @@ function mountRoute() {
   if (route.module === 'articles') {
     const subnav = document.createElement('nav'); subnav.className = 'pc-article-nav'; subnav.setAttribute('aria-label', '文章练习页面');
     for (const item of [{ page: 'library', label: '文章库' }, { page: 'pending', label: '待整理' }, { page: 'stats', label: '统计' }]) {
-      const button = document.createElement('button'); button.className = `pc-article-nav-link${route.page === item.page ? ' active' : ''}`; button.textContent = item.label;
+      const button = document.createElement('button');
+      const active = route.page === item.page;
+      button.className = `pc-article-nav-link${active ? ' active' : ''}`;
+      if (active) button.setAttribute('aria-current', 'page');
+      button.textContent = item.label;
       button.addEventListener('click', () => navigate({ module: 'articles', page: item.page })); subnav.append(button);
     }
     shell.append(subnav);

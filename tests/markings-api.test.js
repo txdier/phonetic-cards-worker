@@ -75,7 +75,41 @@ test('manual creation stores the normalized lemma and submitted form', async (t)
   );
 });
 
-test('familiarity updates and deletion cascades to forms and article markings', async (t) => {
+test('word editing updates owned card fields without resetting learning state', async (t) => {
+  const DB = createSqliteDb();
+  t.after(() => DB.close());
+  DB.exec(`
+    INSERT INTO users (id, username, created_at) VALUES ('u1', 'alice', 1);
+    INSERT INTO words
+      (id, user_id, en, lemma, zh, example, stress, familiarity, last_tested_at, created_at)
+    VALUES ('w1', 'u1', 'deploy', 'deploy', '部署', 'Old example.', 'de-PLOY', 3, 99, 2);
+  `);
+
+  const response = await handleWordsApi(
+    new Request('https://app/api/words/w1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        lemma: '  Launch  ', zh: ' 启动 ', example: 'Launch it.', stress: 'LAUNCH'
+      })
+    }),
+    { DB }, '/api/words/w1', 'u1'
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    DB.get('SELECT en, lemma, zh, example, stress, familiarity, last_tested_at FROM words WHERE id = ?', 'w1'),
+    {
+      en: 'launch', lemma: 'launch', zh: '启动', example: 'Launch it.', stress: 'LAUNCH',
+      familiarity: 3, last_tested_at: 99
+    }
+  );
+  assert.deepEqual(await response.json(), {
+    id: 'w1', en: 'launch', lemma: 'launch', zh: '启动', example: 'Launch it.', stress: 'LAUNCH'
+  });
+});
+
+test('testing a word updates familiarity and last tested time before deletion cascades', async (t) => {
   const DB = createSqliteDb();
   t.after(() => DB.close());
   DB.exec(`
@@ -104,7 +138,11 @@ test('familiarity updates and deletion cascades to forms and article markings', 
     { DB }, '/api/words/w1', 'u1'
   );
   assert.equal(patchResponse.status, 200);
-  assert.equal(DB.get('SELECT familiarity FROM words WHERE id = ?', 'w1').familiarity, 3);
+  const updated = DB.get('SELECT familiarity, last_tested_at FROM words WHERE id = ?', 'w1');
+  assert.equal(updated.familiarity, 3);
+  assert.equal(Number.isInteger(updated.last_tested_at), true);
+  assert.ok(updated.last_tested_at > 0);
+  assert.deepEqual(await patchResponse.json(), { ok: true, last_tested_at: updated.last_tested_at });
 
   const deleteResponse = await handleWordsApi(
     new Request('https://app/api/words/w1', { method: 'DELETE' }),

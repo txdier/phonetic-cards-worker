@@ -1,4 +1,4 @@
-const EDGE_PUNCTUATION = /^[^A-Za-z]+|[^A-Za-z]+$/g;
+const EDGE_PUNCTUATION = /^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu;
 const ENGLISH_LETTER = /[A-Za-z]/;
 
 export function normalizeTerm(value) {
@@ -29,11 +29,16 @@ export function splitSentences(value, segmenter = null) {
 
 export function validateSelection({ text, startSentence, endSentence }) {
   if (!Number.isInteger(startSentence) || !Number.isInteger(endSentence)) {
-    return { ok: false, code: 'INVALID_SENTENCE' };
+    return { ok: false, code: 'INVALID_SENTENCE', reason: 'invalid-sentence' };
   }
-  if (startSentence !== endSentence) return { ok: false, code: 'CROSS_SENTENCE' };
+  if (startSentence !== endSentence) {
+    return { ok: false, code: 'CROSS_SENTENCE', reason: 'cross-sentence' };
+  }
   const displayText = String(text || '').replace(EDGE_PUNCTUATION, '').trim();
-  if (!ENGLISH_LETTER.test(displayText)) return { ok: false, code: 'NO_ENGLISH_TEXT' };
+  if (!displayText) return { ok: false, code: 'EMPTY_SELECTION', reason: 'empty-after-trim' };
+  if (!ENGLISH_LETTER.test(displayText)) {
+    return { ok: false, code: 'NO_ENGLISH_TEXT', reason: 'no-letters' };
+  }
   return { ok: true, displayText, normalizedText: normalizeTerm(displayText) };
 }
 

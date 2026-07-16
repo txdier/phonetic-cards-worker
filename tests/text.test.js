@@ -15,18 +15,18 @@ test('normalizes case and internal whitespace', () => {
 test('rejects cross-sentence selection', () => {
   assert.deepEqual(
     validateSelection({ text: 'end. Next', startSentence: 0, endSentence: 1 }),
-    { ok: false, code: 'CROSS_SENTENCE' }
+    { ok: false, code: 'CROSS_SENTENCE', reason: 'cross-sentence' }
   );
 });
 
 test('rejects selection when either endpoint cannot be mapped to a sentence', () => {
   assert.deepEqual(
     validateSelection({ text: 'deploy', startSentence: null, endSentence: null }),
-    { ok: false, code: 'INVALID_SENTENCE' }
+    { ok: false, code: 'INVALID_SENTENCE', reason: 'invalid-sentence' }
   );
   assert.deepEqual(
     validateSelection({ text: 'deploy', startSentence: 0, endSentence: undefined }),
-    { ok: false, code: 'INVALID_SENTENCE' }
+    { ok: false, code: 'INVALID_SENTENCE', reason: 'invalid-sentence' }
   );
 });
 
@@ -40,7 +40,14 @@ test('accepts English text after trimming edge punctuation', () => {
 test('rejects a selection without English text', () => {
   assert.deepEqual(
     validateSelection({ text: '“你好！”', startSentence: 0, endSentence: 0 }),
-    { ok: false, code: 'NO_ENGLISH_TEXT' }
+    { ok: false, code: 'NO_ENGLISH_TEXT', reason: 'no-letters' }
+  );
+});
+
+test('distinguishes punctuation-only selections after trimming', () => {
+  assert.deepEqual(
+    validateSelection({ text: '“...!”', startSentence: 0, endSentence: 0 }),
+    { ok: false, code: 'EMPTY_SELECTION', reason: 'empty-after-trim' }
   );
 });
 

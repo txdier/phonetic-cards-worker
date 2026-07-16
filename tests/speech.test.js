@@ -71,7 +71,7 @@ test('reports unsupported dependencies without throwing', () => {
   assert.doesNotThrow(() => controller.startAt(0));
 });
 
-test('starting at sentence two of five counts as eighty percent exactly once', () => {
+test('starting after the first sentence reaches the end without counting a full reading', () => {
   const fake = createFakeSpeech();
   const controller = createSpeechController(fake.dependencies);
   const states = [];
@@ -80,8 +80,8 @@ test('starting at sentence two of five counts as eighty percent exactly once', (
   controller.startAt(1);
   fake.finishAll();
 
-  assert.deepEqual(controller.getCompletion(), { reachedEnd: true, coverage: 0.8, counted: true });
-  assert.equal(states.filter(state => state.completionEvent).length, 1);
+  assert.deepEqual(controller.getCompletion(), { reachedEnd: true, coverage: 0.8, counted: false });
+  assert.equal(states.filter(state => state.completionEvent).length, 0);
   assert.equal(states.at(-1).state, 'idle');
 });
 

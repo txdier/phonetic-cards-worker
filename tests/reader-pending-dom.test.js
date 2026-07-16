@@ -44,14 +44,20 @@ function click(window, node) {
   node.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
 }
 
-function validSelection(sentence, { text = sentence.textContent, removeAllRanges = () => {} } = {}) {
+function acceptConfirmation(window) {
+  click(window, window.document.querySelector('[data-action="confirm-dialog-confirm"]'));
+}
+
+function validSelection(sentence, {
+  text = sentence.textContent, removeAllRanges = () => {}, rect = {}
+} = {}) {
   return {
     anchorNode: sentence.firstChild,
     focusNode: sentence.firstChild,
     isCollapsed: false,
     toString: () => text,
     rangeCount: 1,
-    getRangeAt: () => ({ getBoundingClientRect: () => ({}) }),
+    getRangeAt: () => ({ getBoundingClientRect: () => rect }),
     removeAllRanges
   };
 }
@@ -223,6 +229,51 @@ test('ordinary sentence click speaks exactly once', async () => {
   }
 });
 
+test('ordinary sentences are keyboard reachable and Enter or Space reads them', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const cleanup = createReaderView({
+    root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {}, speech: speech.controller
+  });
+  try {
+    await flush();
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    assert.equal(sentence.tabIndex, 0);
+    assert.equal(sentence.getAttribute('role'), 'button');
+    sentence.dispatchEvent(new env.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    sentence.dispatchEvent(new env.window.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+    assert.deepEqual(speech.calls.filter(call => call[0] === 'speakOnce'), [
+      ['speakOnce', sentence.textContent], ['speakOnce', sentence.textContent]
+    ]);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('invalid cross-sentence selection explains why in a transient toast', async () => {
+  const env = installDom();
+  const cleanup = createReaderView({
+    root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {},
+    speech: createReaderSpeechFake().controller
+  });
+  try {
+    await flush();
+    const first = env.root.querySelector('[data-sentence-index="0"]');
+    const second = env.root.querySelector('[data-sentence-index="1"]');
+    env.window.getSelection = () => ({
+      anchorNode: first.firstChild, focusNode: second.firstChild, isCollapsed: false,
+      toString: () => 'safely. Select', rangeCount: 1,
+      getRangeAt: () => ({ getBoundingClientRect: () => ({}) })
+    });
+    second.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
+    assert.match(env.root.querySelector('[data-role="toast"]').textContent, /同一句/);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('selection menu exposes grouped actions and closes without speech', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();
@@ -349,13 +400,17 @@ test('marking a selection keeps the shared popover open in its marked state', as
   try {
     await flush();
     const sentence = env.root.querySelector('[data-sentence-index="1"]');
-    env.window.getSelection = () => validSelection(sentence, { text: 'Select this phrase' });
+    env.window.getSelection = () => validSelection(sentence, {
+      text: 'Select this phrase', rect: { left: 140, top: 240, bottom: 260 }
+    });
     sentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
     click(env.window, env.root.querySelector('[data-action="mark-selection"]'));
     await flush();
 
     const marked = env.root.querySelector('[data-role="term-popover"]');
     assertSharedReaderPopover(marked, 'Select this phrase');
+    assert.equal(marked.style.getPropertyValue('--popover-left'), '140px');
+    assert.equal(marked.style.getPropertyValue('--popover-top'), '260px');
     assert.ok(marked.querySelector('[data-role="reader-popover-ribbon"]'));
     const bookmark = marked.querySelector('[data-role="reader-popover-bookmark"]');
     const cancel = marked.querySelector('[data-action="unmark-local"].pc-popover-secondary-action');
@@ -1127,9 +1182,12 @@ test('pending delete clears a stale failure after a successful retry', async () 
   try {
     await flush();
     click(env.window, env.root.querySelector('[data-action="delete-global"]'));
+    assert.match(env.root.querySelector('[data-role="confirm-dialog"]').textContent, /1 个来源/);
+    acceptConfirmation(env.window);
     await flush();
     assert.equal(env.root.querySelector('.pc-inline-error').textContent, '取消失败');
     click(env.window, env.root.querySelector('[data-action="delete-global"]'));
+    acceptConfirmation(env.window);
     await flush();
     assert.equal(env.root.querySelector('.pc-inline-error'), null);
   } finally {
@@ -1318,6 +1376,8 @@ test('pending organizer wires conflict merge/new conversions, global delete, err
     assert.equal(env.root.querySelector('[data-term-id="t2"]'), null);
 
     click(env.window, env.root.querySelector('[data-term-id="t3"] [data-action="delete-global"]'));
+    assert.match(env.root.querySelector('[data-role="confirm-dialog"]').textContent, /1 个来源/);
+    acceptConfirmation(env.window);
     await flush();
     assert.ok(calls.some(call => call.path === '/api/marked-terms/t3' && call.init.method === 'DELETE'));
     assert.equal(env.root.querySelector('[data-term-id="t3"]'), null);
@@ -1412,6 +1472,8 @@ test('app coordinator mounts pending and reader views from their real hash route
     await import(`../public/app.js?reader-route-test=${Date.now()}`);
     await flush();
     assert.match(env.root.textContent, /没有待整理标记/);
+    assert.equal(env.root.querySelector('.pc-module-tab.active').getAttribute('aria-current'), 'page');
+    assert.equal(env.root.querySelector('.pc-article-nav-link.active').getAttribute('aria-current'), 'page');
 
     env.window.location.hash = '#/articles/reader/a1';
     env.window.dispatchEvent(new env.window.HashChangeEvent('hashchange'));

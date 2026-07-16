@@ -4,7 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 const MIGRATIONS = [
   new URL('../../migrations/0001_create_words_table.sql', import.meta.url),
   new URL('../../migrations/0002_add_users.sql', import.meta.url),
-  new URL('../../migrations/0003_article_practice.sql', import.meta.url)
+  new URL('../../migrations/0003_article_practice.sql', import.meta.url),
+  new URL('../../migrations/0004_add_last_tested.sql', import.meta.url)
 ];
 
 export function createSqliteDb() {

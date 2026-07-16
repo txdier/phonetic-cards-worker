@@ -16,7 +16,10 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
   assert.match(css, /:focus-visible/);
   assert.match(css, /min-height:\s*44px/);
+  assert.match(css, /\.pc-play\s*\{[^}]*width:\s*(?:4[0-9]|[5-9][0-9])px;[^}]*height:\s*(?:4[0-9]|[5-9][0-9])px/);
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*\.pc-play\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*\.pc-form\s+(?:input|:is\(input,\s*textarea\))[^{]*\{[^}]*font-size:\s*16px/);
+  assert.match(css, /\.pc-reader-sentence:focus-visible\s*\{[^}]*outline:[^}]*var\(--teal\)/);
   assert.doesNotMatch(css, /#pc-root\s+button\s*,/);
   assert.match(css, /\.pc-inline-error\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*\.pc-selection-action\s*\{[^}]*position:\s*static/);

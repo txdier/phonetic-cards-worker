@@ -49,7 +49,7 @@ export async function handleWordsApi(request, env, path, userId) {
     return jsonResponse({
       id, en: lemma, lemma, zh: body.zh.trim(),
       example: body.example || '', stress: body.stress || '',
-      familiarity: 0, created_at: createdAt,
+      familiarity: 0, last_tested_at: null, created_at: createdAt,
       forms: [{ form: submittedEn, normalized_form: normalizedForm }]
     }, { status: 201 });
   }
@@ -59,13 +59,30 @@ export async function handleWordsApi(request, env, path, userId) {
   if (wordMatch && method === 'PATCH') {
     const id = wordMatch[1];
     const body = await request.json();
-    if (typeof body.familiarity !== 'number') {
-      return jsonResponse({ error: 'familiarity must be a number' }, { status: 400 });
+    if (typeof body?.familiarity === 'number') {
+      const lastTestedAt = Date.now();
+      await env.DB.prepare(
+        'UPDATE words SET familiarity = ?, last_tested_at = ? WHERE id = ? AND user_id = ?'
+      ).bind(body.familiarity, lastTestedAt, id, userId).run();
+      return jsonResponse({ ok: true, last_tested_at: lastTestedAt });
     }
+
+    const validEdit = body && typeof body === 'object'
+      && typeof body.lemma === 'string' && normalizeTerm(body.lemma)
+      && typeof body.zh === 'string' && body.zh.trim()
+      && typeof body.example === 'string'
+      && typeof body.stress === 'string';
+    if (!validEdit) {
+      return jsonResponse({ error: 'lemma and zh are required', code: 'WORD_REQUIRED_FIELDS' }, { status: 400 });
+    }
+    const lemma = normalizeTerm(body.lemma);
+    const zh = body.zh.trim();
+    const example = body.example;
+    const stress = body.stress.trim();
     await env.DB.prepare(
-      'UPDATE words SET familiarity = ? WHERE id = ? AND user_id = ?'
-    ).bind(body.familiarity, id, userId).run();
-    return jsonResponse({ ok: true });
+      'UPDATE words SET en = ?, lemma = ?, zh = ?, example = ?, stress = ? WHERE id = ? AND user_id = ?'
+    ).bind(lemma, lemma, zh, example, stress, id, userId).run();
+    return jsonResponse({ id, en: lemma, lemma, zh, example, stress });
   }
 
   if (wordMatch && method === 'DELETE') {

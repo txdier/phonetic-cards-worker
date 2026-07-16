@@ -1,4 +1,4 @@
-import { renderInlineError } from './lib/dom.js';
+import { renderInlineError, requestConfirmation } from './lib/dom.js';
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -185,7 +185,13 @@ export function createArticlesView({ root, api, navigate, route }) {
     cancel.disabled = true;
     const data = Object.fromEntries(['title', 'body', 'author', 'source', 'notes'].map(name => [name, form.elements[name].value]));
     if (editingId) {
-      data.resetProgress = confirm('是否重置这篇文章的阅读进度和统计？\n“确定”重置，“取消”保留现有进度。');
+      data.resetProgress = await requestConfirmation({
+        title: '是否重置阅读进度？',
+        message: '重置会清除这篇文章的阅读进度和统计；也可以保留现有进度后继续保存。',
+        confirmLabel: '重置进度',
+        cancelLabel: '保留进度'
+      });
+      if (!mounted || !form.isConnected) return;
     }
     try {
       const saved = await api(editingId ? `/api/articles/${encodeURIComponent(editingId)}` : '/api/articles', {
@@ -222,7 +228,14 @@ export function createArticlesView({ root, api, navigate, route }) {
 
   async function deleteArticle(id, trigger) {
     const article = articles.find(item => item.id === id);
-    if (!article || !confirm(`确定删除《${article.title}》吗？此操作无法撤销。`)) return;
+    if (!article) return;
+    const confirmed = await requestConfirmation({
+      title: '删除文章',
+      message: `确定删除《${article.title}》吗？此操作无法撤销。`,
+      confirmLabel: '删除',
+      danger: true
+    });
+    if (!confirmed || !mounted || !trigger.isConnected) return;
     invalidateEditRequests();
     trigger.disabled = true;
     try {
