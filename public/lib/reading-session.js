@@ -1,0 +1,126 @@
+export const PROGRESS_QUEUE_KEY = 'pc-progress-queue';
+
+export function progressQueueKey(username) {
+  return `${PROGRESS_QUEUE_KEY}:${encodeURIComponent(String(username))}`;
+}
+
+function clampRatio(value) {
+  const ratio = Number(value);
+  if (!Number.isFinite(ratio)) return 0;
+  return Math.max(0, Math.min(1, ratio));
+}
+
+export function createReadingSession({ now = () => Date.now(), idleMs = 60_000 } = {}) {
+  let visible = false;
+  let lastInteraction = null;
+  let accountedAt = now();
+  let pendingActiveMs = 0;
+  let positionRatio = 0;
+  let topArmed = false;
+
+  function accrue(until = now()) {
+    if (visible && lastInteraction != null) {
+      const activeEnd = Math.min(until, lastInteraction + idleMs);
+      pendingActiveMs += Math.max(0, activeEnd - accountedAt);
+    }
+    accountedAt = until;
+  }
+
+  return {
+    setVisible(nextVisible) {
+      accrue();
+      visible = Boolean(nextVisible);
+    },
+    interact() {
+      const current = now();
+      accrue(current);
+      lastInteraction = current;
+      accountedAt = current;
+    },
+    updatePosition(value) {
+      positionRatio = clampRatio(value);
+      let readCompleted = false;
+      if (positionRatio <= 0.01) topArmed = true;
+      else if (positionRatio >= 0.99 && topArmed) {
+        topArmed = false;
+        readCompleted = true;
+      }
+      return { positionRatio, readCompleted };
+    },
+    flushActiveMs() {
+      accrue();
+      const amount = Math.round(pendingActiveMs);
+      pendingActiveMs = 0;
+      return amount;
+    },
+    markReadAloudComplete() {
+      return { readAloudCompleted: true };
+    },
+    snapshot() {
+      return { visible, positionRatio, topArmed };
+    }
+  };
+}
+
+function readStored(storage, key) {
+  try {
+    const parsed = JSON.parse(storage?.getItem(key) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY }) {
+  let items = readStored(storage, key);
+  let activeRetry = null;
+
+  function persist() {
+    try {
+      if (items.length) storage?.setItem(key, JSON.stringify(items));
+      else storage?.removeItem(key);
+    } catch { /* storage may be disabled */ }
+  }
+
+  function retry() {
+    if (activeRetry) return activeRetry;
+    activeRetry = (async () => {
+      while (items.length) {
+        try {
+          await send(items[0]);
+        } catch {
+          return false;
+        }
+        items.shift();
+        persist();
+      }
+      return true;
+    })().finally(() => { activeRetry = null; });
+    return activeRetry;
+  }
+
+  return {
+    async submit(item) {
+      items.push(item);
+      persist();
+      return retry();
+    },
+    retry,
+    snapshot() { return items.map(item => ({ ...item })); }
+  };
+}
+
+export function sendProgressItem(api, item) {
+  const articleId = encodeURIComponent(item.articleId);
+  if (item.kind === 'event') {
+    return api(`/api/articles/${articleId}/progress/events`, {
+      method: 'POST', body: JSON.stringify(item.event)
+    });
+  }
+  if (item.kind === 'position') {
+    return api(`/api/articles/${articleId}/progress`, {
+      method: 'PATCH', body: JSON.stringify({ lastPositionRatio: item.lastPositionRatio })
+    });
+  }
+  return Promise.reject(new Error('unknown progress queue item'));
+}

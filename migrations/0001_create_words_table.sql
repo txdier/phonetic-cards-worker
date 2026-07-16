@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS words (
+  id TEXT PRIMARY KEY,
+  en TEXT NOT NULL,
+  zh TEXT NOT NULL,
+  example TEXT DEFAULT '',
+  stress TEXT DEFAULT '',
+  familiarity INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);

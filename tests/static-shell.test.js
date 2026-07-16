@@ -1,0 +1,130 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+test('index loads external application assets', async () => {
+  const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /href="\/styles\.css"/);
+  assert.match(html, /type="module" src="\/app\.js"/);
+  assert.doesNotMatch(html, /<style>/);
+  assert.doesNotMatch(html, /<script>\s*\(function/);
+  assert.match(html, /<meta\s+name="viewport"\s+content="width=device-width, initial-scale=1\.0">/);
+});
+
+test('styles protect small screens, touch targets, focus, and reduced motion', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(css, /:focus-visible/);
+  assert.match(css, /min-height:\s*44px/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*\.pc-play\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/);
+  assert.doesNotMatch(css, /#pc-root\s+button\s*,/);
+  assert.match(css, /\.pc-inline-error\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*\.pc-selection-action\s*\{[^}]*position:\s*static/);
+  const selectionReading = css.match(/\.pc-selection-reading\s*\{([^}]*)\}/)?.[1];
+  assert.ok(selectionReading, 'selection reading group should have a responsive style rule');
+  assert.doesNotMatch(selectionReading, /(?:^|[;\s])(?:(?:width|min-width)\s*:|position\s*:\s*(?:fixed|absolute)|(?:left|right)\s*:)/);
+});
+
+test('pending organizer stays centered within the desktop content width', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const pendingList = css.match(/\.pc-pending-list\s*\{([^}]*)\}/)?.[1];
+  assert.ok(pendingList, 'pending list should have a style rule');
+  assert.match(pendingList, /display:\s*grid/);
+  assert.match(pendingList, /width:\s*100%/);
+  assert.match(pendingList, /max-width:\s*920px/);
+  assert.match(pendingList, /margin:\s*0\s+auto/);
+});
+
+test('article reader hash is parsed and malformed hashes are safe', async () => {
+  const { parseHashRoute } = await import('../public/routes.js');
+  assert.deepEqual(parseHashRoute('#/articles/reader/a1'), {
+    module: 'articles', page: 'reader', id: 'a1'
+  });
+  assert.deepEqual(parseHashRoute('#/articles/library'), {
+    module: 'articles', page: 'library'
+  });
+  assert.deepEqual(parseHashRoute('#/articles'), {
+    module: 'articles', page: 'library'
+  });
+  assert.deepEqual(parseHashRoute('#/%E0%A4%A'), {
+    module: 'words', page: 'library'
+  });
+  assert.deepEqual(parseHashRoute('#/unknown/place'), {
+    module: 'words', page: 'library'
+  });
+});
+
+test('api wrapper preserves headers and only adds JSON content type for a body', async () => {
+  const { api } = await import('../public/api.js');
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, init) => {
+    calls.push({ path, init });
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  try {
+    await api('/without-body', { headers: { 'x-test': 'kept' } });
+    await api('/with-body', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'One' }),
+      headers: { 'x-test': 'kept', 'content-type': 'application/custom+json' }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(new Headers(calls[0].init.headers).has('content-type'), false);
+  assert.equal(new Headers(calls[0].init.headers).get('x-test'), 'kept');
+  assert.equal(new Headers(calls[1].init.headers).get('content-type'), 'application/custom+json');
+  assert.equal(new Headers(calls[1].init.headers).get('x-test'), 'kept');
+});
+
+test('api wrapper reports JSON and non-JSON failures as ApiError', async () => {
+  const { api, ApiError } = await import('../public/api.js');
+  const originalFetch = globalThis.fetch;
+  let response = new Response(JSON.stringify({ error: 'bad title', code: 'BAD_TITLE' }), {
+    status: 400,
+    headers: { 'content-type': 'application/json' }
+  });
+  globalThis.fetch = async () => response;
+  try {
+    await assert.rejects(api('/json-error'), error =>
+      error instanceof ApiError &&
+      error.status === 400 &&
+      error.code === 'BAD_TITLE' &&
+      error.message === 'bad title'
+    );
+    response = new Response('upstream unavailable', { status: 502 });
+    await assert.rejects(api('/text-error'), error =>
+      error instanceof ApiError &&
+      error.status === 502 &&
+      error.message === 'upstream unavailable'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('application extracts views and keeps article user content out of HTML strings', async () => {
+  const [app, wordsView, articlesView] = await Promise.all([
+    readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/words-view.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/articles-view.js', import.meta.url), 'utf8')
+  ]);
+  assert.match(app, /from ['"]\.\/api\.js['"]/);
+  assert.match(app, /from ['"]\.\/routes\.js['"]/);
+  assert.match(app, /from ['"]\.\/words-view\.js['"]/);
+  assert.match(app, /from ['"]\.\/articles-view\.js['"]/);
+  assert.match(app, /setUnauthorizedHandler/);
+  assert.match(app, /if\s*\(!user\.username\)\s*throw/);
+  assert.match(wordsView, /distinctForms/);
+  assert.match(wordsView, /maskWordForms/);
+  assert.match(wordsView, /primaryWord/);
+  assert.match(wordsView, /data-action=["']judge["']/);
+  assert.match(wordsView, /data-action=["']play["']/);
+  assert.match(articlesView, /\.textContent\s*=/);
+  assert.match(articlesView, /data-action/);
+  assert.match(articlesView, /form\.noValidate\s*=\s*true/);
+  assert.doesNotMatch(articlesView, /innerHTML\s*=.*(?:article\.|form\.)/);
+});

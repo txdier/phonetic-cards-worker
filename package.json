@@ -1,0 +1,12 @@
+{
+  "name": "phonetic-cards-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:all": "node --test tests/**/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

@@ -1,0 +1,59 @@
+<h2>文章功能放在哪里最顺手？</h2>
+<p class="subtitle">请选择你更喜欢的整体导航。线框只比较信息结构，不代表最终视觉样式。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A · 顶层双模块</div>
+        <div class="mockup-body">
+          <div class="mock-nav">语音卡片　｜　<strong>文章练习</strong></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+            <button class="mock-button">文章库</button>
+            <button class="mock-button">待整理生词</button>
+            <button class="mock-button">练习统计</button>
+          </div>
+          <div class="placeholder">文章列表／阅读页面</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>两个清晰的学习模块</h3>
+      <p>“记词本”和“文章练习”平级，各自保留内部功能。结构清楚，也方便以后继续扩展。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B · 固定侧边导航</div>
+        <div class="mockup-body" style="display:flex;min-height:180px">
+          <div class="mock-sidebar">词本<br><strong>文章</strong><br>待整理<br>统计</div>
+          <div class="mock-content">
+            <div class="placeholder">当前页面内容</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>学习工作台</h3>
+      <p>所有功能直接并列展示，切换最快；但会明显改变现有页面，手机端还需要改成底部导航。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C · 扩展当前标签栏</div>
+        <div class="mockup-body">
+          <div class="mock-nav"><strong>学习模式</strong>　自测模式　文章　待整理</div>
+          <div style="margin-top:12px" class="placeholder">词卡或文章内容</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>最小改动</h3>
+      <p>直接在现有“学习／自测”旁加标签，开发简单；功能增多后层级容易混在一起。</p>
+    </div>
+  </div>
+</div>

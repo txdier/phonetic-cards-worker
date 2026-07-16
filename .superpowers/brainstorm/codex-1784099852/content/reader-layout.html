@@ -1,0 +1,75 @@
+<h2>阅读页采用哪种布局？</h2>
+<p class="subtitle">三种方案都支持选词标记、词本单词点击查询、句子／全文朗读，以及手机响应式布局。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A · 专注阅读</div>
+        <div class="mockup-body">
+          <div class="mock-nav">← 文章库　　文章标题　　待整理 6</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+            <button class="mock-button">▶ 全文朗读</button>
+            <button class="mock-button">1.0×</button>
+            <button class="mock-button">编辑文章</button>
+          </div>
+          <div class="mock-content">
+            <p><strong>The Future of Language Learning</strong></p>
+            <p>Reading in context helps learners <u>retain</u> useful words. A selected phrase opens a small action bar beside the text.</p>
+            <p>Known vocabulary remains clickable for meaning and pronunciation.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>单栏正文 + 顶部控制</h3>
+      <p>阅读最专注，手机和电脑保持同一结构；整理生词时跳转到全局列表或使用正文内浮层。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B · 阅读 + 生词侧栏</div>
+        <div class="mockup-body">
+          <div class="mock-nav">← 文章库　　文章标题　　▶ 朗读</div>
+          <div style="display:flex;gap:10px">
+            <div class="mock-content">
+              <p>Reading in context helps learners <u>retain</u> useful words and phrases.</p>
+              <p>The article stays visible while vocabulary is organized.</p>
+            </div>
+            <div class="mock-sidebar"><strong>本文生词</strong><br>retain<br>in context<br>organize</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>电脑双栏，手机抽屉</h3>
+      <p>边读边整理效率高；电脑体验较强，但手机端需要额外的抽屉开合操作。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C · 底部学习面板</div>
+        <div class="mockup-body">
+          <div class="mock-nav">← 文章库　　文章标题</div>
+          <div class="mock-content">
+            <p>Reading in context helps learners <u>retain</u> useful words and phrases.</p>
+            <p>Controls stay near the thumb on smaller screens.</p>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="mock-button">▶ 朗读</button>
+            <button class="mock-button">本篇生词 6</button>
+            <button class="mock-button">标记所选</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>正文 + 底部操作区</h3>
+      <p>手机操作顺手，关键入口始终可见；电脑上底部区域会占用一部分阅读空间。</p>
+    </div>
+  </div>
+</div>
