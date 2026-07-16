@@ -1,150 +1,221 @@
-# 语音卡片 · 部署到 Cloudflare Workers + D1
+# Phonetic Cards
+
+一款部署在 Cloudflare Workers + D1 上的个人英语记词与文章练习工具。前端使用原生 HTML、CSS 和 JavaScript ES modules，由 Worker Assets 托管；后端 Worker 提供单用户认证和按用户隔离的数据 API。
+
+## 当前功能
+
+### 记词本
+
+- 新增、编辑和删除词卡，记录原形、词形、中文释义、例句和重音。
+- 使用浏览器 Web Speech API 朗读单词和例句，可切换慢速朗读。
+- 学习模式展示完整词卡；自测模式支持揭示答案、记得/忘记判断和熟悉度更新。
+- 自测结果记录熟悉度与最后测试时间，用于后续排序。
+
+### 文章练习
+
+- 创建、编辑和删除英文纯文本文章，保存标题、正文、作者、来源和笔记。
+- 恢复上次阅读位置，记录完整阅读次数、有效阅读时长和完整全文朗读次数。
+- 朗读句子、选中内容或全文；全文支持暂停、继续、停止、从指定句开始和语速调整。
+- 标记同一句内的单词或短语，并在其他文章中自动高亮匹配内容。
+- 在待整理页将标记收录为词卡或移除标记；同原形词卡可选择合并或独立创建。
+- 统计页按文章显示阅读、朗读、标记、待整理和已转换数量。
+- 阅读进度或统计事件提交临时失败时保存在当前浏览器并按顺序重试。
+
+## 技术栈
+
+- Cloudflare Workers + Worker Assets
+- Cloudflare D1
+- 原生 HTML / CSS / JavaScript ES modules
+- Web Speech API
+- Node.js 内置测试运行器 + JSDOM
+
+项目没有前端构建步骤；`public/` 中的静态资源由 Worker Assets 直接提供。
 
 ## 目录结构
-```
+
+```text
 phonetic-cards-worker/
-├── wrangler.toml               # Worker 配置（含 D1 migrations_dir 绑定 + AUTH_USERNAME 变量）
+├── package.json                         # npm 测试脚本与 JSDOM 开发依赖
+├── wrangler.toml                        # Worker、Assets、D1 和 AUTH_USERNAME 配置
 ├── migrations/
-│   ├── 0001_create_words_table.sql   # 第一版建表语句
-│   └── 0002_add_users.sql            # 新增 users 表 + words.user_id 字段
-├── src/index.js                # Worker 后端逻辑（登录/会话 + 生词的增删改查 API）
-└── public/index.html           # 前端页面（静态资源，由 Worker Assets 托管）
+│   ├── 0001_create_words_table.sql      # 初始词卡表
+│   ├── 0002_add_users.sql               # users 表与 words.user_id
+│   ├── 0003_article_practice.sql        # 词形、文章、标记、进度和事件表
+│   └── 0004_add_last_tested.sql         # words.last_tested_at
+├── src/
+│   ├── index.js                         # Worker 入口与 API 路由
+│   ├── auth.js                          # 登录、会话签名与用户校验
+│   ├── http.js                          # JSON 响应辅助方法
+│   ├── words-api.js                     # 词卡 CRUD 与熟悉度
+│   ├── articles-api.js                  # 文章 CRUD 与阅读详情
+│   ├── markings-api.js                  # 标记、移除与收录转换
+│   ├── progress-api.js                  # 阅读位置和幂等统计事件
+│   └── stats-api.js                     # 逐文章统计
+├── public/
+│   ├── index.html                       # 静态应用外壳
+│   ├── app.js                           # 登录状态、模块导航与视图协调
+│   ├── api.js                           # 浏览器 API 客户端
+│   ├── routes.js                        # Hash 路由
+│   ├── words-view.js                    # 记词本、学习和自测视图
+│   ├── articles-view.js                 # 文章库与编辑表单
+│   ├── reader-view.js                   # 阅读、标记、朗读与进度
+│   ├── pending-view.js                  # 待整理词条与收录表单
+│   ├── stats-view.js                    # 文章统计视图
+│   ├── styles.css                       # 全局、响应式和明暗主题样式
+│   └── lib/                             # 文本、DOM、语音和阅读会话模块
+├── tests/                               # 单元、API、DOM 和应用协调测试
+└── docs/superpowers/                    # 已确认的设计规格与实施计划
 ```
 
-## 部署步骤
+后端标记与转换逻辑的主要入口是 `src/markings-api.js`，前端文章阅读交互的主要入口是 `public/reader-view.js`。
 
-1. 安装 wrangler（如果还没装）
-   ```bash
-   npm install -g wrangler
-   wrangler login
-   ```
+## 本地启动
 
-2. 创建 D1 数据库
-   ```bash
-   wrangler d1 create phonetic_cards_db
-   ```
-   命令执行后会返回一个 `database_id`，把它填进 `wrangler.toml` 里的
-   `REPLACE_WITH_YOUR_D1_DATABASE_ID`。
+### 1. 安装依赖和 Wrangler
 
-3. 应用 migrations 建表
-   ```bash
-   wrangler d1 migrations apply phonetic_cards_db --remote
-   ```
-   本地开发调试时用 `--local` 代替 `--remote`。
-   wrangler 会自动读取 `migrations/` 目录下按序号命名的 SQL 文件并依次执行，
-   已经执行过的文件会被记录，不会重复跑。
-
-   **以后要改表结构时**（比如加新字段），不要直接改老的迁移文件，而是新建一个：
-   ```bash
-   wrangler d1 migrations create phonetic_cards_db add_something
-   ```
-   这会在 `migrations/` 里生成一个新的空文件（比如 `0002_add_something.sql`），
-   把新的 `ALTER TABLE ...` 之类的语句写进去，再执行 `apply` 命令即可，
-   老数据不会丢。
-
-4. 设置登录密钥
-   - **正式环境**（`wrangler deploy` 之后生效）：
-     ```bash
-     wrangler secret put AUTH_PASSWORD
-     wrangler secret put AUTH_SECRET
-     ```
-     执行后会提示你输入值，输入完直接回车即可（不会显示在终端历史里）。
-   - **本地预览**（`wrangler dev`）：`wrangler secret put` 设置的是线上密钥，本地调试
-     读的是项目根目录下的 `.dev.vars` 文件，自己新建一个（不要提交到 git）：
-     ```
-     AUTH_PASSWORD=你的本地测试密码
-     AUTH_SECRET=一串足够长的随机字符串
-     ```
-   用户名不需要 secret，直接改 `wrangler.toml` 里 `[vars]` 下的 `AUTH_USERNAME` 就行。
-   这两个密钥具体的设计说明见下面"用户体系是怎么设计的"一节。
-
-5. 本地预览
-   ```bash
-   wrangler dev
-   ```
-   打开 `http://localhost:8787` 就能看到页面，数据存本地模拟的 D1。
-
-6. 正式发布
-   ```bash
-   wrangler deploy
-   ```
-   发布后会给你一个 `*.workers.dev` 的域名，绑定自己的域名可以在
-   Cloudflare Dashboard 的 Workers → 触发器 里加自定义域名。
-
-## 用户体系是怎么设计的
-
-**现在（单人使用，但支持跨设备）**
-
-登录不查数据库，而是跟 Worker 的环境变量比对，部署前需要设置三个值：
-
-```bash
-wrangler secret put AUTH_PASSWORD   # 你的登录密码
-wrangler secret put AUTH_SECRET     # 用来签名登录会话的密钥，随便一串足够长的随机字符串即可
+```powershell
+npm install
+npm install -g wrangler
 ```
 
-`AUTH_USERNAME`（用户名）不算敏感信息，已经作为普通变量写在 `wrangler.toml` 的
-`[vars]` 里，你可以直接改成自己想要的用户名，不需要用 secret。
+如已安装 Wrangler，可跳过第二条命令。
 
-登录流程：
-1. 前端提交用户名密码到 `/api/login`。
-2. Worker 拿这两个值跟 `AUTH_USERNAME` / `AUTH_PASSWORD` 比对。
-3. 通过后，Worker 会在 D1 的 `users` 表里"确保"存在这个用户（第一次登录自动建一条记录，
-   之后一直复用同一个 `user_id`），然后签发一个 30 天有效期的登录态，写入 `session` cookie
-   （HttpOnly + Secure，前端 JS 读不到，也拿不走）。
-4. 之后所有 `/api/words*` 请求都靠这个 cookie 识别"这是谁的生词"，不再依赖之前那种
-   "换个浏览器就是新用户"的 `device_id` 方案——只要用同一个账号密码登录，
-   手机、电脑、平板看到的都是同一份数据。
+### 2. 配置本地认证变量
 
-**以后（想加第二个真实用户）**
+在项目根目录创建不会提交到 Git 的 `.dev.vars`：
 
-`users` 表已经建好了（`id / username / password_hash / created_at`），`words` 表也已经
-有 `user_id` 外键，所以以后从"环境变量单用户"升级到"数据库里存多个用户"时，改动会很小：
+```dotenv
+AUTH_PASSWORD=<本地测试密码>
+AUTH_SECRET=<足够长的随机签名密钥>
+```
 
-1. 把 `handleLogin` 里"跟环境变量比对"的逻辑，换成"查 `users` 表，校验 `password_hash`"。
-2. 新增用户时，往 `users` 表插入一行，`password_hash` 用 `crypto.subtle` 的 PBKDF2/SHA-256
-   算一个哈希存进去（不要存明文密码）。
-3. 前端登录界面完全不用改，接口形状（`POST /api/login { username, password }`）也不用改。
+用户名来自 `wrangler.toml` 的 `[vars].AUTH_USERNAME`。不要把真实密码或签名密钥写进 README、`wrangler.toml` 或其他已跟踪文件。
 
-老的 `device_id` 字段还留在 `words` 表里（migration 0001 建的），没有被删除，只是新代码
-不再使用它，纯粹是为了不破坏已有数据、避免一次有风险的删列操作。
+### 3. 确认 D1 配置
 
-## 关于发音
+`wrangler.toml` 中的 `database_name` 和 `database_id` 必须指向要维护的 D1 数据库。只有在重新创建数据库时才需要运行：
 
-前端用的是浏览器自带的 `speechSynthesis`（Web Speech API），不需要
-额外的服务器成本，但不同系统/浏览器发音质量会有差异。如果之后想要
-统一、更自然的发音，可以：
+```powershell
+wrangler d1 create phonetic_cards_db
+```
 
-1. 接入一个 TTS 服务生成音频。
-2. 把生成好的 mp3 存进 Cloudflare R2。
-3. 前端优先播放 R2 里缓存好的音频，没有的话再回退到 `speechSynthesis`。
+创建后，把命令返回的 `database_id` 更新到 `wrangler.toml`。
 
-这个可以作为后续迭代，现在的版本先把最核心的记录、发音、自测流程跑通。
-
-## 本地开发与验证
-
-首次拉取代码或迁移更新后，依次运行：
+### 4. 应用本地迁移
 
 ```powershell
 wrangler d1 migrations apply phonetic_cards_db --local
-npm run test:all
+```
+
+本地 D1 状态保存在 `.wrangler/`，不得提交。
+
+### 5. 启动应用
+
+```powershell
 wrangler dev
 ```
 
-`npm test` 可运行根目录中的常规测试；提交前建议使用 `npm run test:all` 覆盖所有测试目录。
+打开 `http://localhost:8787`，使用 `AUTH_USERNAME` 和 `.dev.vars` 中的密码登录。
 
-## 文章练习工作流
+## 测试与提交前验证
 
-文章练习第一版支持手动创建纯文本英文文章，并保留标题、正文、作者、来源和笔记。文章库可进入单栏阅读器，正文适合手机和桌面阅读。
+运行根目录测试：
 
-在文章中选中同一句内的单词或短语后，可以先“标记生词”，不必立即填写中文。用户明确标记过的文章是该生词的显式来源；相同内容在其他文章中会自动高亮，但自动出现不算显式来源，也不会增加该文章的标记统计。待整理页可集中取消标记或补充中文并转换为记词卡片。
+```powershell
+npm test
+```
 
-转换时必须填写中文释义。原形由用户确认，所选拼写会作为词形记录；原形和词形都能匹配文章。遇到相同原形时，界面会要求选择合并到已有卡片或创建独立卡片，不会自动替用户决定。
+运行所有测试目录：
 
-每篇文章独立记录以下统计：
+```powershell
+npm run test:all
+```
 
-- 完整阅读次数：从文章顶部阅读到末尾才计数；
-- 有效阅读时长：页面在前台且最近 60 秒内有滚动、选择、点击或朗读操作才累计；
-- 显式标记、待整理和已转入词本数量；
-- 完整全文朗读次数：朗读到末尾且覆盖至少 80% 的句子才计数。
+提交前检查差异格式：
 
-文章、标记、转换和统计功能当前是 online-only（需联网使用）。阅读进度或统计提交临时失败时会先暂存在当前浏览器并自动重试，但这不是完整离线模式，也不提供跨设备离线冲突合并。
+```powershell
+git diff --check
+```
+
+涉及界面的改动还应检查：
+
+- 桌面端和移动端断点；
+- 明色与深色主题；
+- 键盘焦点和操作顺序；
+- 页面是否出现水平滚动；
+- 长单词和短语是否完整显示。
+
+测试数量会随功能变化，因此 README 不记录固定测试总数。
+
+## 数据迁移
+
+本地应用全部 migration：
+
+```powershell
+wrangler d1 migrations apply phonetic_cards_db --local
+```
+
+远程应用全部 migration：
+
+```powershell
+wrangler d1 migrations apply phonetic_cards_db --remote
+```
+
+新增表或字段时创建顺序 migration：
+
+```powershell
+wrangler d1 migrations create phonetic_cards_db <migration_name>
+```
+
+不要修改已经应用过的旧 migration。数据库结构变化必须新增文件，并先在本地应用和验证，再应用到远程环境。
+
+## 部署
+
+### 1. 登录 Cloudflare
+
+```powershell
+wrangler login
+```
+
+### 2. 配置远程 secret
+
+```powershell
+wrangler secret put AUTH_PASSWORD
+wrangler secret put AUTH_SECRET
+```
+
+`AUTH_USERNAME` 是 `wrangler.toml` 中的普通变量；密码和会话签名密钥必须使用 secret，不得写入仓库。
+
+### 3. 应用远程 migration
+
+```powershell
+wrangler d1 migrations apply phonetic_cards_db --remote
+```
+
+### 4. 发布 Worker
+
+```powershell
+wrangler deploy
+```
+
+发布后先验证登录、词卡列表、文章详情、待整理转换和统计页面，再进行日常使用。
+
+## 认证与数据边界
+
+- 当前是一个 `AUTH_USERNAME` 的单用户配置，没有注册多个独立账号的功能。
+- 登录时 Worker 使用 `AUTH_USERNAME` 和 `AUTH_PASSWORD` 校验；首次成功登录会确保 D1 `users` 表中存在对应记录。
+- 会话有效期为 30 天，存放在使用 `HttpOnly`、`Secure`、`SameSite=Lax` 的 `session` cookie 中。
+- 除登录接口外，业务 API 都要求有效会话，并使用当前 `user_id` 限制查询和修改。
+- 同一个账号在手机、电脑和平板上看到同一份 D1 数据。
+- 旧的 `words.device_id` 字段为兼容已有数据而保留，当前代码不再依赖它识别用户。
+
+## 关键行为与维护注意事项
+
+- 文章、标记、转换和统计需要联网；进度暂存与自动重试不是完整离线模式，也不处理跨设备离线冲突。
+- 语音能力依赖浏览器 Web Speech API；不支持时会禁用朗读控制，其他功能仍可使用。
+- 只有用户主动标记的文章才计为词条来源；其他文章中的自动高亮不增加来源或统计。
+- 收录待整理词条时必须填写中文释义；同原形冲突由用户选择合并或新建。
+- 完整阅读必须从文章顶部到达末尾；完整全文朗读必须到达末尾且覆盖至少 80% 的句子。
+- 待整理页最大内容宽度为 920px：宽屏三列、中屏两列、手机单列；“收录”和“移除”按钮上下排列。
+- 不提交 `.dev.vars`、`.wrangler/`、secret、本地 D1 状态或会话数据。
+- 文章匹配、标记来源、转换和统计的详细规则见 [`docs/superpowers/specs/2026-07-15-article-practice-design.md`](docs/superpowers/specs/2026-07-15-article-practice-design.md)。
