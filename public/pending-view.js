@@ -14,6 +14,17 @@ function button(action, text, className = 'pc-btn-ghost') {
   return node;
 }
 
+function actionIcon(kind) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', kind === 'plus' ? 'M12 5v14M5 12h14' : 'm6 6 12 12M18 6 6 18');
+  svg.append(path);
+  return svg;
+}
+
 function field(form, name, labelText, value = '', options = {}) {
   const wrap = element('div', options.full ? 'pc-full' : '');
   const label = element('label', '', labelText);
@@ -215,19 +226,25 @@ export function createPendingView({ root, api }) {
     }
     const list = element('div', 'pc-pending-list');
     for (const term of terms) {
-      const row = element('article', 'pc-card pc-pending-row');
+      const row = element('article', 'pc-pending-row');
       row.dataset.termId = term.id;
-      row.append(element('h2', 'pc-pending-term', term.display_text));
+      const content = element('div', 'pc-pending-content');
+      content.append(element('h2', 'pc-pending-term', term.display_text));
       const meta = element('div', 'pc-article-meta');
       meta.append(element('span', '', term.kind === 'phrase' ? '短语' : '单词'));
       meta.append(element('span', '', `${Number(term.source_count) || 0} 个来源`));
-      row.append(meta);
-      const actions = element('div', 'pc-article-actions');
-      actions.append(button('convert', '加入记词本', 'pc-btn-primary'));
-      const remove = button('delete-global', '取消标记');
+      content.append(meta);
+
+      const actions = element('div', 'pc-pending-actions');
+      const collect = button('convert', '收录', 'pc-btn-primary pc-pending-action pc-pending-collect');
+      collect.setAttribute('aria-label', `将 ${term.display_text} 收录到记词本`);
+      collect.prepend(actionIcon('plus'));
+      const remove = button('delete-global', '移除', 'pc-btn-ghost pc-pending-action pc-pending-remove');
+      remove.setAttribute('aria-label', `移除 ${term.display_text} 的全部标记`);
+      remove.prepend(actionIcon('remove'));
       remove.classList.add('pc-danger');
-      actions.append(remove);
-      row.append(actions);
+      actions.append(collect, remove);
+      row.append(content, actions);
       list.append(row);
     }
     const formHost = element('div', 'pc-conversion-host');

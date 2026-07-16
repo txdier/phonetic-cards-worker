@@ -1312,6 +1312,44 @@ test('reader rejects cross-sentence selection and local delete refreshes global 
   }
 });
 
+test('pending organizer renders vertically ordered actions with accessible term labels', async () => {
+  const env = installDom('http://local.test/#/articles/pending');
+  const cleanup = createPendingView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/marked-terms') return [{
+        id: 't1',
+        display_text: 'practice makes perfect',
+        normalized_text: 'practice makes perfect',
+        kind: 'phrase',
+        source_count: 2,
+        created_at: 1,
+        context_sentence: 'Practice makes perfect.'
+      }];
+      throw new Error(`unexpected request GET ${path}`);
+    }
+  });
+  try {
+    await flush();
+    const row = env.root.querySelector('[data-term-id="t1"]');
+    const actions = row.querySelector('.pc-pending-actions');
+    assert.ok(actions);
+    const buttons = [...actions.querySelectorAll('button')];
+
+    assert.equal(row.classList.contains('pc-card'), false);
+    assert.equal(buttons.length, 2);
+    assert.deepEqual(buttons.map(node => node.dataset.action), ['convert', 'delete-global']);
+    assert.deepEqual(buttons.map(node => node.textContent.trim()), ['收录', '移除']);
+    assert.equal(buttons[0].getAttribute('aria-label'), '将 practice makes perfect 收录到记词本');
+    assert.equal(buttons[1].getAttribute('aria-label'), '移除 practice makes perfect 的全部标记');
+    assert.equal(buttons[0].querySelector('svg').getAttribute('aria-hidden'), 'true');
+    assert.equal(buttons[1].querySelector('svg').getAttribute('aria-hidden'), 'true');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('pending organizer wires conflict merge/new conversions, global delete, errors, and cleanup', async () => {
   const env = installDom('http://local.test/#/articles/pending');
   const calls = [];
