@@ -324,9 +324,38 @@
   .pc-popover-actions, .pc-conflict-candidate { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
   .pc-popover-actions.pc-reader-popover-actions { display: grid; }
   .pc-conflict-candidate { padding-block: 10px; border-top: 1px solid var(--line); }
-  .pc-pending-list { width: 100%; max-width: 920px; margin: 0 auto; display: grid; gap: 14px; }
-  .pc-pending-row { display: grid; gap: 12px; }
-  .pc-pending-term, .pc-conversion-title { margin: 0; overflow-wrap: anywhere; }
+  .pc-pending-list {
+    width: 100%; max-width: 1200px; margin: 0 auto;
+    display: grid; grid-template-columns: 1fr; gap: 1px;
+    overflow: hidden; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--line);
+  }
+  .pc-pending-row {
+    min-width: 0; min-height: 96px; padding: 12px 14px;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 12px; background: var(--bg-panel);
+  }
+  .pc-pending-content { min-width: 0; }
+  .pc-pending-term {
+    margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+  .pc-pending-content .pc-article-meta { margin-top: 5px; }
+  .pc-pending-actions { width: 76px; display: grid; gap: 6px; }
+  .pc-pending-action {
+    width: 100%; min-height: 32px; padding: 6px 8px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    white-space: nowrap;
+  }
+  .pc-pending-action svg {
+    width: 13px; height: 13px; flex: 0 0 auto;
+    fill: none; stroke: currentColor; stroke-width: 2;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .pc-pending-remove { color: var(--coral); }
+  .pc-pending-remove:hover { border-color: var(--coral); color: var(--coral); }
+  .pc-pending-action:disabled { cursor: not-allowed; opacity: .5; }
+  .pc-pending-term, .pc-conversion-title { overflow-wrap: anywhere; }
   .pc-stats-list { max-width: 920px; margin: 0 auto; display: grid; gap: 14px; }
   .pc-stats-card { display: grid; gap: 14px; }
   .pc-stats-metrics {
@@ -360,6 +389,18 @@
   .pc-toast-action {
     min-height: 40px; padding: 6px 10px; border: 1px solid var(--teal); border-radius: 7px;
     background: transparent; color: var(--teal); font: inherit; font-weight: 700; cursor: pointer;
+  }
+
+  @media (min-width: 700px) {
+    .pc-pending-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (min-width: 1100px) {
+    .pc-pending-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 699px) {
+    .pc-pending-row { min-height: 116px; padding: 12px; }
+    .pc-pending-actions { width: 82px; gap: 8px; }
+    .pc-pending-action { min-height: 44px; }
   }
 
   /* ---------- Mobile ---------- */
