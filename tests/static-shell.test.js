@@ -36,7 +36,7 @@ test('pending organizer uses the responsive three two one column ledger', async 
   assert.ok(pendingTerm, 'pending term should have a style rule');
   assert.match(pendingList, /display:\s*grid/);
   assert.match(pendingList, /width:\s*100%/);
-  assert.match(pendingList, /max-width:\s*1200px/);
+  assert.match(pendingList, /max-width:\s*920px/);
   assert.match(pendingList, /grid-template-columns:\s*1fr/);
   assert.match(pendingList, /margin:\s*0\s+auto/);
   assert.match(css, /@media\s*\(min-width:\s*700px\)[\s\S]*?\.pc-pending-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);

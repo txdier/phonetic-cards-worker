@@ -325,7 +325,7 @@
   .pc-popover-actions.pc-reader-popover-actions { display: grid; }
   .pc-conflict-candidate { padding-block: 10px; border-top: 1px solid var(--line); }
   .pc-pending-list {
-    width: 100%; max-width: 1200px; margin: 0 auto;
+    width: 100%; max-width: 920px; margin: 0 auto;
     display: grid; grid-template-columns: 1fr; gap: 1px;
     overflow: hidden; border: 1px solid var(--line); border-radius: 12px;
     background: var(--line);

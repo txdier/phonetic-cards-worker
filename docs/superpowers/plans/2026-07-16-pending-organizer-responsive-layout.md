@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Preserve the existing cream background, orange primary action, and teal selected state.
-- Use a 1200px maximum width for the pending list.
+- Use a 920px maximum width for the pending list.
 - Use three columns at viewport widths of at least 1100px, two columns from 700px through 1099px, and one column below 700px.
 - Render pending terms at 16px on desktop and mobile; wrap complete text only when it exceeds the available content width and never truncate with ellipsis.
 - Place “＋ 收录” above “× 移除”; keep both actions directly visible.
@@ -24,7 +24,7 @@
 - Modify `public/pending-view.js`: render the pending ledger rows, inline SVG icons, short visible labels, and term-specific accessible names while preserving existing action hooks.
 - Modify `public/styles.css`: style the shared ledger surface, responsive grid, compact term content, and vertical action column.
 - Modify `tests/reader-pending-dom.test.js`: verify action order, visible labels, SVG decoration, accessible names, and retained `data-action` contracts.
-- Modify `tests/static-shell.test.js`: replace the obsolete 920px single-column expectation with exact width and breakpoint assertions.
+- Modify `tests/static-shell.test.js`: assert the 920px maximum width alongside the responsive breakpoint behavior.
 
 ---
 
@@ -171,7 +171,7 @@ test('pending organizer uses the responsive three two one column ledger', async 
   assert.ok(pendingList, 'pending list should have a style rule');
   assert.match(pendingList, /display:\s*grid/);
   assert.match(pendingList, /width:\s*100%/);
-  assert.match(pendingList, /max-width:\s*1200px/);
+  assert.match(pendingList, /max-width:\s*920px/);
   assert.match(pendingList, /grid-template-columns:\s*1fr/);
   assert.match(pendingList, /margin:\s*0\s+auto/);
   assert.match(css, /@media\s*\(min-width:\s*700px\)[\s\S]*?\.pc-pending-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
@@ -198,7 +198,7 @@ Replace the existing `.pc-pending-list`, `.pc-pending-row`, and `.pc-pending-ter
 
 ```css
 .pc-pending-list {
-  width: 100%; max-width: 1200px; margin: 0 auto;
+  width: 100%; max-width: 920px; margin: 0 auto;
   display: grid; grid-template-columns: 1fr; gap: 1px;
   overflow: hidden; border: 1px solid var(--line); border-radius: 12px;
   background: var(--line);
@@ -279,7 +279,7 @@ npx wrangler dev --local --port 8787
 
 Open `http://localhost:8787/#/articles/pending` and verify:
 
-- 1440px and 1100px: three equal columns inside a centered 1200px maximum-width ledger;
+- 1440px and 1100px: three equal columns inside a centered 920px maximum-width ledger;
 - 1024px and 768px: two columns;
 - 390px and 375px: one column, no horizontal scroll, 44px action targets with 8px vertical gap;
 - “practice makes perfect” remains on one line when its 16px rendered width fits; longer phrases wrap fully without ellipsis;
