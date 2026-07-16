@@ -31,7 +31,9 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
 test('pending organizer uses the responsive three two one column ledger', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const pendingList = css.match(/\.pc-pending-list\s*\{([^}]*)\}/)?.[1];
+  const pendingTerm = css.match(/\.pc-pending-term\s*\{([^}]*)\}/)?.[1];
   assert.ok(pendingList, 'pending list should have a style rule');
+  assert.ok(pendingTerm, 'pending term should have a style rule');
   assert.match(pendingList, /display:\s*grid/);
   assert.match(pendingList, /width:\s*100%/);
   assert.match(pendingList, /max-width:\s*1200px/);
@@ -39,7 +41,12 @@ test('pending organizer uses the responsive three two one column ledger', async 
   assert.match(pendingList, /margin:\s*0\s+auto/);
   assert.match(css, /@media\s*\(min-width:\s*700px\)[\s\S]*?\.pc-pending-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(css, /@media\s*\(min-width:\s*1100px\)[\s\S]*?\.pc-pending-list\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
-  assert.match(css, /\.pc-pending-term\s*\{[^}]*font-size:\s*16px/);
+  assert.match(pendingTerm, /font-size:\s*16px/);
+  assert.match(pendingTerm, /overflow-wrap:\s*anywhere/);
+  assert.doesNotMatch(pendingTerm, /text-overflow:\s*ellipsis/);
+  assert.doesNotMatch(pendingTerm, /overflow:\s*hidden/);
+  assert.doesNotMatch(pendingTerm, /white-space:\s*nowrap/);
+  assert.match(css, /#pc-root\s+button\.pc-pending-action\s*\{[^}]*min-height:\s*32px/);
   assert.match(css, /@media\s*\(max-width:\s*699px\)[\s\S]*?\.pc-pending-action\s*\{[^}]*min-height:\s*44px/);
   assert.match(css, /@media\s*\(max-width:\s*699px\)[\s\S]*?\.pc-pending-actions\s*\{[^}]*gap:\s*8px/);
 });

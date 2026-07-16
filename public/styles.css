@@ -342,7 +342,7 @@
   }
   .pc-pending-content .pc-article-meta { margin-top: 5px; }
   .pc-pending-actions { width: 76px; display: grid; gap: 6px; }
-  .pc-pending-action {
+  #pc-root button.pc-pending-action {
     width: 100%; min-height: 32px; padding: 6px 8px;
     display: inline-flex; align-items: center; justify-content: center; gap: 5px;
     white-space: nowrap;
@@ -400,7 +400,7 @@
   @media (max-width: 699px) {
     .pc-pending-row { min-height: 116px; padding: 12px; }
     .pc-pending-actions { width: 82px; gap: 8px; }
-    .pc-pending-action { min-height: 44px; }
+    #pc-root button.pc-pending-action { min-height: 44px; }
   }
 
   /* ---------- Mobile ---------- */
