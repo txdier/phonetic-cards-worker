@@ -1,52 +1,52 @@
-# Responsive Navigation and Filters Design
+# 响应式导航与筛选栏设计
 
-## Goal
+## 目标
 
-Correct two responsive layout problems without changing navigation or filtering behavior:
+在不改变导航或筛选行为的前提下，修复两个响应式布局问题：
 
-1. On mobile, present account controls before the module navigation in a familiar two-row application header.
-2. On desktop, keep the word-library filter toolbar aligned with the existing 920px content column.
+1. 移动端采用常见的两行应用顶栏，账户控件显示在模块导航之前。
+2. PC 端将词库筛选工具栏与现有的 920px 内容列对齐。
 
-## Mobile header
+## 移动端顶栏
 
-At viewport widths of 640px or less, the top navigation remains a two-row layout:
+当视口宽度不超过 640px 时，顶部导航保持两行布局：
 
 ```text
 ┌──────────────────────────────────┐
-│ username         [theme] [logout] │
+│ 用户名           [主题] [退出登录] │
 ├──────────────────────────────────┤
-│ [      words      ][   articles  ] │
+│ [       词库       ][   文章练习   ] │
 └──────────────────────────────────┘
 ```
 
-The account actions appear on the first row. The username stays on the left and may shrink or truncate if space is limited; the theme and logout buttons stay grouped on the right with full touch targets. The module tabs appear on the second row and remain equal-width buttons.
+账户操作显示在第一行。用户名保持左对齐；空间不足时允许收缩或截断。主题和退出登录按钮作为一个操作组保持在右侧，并保留完整的触控区域。模块标签显示在第二行，两个入口保持等宽。
 
-Desktop navigation order and layout remain unchanged.
+桌面端导航的顺序和布局保持不变。
 
-## Desktop word filters
+## PC 端词库筛选栏
 
-The word-library filter form uses the same maximum width and horizontal centering as `.pc-header`, `.pc-grid`, and the other primary content blocks:
+词库筛选表单采用与 `.pc-header`、`.pc-grid` 以及其他主要内容区块相同的最大宽度和水平居中方式：
 
-- Maximum width: 920px.
-- Horizontal margins: automatic.
-- Existing grid columns and controls remain unchanged at desktop widths.
-- Existing single-column mobile behavior remains unchanged.
+- 最大宽度：920px。
+- 水平方向外边距：自动。
+- PC 端现有的网格列和控件布局保持不变。
+- 移动端现有的单列布局保持不变。
 
-## Implementation boundaries
+## 实施边界
 
-The fix is limited to markup ordering support and responsive CSS:
+本次修复仅涉及元素排序支持和响应式 CSS：
 
-- Preserve current labels, click handlers, routes, theme persistence, and logout behavior.
-- Use CSS ordering at the mobile breakpoint so desktop DOM order and layout are unaffected.
-- Add the missing content-width constraint to the filter toolbar.
-- Do not introduce a dropdown menu or new JavaScript interactions.
+- 保留现有文案、点击处理、路由、主题持久化和退出登录行为。
+- 在移动端断点使用 CSS 调整顺序，避免影响桌面端的 DOM 顺序和布局。
+- 为筛选工具栏补充缺失的内容宽度约束。
+- 不引入下拉菜单或新的 JavaScript 交互。
 
-## Verification
+## 验证
 
-Add static CSS regression assertions that demonstrate the current stylesheet is missing:
+新增静态 CSS 回归断言，先证明当前样式表缺少以下规则：
 
-- The desktop filter toolbar has a 920px maximum width and is horizontally centered.
-- At the mobile breakpoint, account actions render before module tabs.
-- The mobile account row keeps the username separate from a right-aligned action group.
+- PC 端筛选工具栏的最大宽度为 920px，并水平居中。
+- 在移动端断点，账户操作显示在模块标签之前。
+- 移动端账户行将用户名与右对齐的操作组明确分开。
 
-Run the targeted regression test first and confirm it fails, apply the minimal CSS fix, then run the complete test suite. Finally, inspect representative desktop and mobile viewport renders to confirm visual alignment and absence of horizontal overflow.
+先运行针对性的回归测试并确认测试失败，再应用最小 CSS 修复，然后运行完整测试套件。最后检查具有代表性的 PC 端和移动端视口渲染，确认视觉对齐正确且没有横向溢出。
