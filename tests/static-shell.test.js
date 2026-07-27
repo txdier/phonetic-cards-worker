@@ -28,6 +28,20 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
   assert.doesNotMatch(selectionReading, /(?:^|[;\s])(?:(?:width|min-width)\s*:|position\s*:\s*(?:fixed|absolute)|(?:left|right)\s*:)/);
 });
 
+test('navigation and word filters follow the responsive content layout', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const filters = css.match(/\.pc-library-filters\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(filters, 'word filters should have a style rule');
+  assert.match(filters, /max-width:\s*920px/);
+  assert.match(filters, /margin:\s*0\s+auto\s+18px/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-account-actions\s*\{[^}]*order:\s*-1/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-account-actions\s*\{[^}]*width:\s*100%/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-module-tabs\s*\{[^}]*width:\s*100%/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-username\s*\{[^}]*min-width:\s*0/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-username\s*\{[^}]*text-overflow:\s*ellipsis/);
+});
+
 test('pending organizer uses the responsive three two one column ledger', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const pendingList = css.match(/\.pc-pending-list\s*\{([^}]*)\}/)?.[1];
