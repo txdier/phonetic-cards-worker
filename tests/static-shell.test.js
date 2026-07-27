@@ -62,6 +62,9 @@ test('article reader hash is parsed and malformed hashes are safe', async () => 
   assert.deepEqual(parseHashRoute('#/articles'), {
     module: 'articles', page: 'library'
   });
+  assert.deepEqual(parseHashRoute('#/words/review'), {
+    module: 'words', page: 'review'
+  });
   assert.deepEqual(parseHashRoute('#/%E0%A4%A'), {
     module: 'words', page: 'library'
   });

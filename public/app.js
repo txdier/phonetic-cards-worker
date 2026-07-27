@@ -4,6 +4,7 @@ import { createPendingView } from './pending-view.js';
 import { createReaderView } from './reader-view.js';
 import { hashForRoute, parseHashRoute } from './routes.js';
 import { createSpeechController } from './lib/speech.js';
+import { createTtsPlayer } from './lib/tts-player.js';
 import { createProgressQueue, progressQueueKey, sendProgressItem } from './lib/reading-session.js';
 import { createWordsView } from './words-view.js';
 import { createStatsView } from './stats-view.js';
@@ -19,6 +20,14 @@ root.classList.toggle('pc-light', lightMode);
 const speech = createSpeechController({
   speechSynthesis: window.speechSynthesis,
   Utterance: window.SpeechSynthesisUtterance
+});
+const tts = createTtsPlayer({
+  fetch: typeof window.fetch === 'function'
+    ? window.fetch.bind(window)
+    : globalThis.fetch?.bind(globalThis),
+  Audio: window.Audio,
+  URL: window.URL,
+  fallback: speech
 });
 let progressStorage = null;
 try { progressStorage = globalThis.localStorage; } catch { /* storage may be disabled */ }
@@ -78,13 +87,13 @@ function mountRoute() {
   const shell = document.createElement('div'); shell.className = 'pc-app-shell';
   const top = document.createElement('nav'); top.className = 'pc-topnav'; top.setAttribute('aria-label', '主要功能');
   const modules = document.createElement('div'); modules.className = 'pc-module-tabs';
-  for (const item of [{ module: 'words', label: '记词本' }, { module: 'articles', label: '文章练习' }]) {
+  for (const item of [{ module: 'words', label: '词库' }, { module: 'articles', label: '文章练习' }]) {
     const button = document.createElement('button');
     const active = route.module === item.module;
     button.className = `pc-module-tab${active ? ' active' : ''}`;
     if (active) button.setAttribute('aria-current', 'page');
     button.textContent = item.label;
-    button.addEventListener('click', () => navigate(item.module === 'words' ? { module: 'words' } : { module: 'articles', page: 'library' }));
+    button.addEventListener('click', () => navigate({ module: item.module, page: 'library' }));
     modules.append(button);
   }
   const account = document.createElement('div'); account.className = 'pc-account-actions';
@@ -106,6 +115,19 @@ function mountRoute() {
     renderLogin();
   });
   account.append(username, theme, logout); top.append(modules, account); shell.append(top);
+  if (route.module === 'words') {
+    const subnav = document.createElement('nav'); subnav.className = 'pc-article-nav'; subnav.setAttribute('aria-label', '词库页面');
+    for (const item of [{ page: 'library', label: '词库' }, { page: 'review', label: '复习' }, { page: 'settings', label: '设置' }]) {
+      const button = document.createElement('button');
+      const active = route.page === item.page;
+      button.className = `pc-article-nav-link${active ? ' active' : ''}`;
+      if (active) button.setAttribute('aria-current', 'page');
+      button.textContent = item.label;
+      button.addEventListener('click', () => navigate({ module: 'words', page: item.page }));
+      subnav.append(button);
+    }
+    shell.append(subnav);
+  }
   if (route.module === 'articles') {
     const subnav = document.createElement('nav'); subnav.className = 'pc-article-nav'; subnav.setAttribute('aria-label', '文章练习页面');
     for (const item of [{ page: 'library', label: '文章库' }, { page: 'pending', label: '待整理' }, { page: 'stats', label: '统计' }]) {
@@ -120,9 +142,9 @@ function mountRoute() {
   }
   const viewRoot = document.createElement('main'); viewRoot.className = 'pc-view-root'; shell.append(viewRoot); root.append(shell);
   if (route.module === 'words') {
-    unmountView = createWordsView({ root: viewRoot, api, speech });
+    unmountView = createWordsView({ root: viewRoot, api, speech, tts, page: route.page });
   } else if (route.page === 'reader') {
-    unmountView = createReaderView({ root: viewRoot, api, navigate, speech, progressQueue, articleId: route.id });
+    unmountView = createReaderView({ root: viewRoot, api, navigate, speech, tts, progressQueue, articleId: route.id });
   } else if (route.page === 'pending') {
     unmountView = createPendingView({ root: viewRoot, api });
   } else if (route.page === 'stats') {

@@ -4,12 +4,13 @@
 
 ## 当前功能
 
-### 记词本
+### 词库与复习
 
-- 新增、编辑和删除词卡，记录原形、词形、中文释义、例句和重音。
-- 使用浏览器 Web Speech API 朗读单词和例句，可切换慢速朗读。
-- 学习模式展示完整词卡；自测模式支持揭示答案、记得/忘记判断和熟悉度更新。
-- 自测结果记录熟悉度与最后测试时间，用于后续排序。
+- 词库按关键词、标签、FSRS 状态和到期状态筛选并分页。
+- 词卡记录原形、词形、中文释义、例句、重音、标签和词间关系。
+- 使用 FSRS 四档评分（忘记、困难、良好、简单）安排复习。
+- 支持 Markdown、CSV 和 JSON 导出。
+- 单词、例句和文章句子优先使用 Azure TTS，并以 R2 缓存；不可用时自动回退 Web Speech API。
 
 ### 文章练习
 
@@ -25,6 +26,8 @@
 
 - Cloudflare Workers + Worker Assets
 - Cloudflare D1
+- Cloudflare R2 + Azure AI Speech
+- ts-fsrs
 - 原生 HTML / CSS / JavaScript ES modules
 - Web Speech API
 - Node.js 内置测试运行器 + JSDOM
@@ -41,12 +44,17 @@ phonetic-cards-worker/
 │   ├── 0001_create_words_table.sql      # 初始词卡表
 │   ├── 0002_add_users.sql               # users 表与 words.user_id
 │   ├── 0003_article_practice.sql        # 词形、文章、标记、进度和事件表
-│   └── 0004_add_last_tested.sql         # words.last_tested_at
+│   ├── 0004_add_last_tested.sql         # 兼容保留的旧字段
+│   ├── 0005_word_learning_fsrs.sql      # FSRS、标签和词间关系
+│   └── 0006_tts_cache_usage.sql         # TTS 用量和生成租约
 ├── src/
 │   ├── index.js                         # Worker 入口与 API 路由
 │   ├── auth.js                          # 登录、会话签名与用户校验
 │   ├── http.js                          # JSON 响应辅助方法
-│   ├── words-api.js                     # 词卡 CRUD 与熟悉度
+│   ├── words-api.js                     # 词库 CRUD、筛选和分页
+│   ├── reviews-api.js                   # FSRS 到期卡和幂等评分
+│   ├── word-library-api.js              # 标签、关系、统计和导出
+│   ├── tts-api.js                       # Azure TTS、R2 缓存和用量限制
 │   ├── articles-api.js                  # 文章 CRUD 与阅读详情
 │   ├── markings-api.js                  # 标记、移除与收录转换
 │   ├── progress-api.js                  # 阅读位置和幂等统计事件
@@ -56,7 +64,7 @@ phonetic-cards-worker/
 │   ├── app.js                           # 登录状态、模块导航与视图协调
 │   ├── api.js                           # 浏览器 API 客户端
 │   ├── routes.js                        # Hash 路由
-│   ├── words-view.js                    # 记词本、学习和自测视图
+│   ├── words-view.js                    # 词库、复习和设置视图
 │   ├── articles-view.js                 # 文章库与编辑表单
 │   ├── reader-view.js                   # 阅读、标记、朗读与进度
 │   ├── pending-view.js                  # 待整理词条与收录表单
@@ -87,6 +95,7 @@ npm install -g wrangler
 ```dotenv
 AUTH_PASSWORD=<本地测试密码>
 AUTH_SECRET=<足够长的随机签名密钥>
+AZURE_TTS_KEY=<Azure Speech 密钥>
 ```
 
 用户名来自 `wrangler.toml` 的 `[vars].AUTH_USERNAME`。不要把真实密码或签名密钥写进 README、`wrangler.toml` 或其他已跟踪文件。
@@ -184,7 +193,15 @@ wrangler secret put AUTH_PASSWORD
 wrangler secret put AUTH_SECRET
 ```
 
-`AUTH_USERNAME` 是 `wrangler.toml` 中的普通变量；密码和会话签名密钥必须使用 secret，不得写入仓库。
+`AUTH_USERNAME`、`AZURE_TTS_REGION`、`AZURE_TTS_VOICE` 和
+`TTS_MONTHLY_CHAR_BUDGET` 是 `wrangler.toml` 中的普通变量。创建一次音频桶：
+
+```powershell
+wrangler r2 bucket create phonetic-cards-audio
+wrangler secret put AZURE_TTS_KEY
+```
+
+密码、会话签名密钥和 Azure 密钥必须使用 secret，不得写入仓库。
 
 ### 3. 应用远程 migration
 
@@ -212,7 +229,8 @@ wrangler deploy
 ## 关键行为与维护注意事项
 
 - 文章、标记、转换和统计需要联网；进度暂存与自动重试不是完整离线模式，也不处理跨设备离线冲突。
-- 语音能力依赖浏览器 Web Speech API；不支持时会禁用朗读控制，其他功能仍可使用。
+- Azure 或 R2 不可用、达到月度额度或持续限流时会回退 Web Speech API，不影响词库、复习和阅读。
+- `words.familiarity` 与 `words.last_tested_at` 仅为旧数据兼容保留，当前代码不读取或更新。
 - 只有用户主动标记的文章才计为词条来源；其他文章中的自动高亮不增加来源或统计。
 - 收录待整理词条时必须填写中文释义；同原形冲突由用户选择合并或新建。
 - 完整阅读必须从文章顶部到达末尾；完整全文朗读必须到达末尾且覆盖至少 80% 的句子。

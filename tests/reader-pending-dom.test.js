@@ -1397,7 +1397,8 @@ test('pending organizer wires conflict merge/new conversions, global delete, err
     await flush();
     const mergeCall = calls.find(call => JSON.parse(call.init.body || '{}').strategy === 'merge');
     assert.deepEqual(JSON.parse(mergeCall.init.body), {
-      zh: '发布', lemma: 'deploy', example: 'Edited before merge.', stress: '', strategy: 'merge', targetWordId: 'w1'
+      zh: '发布', lemma: 'deploy', example: 'Edited before merge.', stress: '',
+      tagIds: [], strategy: 'merge', targetWordId: 'w1'
     });
     assert.equal(env.root.querySelector('[data-term-id="t1"]'), null);
 
@@ -1574,7 +1575,7 @@ test('app still boots when the localStorage getter is disabled', async () => {
   try {
     await import(`../public/app.js?disabled-storage-test=${Date.now()}`);
     await flush();
-    assert.match(env.root.textContent, /记词本/);
+    assert.match(env.root.textContent, /词库/);
   } finally {
     globalThis.fetch = originalFetch;
     env.restore();

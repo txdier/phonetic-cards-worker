@@ -3,7 +3,10 @@ import { handleArticlesApi } from './articles-api.js';
 import { jsonResponse } from './http.js';
 import { handleMarkingsApi } from './markings-api.js';
 import { handleProgressApi } from './progress-api.js';
+import { handleReviewsApi } from './reviews-api.js';
 import { handleStatsApi } from './stats-api.js';
+import { handleTtsApi } from './tts-api.js';
+import { handleWordLibraryApi } from './word-library-api.js';
 import { handleWordsApi } from './words-api.js';
 
 export default {
@@ -34,6 +37,28 @@ export default {
         }
         if (path === '/api/article-stats') {
           return await handleStatsApi(request, env, path, userId);
+        }
+        if (
+          path === '/api/reviews/due' ||
+          /^\/api\/words\/[a-zA-Z0-9-]+\/reviews$/.test(path)
+        ) {
+          return await handleReviewsApi(request, env, path, userId);
+        }
+        if (
+          path === '/api/tts/usage' ||
+          /^\/api\/tts\/words\/[a-zA-Z0-9-]+$/.test(path) ||
+          /^\/api\/tts\/articles\/[a-zA-Z0-9-]+\/sentences\/\d+$/.test(path)
+        ) {
+          return await handleTtsApi(request, env, path, userId);
+        }
+        if (
+          path === '/api/tags' ||
+          path.startsWith('/api/tags/') ||
+          path === '/api/word-stats' ||
+          path === '/api/export' ||
+          /^\/api\/words\/[a-zA-Z0-9-]+\/(?:tags|relations)(?:\/[a-zA-Z0-9-]+)?$/.test(path)
+        ) {
+          return await handleWordLibraryApi(request, env, path, userId);
         }
         if (
           path === '/api/marked-terms' ||

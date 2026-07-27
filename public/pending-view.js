@@ -57,6 +57,9 @@ export function mountConversionForm({
   field(form, 'lemma', '词元 / 原形（可选）', term.normalized_text || term.display_text);
   field(form, 'example', '例句（可编辑）', term.context_sentence || '', { multiline: true, full: true });
   field(form, 'stress', '重音（可选）', '');
+  const tagField = element('fieldset', 'pc-full pc-tag-field');
+  tagField.append(element('legend', '', '标签（可选）'), element('span', 'pc-muted', '加载标签中…'));
+  form.append(tagField);
   const conflict = element('div', 'pc-conversion-conflict pc-full');
   conflict.dataset.role = 'conversion-conflict';
   conflict.hidden = true;
@@ -79,7 +82,8 @@ export function mountConversionForm({
       zh: form.elements.zh.value.trim(),
       lemma: form.elements.lemma.value.trim(),
       example: form.elements.example.value,
-      stress: form.elements.stress.value.trim()
+      stress: form.elements.stress.value.trim(),
+      tagIds: [...form.querySelectorAll('input[name="tagIds"]:checked')].map(input => input.value)
     };
   }
 
@@ -184,6 +188,22 @@ export function mountConversionForm({
   panel.addEventListener('submit', onSubmit);
   panel.addEventListener('click', onClick);
   panel.addEventListener('keydown', onKeyDown);
+  Promise.resolve(api('/api/tags')).then(result => {
+    if (!current()) return;
+    tagField.replaceChildren(element('legend', '', '标签（可选）'));
+    for (const tag of result?.tags || []) {
+      const label = element('label', 'pc-tag-choice');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = 'tagIds';
+      input.value = tag.id;
+      label.append(input, document.createTextNode(tag.name));
+      tagField.append(label);
+    }
+    if (!(result?.tags || []).length) tagField.append(element('span', 'pc-muted', '暂无标签'));
+  }).catch(() => {
+    if (current()) tagField.replaceChildren(element('legend', '', '标签（可选）'), element('span', 'pc-muted', '标签暂不可用'));
+  });
   form.elements.zh.focus();
   return () => {
     active = false;

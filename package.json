@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "jsdom": "^26.1.0"
+  },
+  "dependencies": {
+    "ts-fsrs": "5.4.1"
   }
 }

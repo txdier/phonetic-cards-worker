@@ -63,25 +63,19 @@ test('article reader routes round-trip ids by decoding individual path segments'
   assert.deepEqual(parseHashRoute('#/unknown/place'), { module: 'words', page: 'library' });
 });
 
-test('word test helpers sort without mutation and calculate judge state', async () => {
-  const { sortWordTestQueue, nextFamiliarity } = await import('../public/words-view.js');
+test('word review helper sorts by FSRS due time without mutation', async () => {
+  const { sortWordTestQueue } = await import('../public/words-view.js');
   const words = [
-    { id: 'recently-tested', familiarity: 2, last_tested_at: 30, created_at: 5 },
-    { id: 'due', familiarity: 0, last_tested_at: 40, created_at: 10 },
-    { id: 'never-tested-new', familiarity: 2, last_tested_at: null, created_at: 20 },
-    { id: 'never-tested-old', familiarity: 2, last_tested_at: null, created_at: 5 },
-    { id: 'least-recently-tested', familiarity: 2, last_tested_at: 10, created_at: 30 }
+    { id: 'later', due_at: 30, created_at: 5 },
+    { id: 'first-newer', due_at: 10, created_at: 20 },
+    { id: 'first-older', due_at: 10, created_at: 5 }
   ];
   assert.deepEqual(sortWordTestQueue(words).map(word => word.id), [
-    'due', 'never-tested-old', 'never-tested-new', 'least-recently-tested', 'recently-tested'
+    'first-older', 'first-newer', 'later'
   ]);
   assert.deepEqual(words.map(word => word.id), [
-    'recently-tested', 'due', 'never-tested-new', 'never-tested-old', 'least-recently-tested'
+    'later', 'first-newer', 'first-older'
   ]);
-  assert.equal(nextFamiliarity(4, true), 4);
-  assert.equal(nextFamiliarity(2, true), 3);
-  assert.equal(nextFamiliarity(3, false), 2);
-  assert.equal(nextFamiliarity(0, false), 0);
 });
 
 test('word reveal keyboard contract accepts Enter and Space only', async () => {

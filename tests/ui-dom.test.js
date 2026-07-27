@@ -132,30 +132,28 @@ test('toast exposes an action and reports whether it timed out', async () => {
   }
 });
 
-test('words view wires modes, speech, keyboard reveal, judging, and cleanup', async () => {
+test('review view reveals cards, submits one of four FSRS ratings, and cleans up', async () => {
   const env = installDom();
   const calls = [];
   const spoken = [];
   let stopped = 0;
   const api = async (path, init = {}) => {
     calls.push({ path, init });
-    if (path === '/api/words') return [{
+    if (path === '/api/reviews/due?limit=20') return { words: [{
       id: 'w1', lemma: 'deploy', en: 'deployed', zh: '部署', example: 'We deployed it.',
-      stress: 'de-PLOY', familiarity: 1, created_at: 10, forms: [{ form: 'deployed' }]
-    }];
+      stress: 'de-PLOY', state: 0, due_at: 0, created_at: 10, forms: [{ form: 'deployed' }]
+    }] };
+    if (path === '/api/words/w1/reviews') return { ok: true };
     return {};
   };
   const cleanup = createWordsView({
     root: env.root,
     api,
-    speech: { isSupported: true, speakOnce: (...args) => spoken.push(args), stop: () => { stopped += 1; } }
+    page: 'review',
+    speech: { isSupported: true, getRate: () => 1, speakOnce: (...args) => spoken.push(args), stop: () => { stopped += 1; } }
   });
   try {
     await flush();
-    assert.equal(env.root.querySelector('.pc-word').textContent, 'deploy');
-
-    click(env.window, [...env.root.querySelectorAll('[data-action="mode"]')]
-      .find(button => button.dataset.mode === 'test'));
     const testCard = env.root.querySelector('[data-action="reveal"]');
     assert.ok(testCard);
 
@@ -165,75 +163,84 @@ test('words view wires modes, speech, keyboard reveal, judging, and cleanup', as
 
     testCard.dispatchEvent(new env.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     assert.ok(env.root.querySelector('.pc-reveal'));
-
-    const slow = env.root.querySelector('[data-action="slow"]');
-    slow.checked = true;
-    slow.dispatchEvent(new env.window.Event('change', { bubbles: true }));
     click(env.window, env.root.querySelector('[data-action="play"]'));
     assert.equal(spoken.length, 1);
-    assert.equal(spoken[0][1].rate, 0.5);
-
-    click(env.window, env.root.querySelector('[data-action="judge"][data-ok="1"]'));
+    assert.equal(env.root.querySelectorAll('[data-action="judge"]').length, 4);
+    click(env.window, env.root.querySelector('[data-action="judge"][data-rating="3"]'));
     await flush();
-    const patch = calls.find(call => call.init.method === 'PATCH');
-    assert.deepEqual(JSON.parse(patch.init.body), { familiarity: 2 });
-
-    const rerenderedCard = env.root.querySelector('[data-action="reveal"]');
-    rerenderedCard.dispatchEvent(new env.window.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
-    assert.ok(env.root.querySelector('.pc-reveal'));
-
-    click(env.window, [...env.root.querySelectorAll('[data-action="mode"]')]
-      .find(button => button.dataset.mode === 'learn'));
+    const reviewCall = calls.find(call => call.path === '/api/words/w1/reviews');
+    assert.equal(JSON.parse(reviewCall.init.body).rating, 3);
+    assert.match(env.root.textContent, /没有到期词卡/);
     cleanup();
-    click(env.window, [...env.root.querySelectorAll('[data-action="mode"]')]
-      .find(button => button.dataset.mode === 'test'));
-    assert.equal(env.root.querySelector('.pc-tab.active').dataset.mode, 'learn');
     assert.equal(stopped, 1);
   } finally {
     env.restore();
   }
 });
 
-test('judging a max-familiarity word moves it behind an equally familiar never-tested word', async () => {
+test('review view orders due cards without mutating the response', async () => {
   const env = installDom();
-  const calls = [];
+  const source = [
+    { id: 'later', lemma: 'later', zh: '后', due_at: 20, created_at: 1, forms: [] },
+    { id: 'first', lemma: 'first', zh: '先', due_at: 10, created_at: 2, forms: [] }
+  ];
   const cleanup = createWordsView({
     root: env.root,
-    api: async (path, init = {}) => {
-      calls.push({ path, init });
-      if (path === '/api/words' && !init.method) return [
-        { id: 'old', lemma: 'old', en: 'old', zh: '先测试', familiarity: 4, last_tested_at: null, created_at: 1, forms: [] },
-        { id: 'next', lemma: 'next', en: 'next', zh: '后测试', familiarity: 4, last_tested_at: null, created_at: 2, forms: [] }
-      ];
-      if (path === '/api/words/old' && init.method === 'PATCH') {
-        return { ok: true, last_tested_at: 1234 };
-      }
-      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
-    },
+    page: 'review',
+    api: async path => path === '/api/reviews/due?limit=20' ? { words: source } : {},
     speech: { isSupported: true, speakOnce() {}, stop() {} }
   });
   try {
     await flush();
-    click(env.window, [...env.root.querySelectorAll('[data-action="mode"]')]
-      .find(button => button.dataset.mode === 'test'));
-    env.root.querySelector('[data-action="reveal"]')
-      .dispatchEvent(new env.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    click(env.window, env.root.querySelector('[data-action="judge"][data-ok="1"]'));
-    await flush();
-    assert.match(env.root.querySelector('.pc-testcard').textContent, /后测试/);
-    assert.ok(calls.some(call => call.path === '/api/words/old' && call.init.method === 'PATCH'));
+    assert.match(env.root.querySelector('.pc-testcard').textContent, /先/);
+    assert.deepEqual(source.map(word => word.id), ['later', 'first']);
   } finally {
     cleanup();
     env.restore();
   }
 });
 
-test('word cards expose an accessible edit form and retain learning metadata after save', async () => {
+test('review retry reuses its id after an ambiguous transport failure', async () => {
+  const env = installDom();
+  const payloads = [];
+  let attempts = 0;
+  const cleanup = createWordsView({
+    root: env.root,
+    page: 'review',
+    api: async (path, init = {}) => {
+      if (path === '/api/reviews/due?limit=20') {
+        return { words: [{ id: 'w1', lemma: 'retry', zh: '重试', due_at: 0, version: 2, forms: [] }] };
+      }
+      payloads.push(JSON.parse(init.body));
+      attempts += 1;
+      if (attempts === 1) throw new Error('connection lost');
+      return { ok: true };
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="reveal"]'));
+    click(env.window, env.root.querySelector('[data-action="judge"][data-rating="3"]'));
+    await flush();
+    assert.equal(env.root.querySelector('[data-action="judge"][data-rating="4"]').disabled, true);
+    click(env.window, env.root.querySelector('[data-action="judge"][data-rating="3"]'));
+    await flush();
+    assert.equal(payloads[0].reviewId, payloads[1].reviewId);
+    assert.equal(payloads[1].version, 2);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word cards expose an accessible edit form and retain FSRS metadata after save', async () => {
   const env = installDom();
   const calls = [];
   const initial = {
     id: 'w1', lemma: 'deploy', en: 'deploy', zh: '部署', example: 'Deploy it.', stress: 'de-PLOY',
-    familiarity: 3, last_tested_at: 99, created_at: 1, forms: [{ form: 'deployed', normalized_form: 'deployed' }]
+    state: 2, reps: 3, due_at: 99, created_at: 1, tags: [],
+    forms: [{ form: 'deployed', normalized_form: 'deployed' }]
   };
   const cleanup = createWordsView({
     root: env.root,
@@ -252,8 +259,7 @@ test('word cards expose an accessible edit form and retain learning metadata aft
     const edit = env.root.querySelector('[data-id="w1"] [data-action="edit"]');
     assert.ok(edit);
     assert.equal(edit.getAttribute('aria-label'), '编辑 deploy');
-    assert.equal(edit.textContent.trim(), '');
-    assert.equal(edit.querySelector('svg')?.getAttribute('aria-hidden'), 'true');
+    assert.equal(edit.textContent.trim(), '编辑');
     click(env.window, edit);
     const form = env.root.querySelector('#pc-word-form');
     assert.equal(form.classList.contains('open'), true);
@@ -270,12 +276,13 @@ test('word cards expose an accessible edit form and retain learning metadata aft
 
     const patchCall = calls.find(call => call.path === '/api/words/w1' && call.init.method === 'PATCH');
     assert.deepEqual(JSON.parse(patchCall.init.body), {
-      lemma: 'launch', zh: '启动', stress: 'LAUNCH', example: 'Launch it.'
+      lemma: 'launch', en: 'launch', zh: '启动', stress: 'LAUNCH',
+      example: 'Launch it.', tagIds: []
     });
     assert.match(env.root.querySelector('[data-id="w1"]').textContent, /launch/);
     assert.match(env.root.querySelector('[data-id="w1"]').textContent, /启动/);
-    assert.equal(initial.familiarity, 3);
-    assert.equal(initial.last_tested_at, 99);
+    assert.equal(initial.state, 2);
+    assert.equal(initial.due_at, 99);
   } finally {
     cleanup();
     env.restore();
@@ -383,7 +390,6 @@ test('words view disables pronunciation with an explanation when speech is unava
   try {
     await flush();
     assert.equal(env.root.querySelector('[data-action="play"]').disabled, true);
-    assert.equal(env.root.querySelector('[data-action="slow"]').disabled, true);
     assert.match(env.root.querySelector('[data-role="speech-unavailable"]').textContent, /浏览器.*语音/);
   } finally {
     cleanup();

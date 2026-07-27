@@ -108,7 +108,7 @@ function assignDataset(node, values = {}) {
 }
 
 export function createReaderView({
-  root, api, articleId, navigate, speech, progressQueue = null, progressRuntime = {}
+  root, api, articleId, navigate, speech, tts = null, progressQueue = null, progressRuntime = {}
 }) {
   let mounted = true;
   let article = null;
@@ -138,6 +138,32 @@ export function createReaderView({
   const readingSession = createReadingSession({ now: runtime.now });
   readingSession.setVisible(document.visibilityState !== 'hidden');
   let progressTimer = null;
+
+  function speakSentence(sentenceNode) {
+    const index = Number(sentenceNode?.dataset.sentenceIndex);
+    if (!Number.isInteger(index)) return;
+    if (tts?.speakArticleSentence) {
+      tts.speakArticleSentence(articleId, index, sentenceNode.textContent, {
+        rate: (tts || speech).getRate?.() || 1,
+        nextIndex: index + 1 < sentences.length ? index + 1 : null
+      });
+    } else {
+      speech.speakOnce(sentenceNode.textContent);
+    }
+  }
+
+  function startFullReading(index) {
+    if (tts?.startArticle) {
+      tts.startArticle(
+        articleId,
+        sentences.map(sentence => sentence.text),
+        index,
+        { onState: applySpeechState }
+      );
+    } else {
+      speech.startAt(index);
+    }
+  }
 
   function currentPositionRatio() {
     const height = Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0);
@@ -256,6 +282,8 @@ export function createReaderView({
   }
 
   function speechToolbar() {
+    const audioController = tts || speech;
+    const speechAvailable = Boolean(audioController?.isSupported);
     const toolbar = element('section', 'pc-reader-speech');
     toolbar.setAttribute('role', 'group');
     toolbar.setAttribute('aria-label', '文章语音朗读');
@@ -264,7 +292,7 @@ export function createReaderView({
     ]) {
       const button = actionButton(action, label);
       button.dataset.speechControl = '';
-      button.disabled = !speech.isSupported;
+      button.disabled = !speechAvailable;
       toolbar.append(button);
     }
     const rateLabel = element('label', 'pc-speech-field');
@@ -274,11 +302,11 @@ export function createReaderView({
     rate.min = '0.5';
     rate.max = '1.5';
     rate.step = '0.5';
-    rate.value = String(speech.getRate?.() || 1);
+    rate.value = String(audioController.getRate?.() || speech.getRate?.() || 1);
     rate.dataset.action = 'speech-rate';
     rate.dataset.speechControl = '';
     rate.setAttribute('aria-label', '朗读语速');
-    rate.disabled = !speech.isSupported;
+    rate.disabled = !speechAvailable;
     const rateValue = element('output', 'pc-speech-rate-value', `${Number(rate.value)}×`);
     rateValue.dataset.role = 'speech-rate-value';
     rateLabel.append(rate, rateValue);
@@ -288,7 +316,7 @@ export function createReaderView({
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     toolbar.append(status);
-    if (!speech.isSupported) {
+    if (!speechAvailable) {
       const unavailable = element('div', 'pc-speech-unavailable', '当前浏览器不支持语音朗读，文章阅读和标记仍可正常使用。');
       unavailable.dataset.role = 'speech-unavailable';
       unavailable.setAttribute('role', 'status');
@@ -354,6 +382,7 @@ export function createReaderView({
     const popoverHost = element('div', 'pc-popover-host');
     popoverHost.dataset.role = 'popover-host';
     root.append(header, content, selectionHost, popoverHost);
+    (tts || speech).stop?.();
     speech.load(sentences.map(sentence => sentence.text));
     restorePosition();
   }
@@ -725,26 +754,26 @@ export function createReaderView({
       speech.speakOnce(target.closest('[data-role="selection-action"]')?.dataset.selectedText || '');
     }
     if (action === 'speech-play') {
-      speech.startAt(0);
+      startFullReading(0);
     }
     if (action === 'speech-start-selection') {
       const panel = target.closest('[data-role="selection-action"]');
       const sentenceIndex = Number(panel?.dataset.sentenceIndex);
       closeSelection();
-      if (Number.isInteger(sentenceIndex)) speech.startAt(sentenceIndex);
+      if (Number.isInteger(sentenceIndex)) startFullReading(sentenceIndex);
     }
     if (action === 'speech-start-popover') {
       const panel = target.closest('[data-role="selection-action"], [data-role="term-popover"]');
       const sentenceIndex = Number(panel?.dataset.sentenceIndex);
       if (panel?.dataset.role === 'selection-action') closeSelection();
       else closePopover();
-      if (Number.isInteger(sentenceIndex)) speech.startAt(sentenceIndex);
+      if (Number.isInteger(sentenceIndex)) startFullReading(sentenceIndex);
     }
-    if (action === 'speech-pause') speech.pause();
-    if (action === 'speech-resume') speech.resume();
+    if (action === 'speech-pause') (tts || speech).pause();
+    if (action === 'speech-resume') (tts || speech).resume();
     if (action === 'speech-stop') {
       manualSpeechStop = true;
-      speech.stop();
+      (tts || speech).stop();
     }
     if (action === 'close-popover') {
       closePopover();
@@ -776,13 +805,13 @@ export function createReaderView({
     if (panel) return;
     const selection = window.getSelection?.();
     if (selection && !selection.isCollapsed && selection.toString().trim()) return;
-    if (sentence && root.contains(sentence)) speech.speakOnce(sentence.textContent);
+    if (sentence && root.contains(sentence)) speakSentence(sentence);
   }
 
   function onInput(event) {
     if (event.target.matches('[data-action="speech-rate"]')) {
       readingSession.interact();
-      const appliedRate = speech.setRate(event.target.value);
+      const appliedRate = (tts || speech).setRate(event.target.value);
       const displayedRate = Number.isFinite(Number(appliedRate)) ? Number(appliedRate) : Number(event.target.value);
       const output = root.querySelector('[data-role="speech-rate-value"]');
       if (output) output.textContent = `${displayedRate}×`;
@@ -812,7 +841,7 @@ export function createReaderView({
     if (event.target === sentence && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       readingSession.interact();
-      speech.speakOnce(sentence.textContent);
+      speakSentence(sentence);
       return;
     }
     if (event.key !== 'Escape') return;
@@ -865,7 +894,7 @@ export function createReaderView({
     clearTransient();
     unsubscribeSpeech?.();
     unsubscribeSpeech = null;
-    speech.stop?.();
+    (tts || speech).stop?.();
     for (const sentence of root.querySelectorAll('.pc-sentence-speaking')) sentence.classList.remove('pc-sentence-speaking');
     root.removeEventListener('click', onClick);
     root.removeEventListener('click', onSentenceClick);

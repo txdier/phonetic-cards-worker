@@ -1,28 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { handleReviewsApi } from '../src/reviews-api.js';
 import { handleWordsApi } from '../src/words-api.js';
 import { createFakeDb } from './helpers/fake-db.js';
 import { createSqliteDb } from './helpers/sqlite-db.js';
 
 test('word list includes lemma and forms', async () => {
   const DB = createFakeDb({
+    first: [{ total: 2 }],
     all: [
       { results: [
-        { id: 'w1', en: 'deploy', lemma: 'deploy', zh: '部署' },
-        { id: 'w2', en: 'legacy', lemma: null, zh: '旧词' }
+        { id: 'w1', en: 'deploy', lemma: 'deploy', zh: '部署', state: 0 },
+        { id: 'w2', en: 'legacy', lemma: null, zh: '旧词', state: 0 }
       ] },
-      { results: [{ word_id: 'w1', form: 'deployed', normalized_form: 'deployed' }] }
+      { results: [{ word_id: 'w1', form: 'deployed', normalized_form: 'deployed' }] },
+      { results: [] }
     ]
   });
   const response = await handleWordsApi(
     new Request('https://app/api/words'), { DB }, '/api/words', 'u1'
   );
-  const [word, legacyWord] = await response.json();
+  const { words: [word, legacyWord] } = await response.json();
   assert.equal(word.lemma, 'deploy');
   assert.deepEqual(word.forms.map(item => item.form), ['deployed']);
   assert.equal(legacyWord.lemma, 'legacy');
   assert.deepEqual(legacyWord.forms, []);
-  assert.deepEqual(DB.calls.map(call => call.bindings), [['u1'], ['u1']]);
+  assert.equal(DB.calls.every(call => call.bindings[0] === 'u1'), true);
 });
 
 test('manual creation stores the normalized lemma and submitted form', async (t) => {
@@ -105,11 +108,12 @@ test('word editing updates owned card fields without resetting learning state', 
     }
   );
   assert.deepEqual(await response.json(), {
-    id: 'w1', en: 'launch', lemma: 'launch', zh: '启动', example: 'Launch it.', stress: 'LAUNCH'
+    id: 'w1', en: 'launch', lemma: 'launch', zh: '启动', example: 'Launch it.',
+    stress: 'LAUNCH', tags: []
   });
 });
 
-test('testing a word updates familiarity and last tested time before deletion cascades', async (t) => {
+test('reviewing a word advances FSRS before deletion cascades', async (t) => {
   const DB = createSqliteDb();
   t.after(() => DB.close());
   DB.exec(`
@@ -120,6 +124,9 @@ test('testing a word updates familiarity and last tested time before deletion ca
     INSERT INTO word_forms
       (id, word_id, user_id, form, normalized_form, created_at)
     VALUES ('f1', 'w1', 'u1', 'deployed', 'deployed', 2);
+    INSERT INTO word_review_state
+      (word_id, user_id, due_at, created_at, updated_at)
+    VALUES ('w1', 'u1', 0, 2, 2);
     INSERT INTO articles
       (id, user_id, title, body, author, source, notes, created_at, updated_at)
     VALUES ('a1', 'u1', 'Article', 'They deployed.', '', '', '', 3, 3);
@@ -129,20 +136,17 @@ test('testing a word updates familiarity and last tested time before deletion ca
     VALUES ('m1', 'a1', 'u1', 'deployed', 'deployed', 'They deployed.', 'w1', 3);
   `);
 
-  const patchResponse = await handleWordsApi(
-    new Request('https://app/api/words/w1', {
-      method: 'PATCH',
+  const reviewResponse = await handleReviewsApi(
+    new Request('https://app/api/words/w1/reviews', {
+      method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ familiarity: 3 })
+      body: JSON.stringify({ reviewId: 'review-delete', rating: 3, version: 0 })
     }),
-    { DB }, '/api/words/w1', 'u1'
+    { DB }, '/api/words/w1/reviews', 'u1',
+    { now: () => new Date('2026-07-27T00:00:00.000Z') }
   );
-  assert.equal(patchResponse.status, 200);
-  const updated = DB.get('SELECT familiarity, last_tested_at FROM words WHERE id = ?', 'w1');
-  assert.equal(updated.familiarity, 3);
-  assert.equal(Number.isInteger(updated.last_tested_at), true);
-  assert.ok(updated.last_tested_at > 0);
-  assert.deepEqual(await patchResponse.json(), { ok: true, last_tested_at: updated.last_tested_at });
+  assert.equal(reviewResponse.status, 200);
+  assert.equal(DB.get('SELECT reps FROM word_review_state WHERE word_id = ?', 'w1').reps, 1);
 
   const deleteResponse = await handleWordsApi(
     new Request('https://app/api/words/w1', { method: 'DELETE' }),
@@ -152,4 +156,6 @@ test('testing a word updates familiarity and last tested time before deletion ca
   assert.equal(DB.get('SELECT id FROM words WHERE id = ?', 'w1'), null);
   assert.equal(DB.get('SELECT id FROM word_forms WHERE word_id = ?', 'w1'), null);
   assert.equal(DB.get('SELECT id FROM article_markings WHERE word_id = ?', 'w1'), null);
+  assert.equal(DB.get('SELECT word_id FROM word_review_state WHERE word_id = ?', 'w1'), null);
+  assert.equal(DB.get('SELECT word_id FROM word_review_logs WHERE word_id = ?', 'w1'), null);
 });

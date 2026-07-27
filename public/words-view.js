@@ -1,21 +1,14 @@
 import { distinctForms, maskWordForms, primaryWord } from './lib/word-display.js';
 import { renderInlineError, showToast } from './lib/dom.js';
 
-export function sortWordTestQueue(words) {
-  const testedAt = word => {
-    if (word.last_tested_at == null) return Number.NEGATIVE_INFINITY;
-    const value = Number(word.last_tested_at);
-    return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
-  };
-  return [...words].sort((a, b) =>
-    a.familiarity - b.familiarity
-    || testedAt(a) - testedAt(b)
-    || Number(a.created_at) - Number(b.created_at)
-  );
-}
+const STATE_LABELS = ['新卡', '学习中', '复习中', '重新学习'];
+const REVIEW_LABELS = ['忘记', '困难', '良好', '简单'];
 
-export function nextFamiliarity(current, remembered) {
-  return remembered ? Math.min(4, current + 1) : Math.max(0, current - 1);
+export function sortWordTestQueue(words) {
+  return [...words].sort((a, b) =>
+    Number(a.due_at || 0) - Number(b.due_at || 0)
+    || Number(a.created_at || 0) - Number(b.created_at || 0)
+  );
 }
 
 export function isRevealKey(key) {
@@ -26,284 +19,487 @@ export function shouldRevealTestCard(key, nestedAction = '') {
   return isRevealKey(key) && nestedAction !== 'play' && nestedAction !== 'judge';
 }
 
-export function createWordsView({ root, api, speech, deleteUndoMs = 4000 }) {
-  let words = [];
-  let mode = 'learn';
-  let slowMode = false;
-  let testIndex = 0;
-  let testRevealed = false;
-  let editingId = null;
+export function createWordsView({
+  root,
+  api,
+  speech,
+  tts = null,
+  page = 'library',
+  deleteUndoMs = 4000
+}) {
   let mounted = true;
-
-  const escapeHtml = value => {
-    const element = document.createElement('div');
-    element.textContent = value || '';
-    return element.innerHTML;
+  let words = [];
+  let total = 0;
+  let currentPage = 1;
+  let pageSize = 24;
+  let tags = [];
+  let reviewWords = [];
+  let revealed = false;
+  let editingId = null;
+  let expandedId = null;
+  let relations = [];
+  let relationTargets = [];
+  let usage = null;
+  let stats = null;
+  const reviewAttempts = new Map();
+  let filters = { keyword: '', tag: '', state: '', due: false };
+  const player = tts || {
+    isSupported: speech?.isSupported,
+    speakWord: (_id, _mode, text, options) => speech?.speakOnce(text, options),
+    stop: () => speech?.stop?.()
   };
 
-  function parseStress(raw) {
-    if (!raw) return null;
-    return raw.split('-').map(part => ({
-      text: part,
-      stressed: part === part.toUpperCase() && /[A-Z]/.test(part)
-    }));
+  function escapeHtml(value) {
+    const node = document.createElement('div');
+    node.textContent = value == null ? '' : String(value);
+    return node.innerHTML;
   }
 
-  function renderStressWord(en, stressRaw) {
-    const parsed = parseStress(stressRaw);
-    if (!parsed) return escapeHtml(en);
-    return parsed.map(part => part.stressed
-      ? `<span class="stress">${escapeHtml(part.text.toLowerCase())}</span>`
-      : escapeHtml(part.text.toLowerCase())).join('');
+  function stateLabel(value) {
+    return STATE_LABELS[Number(value)] || STATE_LABELS[0];
   }
 
-  function renderWordForms(word) {
-    const forms = distinctForms(word).map(escapeHtml);
-    return forms.length ? `<div class="pc-word-forms">词形：${forms.join(' · ')}</div>` : '';
+  function tagChoices(selected = []) {
+    const ids = new Set(selected.map(tag => tag.id || tag));
+    if (!tags.length) return '<span class="pc-muted">可先在筛选栏旁新建标签</span>';
+    return tags.map(tag => `<label class="pc-tag-choice">
+      <input type="checkbox" name="tagIds" value="${escapeHtml(tag.id)}" ${ids.has(tag.id) ? 'checked' : ''}>
+      ${escapeHtml(tag.name)}
+    </label>`).join('');
   }
 
-  function playIcon() {
-    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+  function wordForm(word = null) {
+    return `<div class="pc-form${word ? ' open' : ''}" id="pc-word-form">
+      <div class="pc-full pc-conversion-title" data-role="word-form-title">${word ? '编辑单词' : '添加新词'}</div>
+      <div><label for="f-en">单词（原形）</label><input id="f-en" value="${escapeHtml(word ? primaryWord(word) : '')}" placeholder="confirm"></div>
+      <div><label for="f-zh">中文含义</label><input id="f-zh" value="${escapeHtml(word?.zh || '')}" placeholder="确认"></div>
+      <div class="pc-full"><label for="f-stress">重音标注</label><input id="f-stress" value="${escapeHtml(word?.stress || '')}" placeholder="con-FIRM"></div>
+      <div class="pc-full"><label for="f-example">例句</label><textarea id="f-example" rows="2">${escapeHtml(word?.example || '')}</textarea></div>
+      <fieldset class="pc-full pc-tag-field"><legend>标签</legend>${tagChoices(word?.tags || [])}</fieldset>
+      <div class="pc-form-actions"><button class="pc-btn-ghost" data-action="cancel-form">取消</button><button class="pc-btn-primary" data-action="submit-form">${word ? '保存修改' : '添加'}</button></div>
+    </div>`;
   }
 
-  function editIcon() {
-    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  function filterToolbar() {
+    return `<form class="pc-library-filters" data-role="word-filters">
+      <input name="keyword" value="${escapeHtml(filters.keyword)}" placeholder="搜索单词、释义" aria-label="关键词">
+      <select name="tag" aria-label="标签"><option value="">全部标签</option>${tags.map(tag =>
+        `<option value="${escapeHtml(tag.id)}" ${filters.tag === tag.id ? 'selected' : ''}>${escapeHtml(tag.name)}</option>`
+      ).join('')}</select>
+      <select name="state" aria-label="FSRS 状态"><option value="">全部状态</option>${STATE_LABELS.map((label, index) =>
+        `<option value="${index}" ${filters.state === String(index) ? 'selected' : ''}>${label}</option>`
+      ).join('')}</select>
+      <label class="pc-slow-toggle"><input type="checkbox" name="due" ${filters.due ? 'checked' : ''}> 仅到期</label>
+      <button class="pc-btn-ghost">筛选</button>
+      <button type="button" class="pc-addbtn" data-action="toggle-form">+ 添加新词</button>
+    </form>`;
   }
 
-  function familiarityDots(value) {
-    let html = '<div class="pc-familiarity" aria-label="熟悉度">';
-    for (let index = 0; index < 4; index += 1) {
-      html += `<div class="pc-dot${index < value ? ' on' : ''}"></div>`;
+  function tagsHtml(word) {
+    return (word.tags || []).length
+      ? `<div class="pc-word-tags">${word.tags.map(tag => `<span>${escapeHtml(tag.name)}</span>`).join('')}</div>`
+      : '';
+  }
+
+  function relationPanel(word) {
+    if (expandedId !== String(word.id)) return '';
+    return `<div class="pc-relation-panel">
+      <h4>词间关系</h4>
+      ${relations.length ? relations.map(relation =>
+        `<div class="pc-relation-row"><b>${escapeHtml(relation.target_lemma)}</b><span>${escapeHtml(relation.relation_type)}</span><span>${escapeHtml(relation.note || '')}</span><button data-action="delete-relation" data-id="${escapeHtml(relation.id)}">删除</button></div>`
+      ).join('') : '<div class="pc-muted">尚未添加关系</div>'}
+      <form data-role="relation-form" data-word-id="${escapeHtml(word.id)}">
+        <input name="targetKeyword" placeholder="搜索关联词">
+        <button type="button" class="pc-btn-ghost" data-action="search-relation-targets">搜索</button>
+        <select name="targetWordId" aria-label="关联词">${relationTargets.filter(item => item.id !== word.id).map(item =>
+          `<option value="${escapeHtml(item.id)}">${escapeHtml(primaryWord(item))}</option>`
+        ).join('')}</select>
+        <select name="relationType" aria-label="关系类型">
+          <option value="family">同词族</option><option value="derivative">派生</option>
+          <option value="synonym">同义</option><option value="antonym">反义</option>
+          <option value="confusable">易混</option><option value="other">其他</option>
+        </select>
+        <input name="note" placeholder="备注（可选）">
+        <button class="pc-btn-ghost">添加关系</button>
+      </form>
+    </div>`;
+  }
+
+  function wordCard(word) {
+    const forms = distinctForms(word);
+    return `<article class="pc-card" data-id="${escapeHtml(word.id)}">
+      <div class="pc-card-top"><div>
+        <div class="pc-word">${escapeHtml(primaryWord(word))}</div>
+        ${forms.length ? `<div class="pc-word-forms">词形：${forms.map(escapeHtml).join(' · ')}</div>` : ''}
+        <div class="pc-zh">${escapeHtml(word.zh)}</div>${tagsHtml(word)}
+      </div><div class="pc-card-top-actions">
+        <button class="pc-edit" data-action="detail" data-id="${escapeHtml(word.id)}">详情</button>
+        <button class="pc-edit" data-action="edit" data-id="${escapeHtml(word.id)}" aria-label="编辑 ${escapeHtml(primaryWord(word))}">编辑</button>
+        <button class="pc-del" data-action="del" data-id="${escapeHtml(word.id)}" aria-label="删除 ${escapeHtml(primaryWord(word))}">×</button>
+      </div></div>
+      ${word.example ? `<div class="pc-example">${escapeHtml(word.example)}</div>` : ''}
+      <div class="pc-card-footer"><div class="pc-controls">
+        <button class="pc-play" data-action="play" data-mode="word" data-id="${escapeHtml(word.id)}" data-text="${escapeHtml(primaryWord(word))}" aria-label="朗读单词">▶</button>
+        ${word.example ? `<button class="pc-play" data-action="play" data-mode="example" data-id="${escapeHtml(word.id)}" data-text="${escapeHtml(word.example)}" aria-label="朗读例句">例</button>` : ''}
+        <button class="pc-play" data-action="play" data-mode="spell" data-id="${escapeHtml(word.id)}" data-text="${escapeHtml(primaryWord(word).split('').join('. '))}" aria-label="拼读单词">拼</button>
+      </div><span class="pc-state-badge">${stateLabel(word.state)} · ${Number(word.reps || 0)} 次</span></div>
+      ${relationPanel(word)}
+    </article>`;
+  }
+
+  function libraryBody() {
+    const editing = words.find(word => String(word.id) === editingId);
+    return `<div class="pc-header"><div class="pc-eyebrow">PHONETIC CARDS · 词库</div><div class="pc-title">词库</div><div class="pc-sub">共 <b>${total}</b> 个完整词条</div></div>
+      ${filterToolbar()}${wordForm(editing)}
+      ${words.length ? `<div class="pc-grid">${words.map(wordCard).join('')}</div>` : '<div class="pc-empty">没有符合条件的词条。</div>'}
+      <div class="pc-pagination">
+        <button data-action="page-prev" ${currentPage <= 1 ? 'disabled' : ''}>上一页</button>
+        <span>第 ${currentPage} 页</span>
+        <button data-action="page-next" ${currentPage * pageSize >= total ? 'disabled' : ''}>下一页</button>
+      </div>`;
+  }
+
+  function reviewBody() {
+    const word = sortWordTestQueue(reviewWords)[0];
+    if (!word) {
+      return '<div class="pc-header"><div class="pc-eyebrow">FSRS · 复习</div><div class="pc-title">复习</div></div><div class="pc-empty">当前没有到期词卡。</div>';
     }
-    return `${html}</div>`;
+    return `<div class="pc-header"><div class="pc-eyebrow">FSRS · 复习</div><div class="pc-title">复习</div><div class="pc-sub">本轮还有 <b>${reviewWords.length}</b> 张，单次最多 20 张</div></div>
+      <div class="pc-test-wrap"><div class="pc-testcard" data-action="reveal" tabindex="0">
+        <div class="pc-zh">${escapeHtml(word.zh)}</div>
+        ${word.example ? `<div class="pc-example">${escapeHtml(maskWordForms(word.example, word))}</div>` : ''}
+        <button class="pc-play" data-action="play" data-mode="word" data-id="${escapeHtml(word.id)}" data-text="${escapeHtml(primaryWord(word))}">▶</button>
+        ${revealed ? `<div class="pc-reveal"><div class="pc-word">${escapeHtml(primaryWord(word))}</div>
+          <div class="pc-judge">${REVIEW_LABELS.map((label, index) =>
+            `<button data-action="judge" data-id="${escapeHtml(word.id)}" data-rating="${index + 1}">${label}</button>`
+          ).join('')}</div></div>` : '<div class="pc-hint-tap">点击卡片或按 Enter / 空格揭示答案</div>'}
+      </div></div>`;
   }
 
-  function dueCount() {
-    return words.filter(word => word.familiarity < 3).length;
+  function settingsBody() {
+    const used = Number(usage?.usedChars || 0);
+    const budget = Number(usage?.budget || 450000);
+    return `<div class="pc-header"><div class="pc-eyebrow">PHONETIC CARDS · 设置</div><div class="pc-title">设置</div></div>
+      <section class="pc-settings-card"><h3>导出词库</h3><div class="pc-export-actions">
+        <a class="pc-btn-ghost" href="/api/export?format=markdown">Markdown</a>
+        <a class="pc-btn-ghost" href="/api/export?format=csv">CSV</a>
+        <a class="pc-btn-ghost" href="/api/export?format=json">JSON</a>
+      </div></section>
+      <section class="pc-settings-card"><h3>Azure TTS 月度用量</h3>
+        <p>${used.toLocaleString()} / ${budget.toLocaleString()} 字符</p>
+        <progress max="${budget}" value="${Math.min(used, budget)}"></progress>
+        <p class="pc-muted">${usage?.configured ? 'Azure 与 R2 已配置；失败时自动使用浏览器语音。' : 'Azure 未配置，当前使用浏览器语音。'}</p>
+      </section>
+      <section class="pc-settings-card"><h3>FSRS 状态</h3>
+        <p>总计 ${Number(stats?.total || 0)} · 到期 ${Number(stats?.due || 0)} · 新卡 ${Number(stats?.new || 0)} · 学习中 ${Number(stats?.learning || 0)} · 复习中 ${Number(stats?.review || 0)}</p>
+      </section>
+      <section class="pc-settings-card"><h3>标签</h3>
+        <form data-role="tag-form" class="pc-export-actions"><input name="name" maxlength="50" required placeholder="新标签名称"><button class="pc-btn-ghost">新建标签</button></form>
+        <div class="pc-word-tags">${tags.map(tag => `<span>${escapeHtml(tag.name)} · ${Number(tag.word_count || 0)} <button data-action="delete-tag" data-id="${escapeHtml(tag.id)}" aria-label="删除标签 ${escapeHtml(tag.name)}">×</button></span>`).join('')}</div>
+      </section>`;
   }
 
-  function testQueue() {
-    return sortWordTestQueue(words);
+  function render() {
+    if (!mounted) return;
+    root.innerHTML = page === 'review'
+      ? reviewBody()
+      : page === 'settings'
+        ? settingsBody()
+        : libraryBody();
+    if (!player.isSupported) {
+      const notice = document.createElement('div');
+      notice.className = 'pc-speech-unavailable';
+      notice.dataset.role = 'speech-unavailable';
+      notice.setAttribute('role', 'status');
+      notice.textContent = '当前浏览器不支持语音朗读，其他功能仍可正常使用。';
+      root.querySelector('.pc-header')?.after(notice);
+      for (const button of root.querySelectorAll('[data-action="play"]')) button.disabled = true;
+    }
   }
 
-  async function addWord(data, form) {
-    const controls = form?.querySelectorAll('button');
-    for (const control of controls || []) control.disabled = true;
+  async function loadLibrary() {
+    const query = new URLSearchParams();
+    if (currentPage !== 1) query.set('page', String(currentPage));
+    if (pageSize !== 24) query.set('pageSize', String(pageSize));
+    if (filters.keyword) query.set('keyword', filters.keyword);
+    if (filters.tag) query.set('tag', filters.tag);
+    if (filters.state !== '') query.set('state', filters.state);
+    if (filters.due) query.set('due', '1');
     try {
-      const created = await api('/api/words', {
-        method: 'POST', body: JSON.stringify(data)
-      });
+      const [wordResult, tagResult] = await Promise.all([
+        api(query.size ? `/api/words?${query}` : '/api/words'),
+        Promise.resolve(api('/api/tags')).catch(() => ({ tags: [] }))
+      ]);
       if (!mounted) return;
-      words.unshift(created);
+      const normalized = Array.isArray(wordResult)
+        ? { words: wordResult, total: wordResult.length, page: 1, pageSize: wordResult.length || 24 }
+        : wordResult;
+      words = normalized.words || [];
+      total = Number(normalized.total || 0);
+      currentPage = Number(normalized.page || 1);
+      pageSize = Number(normalized.pageSize || 24);
+      tags = tagResult?.tags || [];
       render();
     } catch (error) {
-      if (!mounted || !form?.isConnected) return;
-      renderInlineError(form, error.message || '保存失败，请检查网络后重试');
-      for (const control of controls || []) control.disabled = false;
+      if (mounted) renderInlineError(root, error.message || '词库加载失败');
     }
   }
 
-  async function updateWord(id, data, form) {
-    const controls = form.querySelectorAll('button');
-    for (const control of controls) control.disabled = true;
+  async function loadReview() {
     try {
-      const updated = await api(`/api/words/${encodeURIComponent(id)}`, {
-        method: 'PATCH', body: JSON.stringify({
-          lemma: data.en.trim(), zh: data.zh.trim(), stress: data.stress,
-          example: data.example
-        })
-      });
+      const result = await api('/api/reviews/due?limit=20');
       if (!mounted) return;
-      const index = words.findIndex(word => String(word.id) === id);
-      if (index >= 0) words[index] = { ...words[index], ...updated, forms: words[index].forms || [] };
+      reviewWords = result.words || [];
+      render();
+    } catch (error) {
+      if (mounted) renderInlineError(root, error.message || '复习卡加载失败');
+    }
+  }
+
+  async function loadSettings() {
+    try {
+      const [usageResult, statsResult, tagResult] = await Promise.all([
+        api('/api/tts/usage'),
+        api('/api/word-stats'),
+        api('/api/tags')
+      ]);
+      usage = usageResult;
+      stats = statsResult?.stats || statsResult;
+      tags = tagResult?.tags || [];
+      if (mounted) render();
+    } catch (error) {
+      if (mounted) renderInlineError(root, error.message || '设置加载失败');
+    }
+  }
+
+  function formData() {
+    return {
+      lemma: root.querySelector('#f-en')?.value || '',
+      en: root.querySelector('#f-en')?.value || '',
+      zh: root.querySelector('#f-zh')?.value || '',
+      stress: root.querySelector('#f-stress')?.value || '',
+      example: root.querySelector('#f-example')?.value || '',
+      tagIds: [...root.querySelectorAll('input[name="tagIds"]:checked')].map(input => input.value)
+    };
+  }
+
+  async function saveWord() {
+    const form = root.querySelector('#pc-word-form');
+    const data = formData();
+    if (!data.lemma.trim() || !data.zh.trim()) {
+      renderInlineError(form, '请至少填写单词和中文含义');
+      return;
+    }
+    try {
+      const saved = await api(editingId ? `/api/words/${encodeURIComponent(editingId)}` : '/api/words', {
+        method: editingId ? 'PATCH' : 'POST',
+        body: JSON.stringify(data)
+      });
+      if (editingId) {
+        const index = words.findIndex(word => String(word.id) === editingId);
+        if (index >= 0) words[index] = { ...words[index], ...saved };
+      } else {
+        words.unshift(saved);
+        total += 1;
+      }
       editingId = null;
       render();
     } catch (error) {
-      if (!mounted || !form.isConnected) return;
-      renderInlineError(form, error.message || '保存修改失败，请重试');
-      for (const control of controls) control.disabled = false;
+      if (mounted) renderInlineError(form, error.message || '保存失败');
     }
   }
 
   async function deleteWord(id) {
     const index = words.findIndex(word => String(word.id) === id);
     if (index < 0) return;
-    const [deleted] = words.splice(index, 1);
+    const [removed] = words.splice(index, 1);
+    total -= 1;
     render();
     const toast = showToast({ message: '已删除', actionLabel: '撤销', duration: deleteUndoMs });
-    const outcome = await toast.closed;
-    if (outcome === 'action') {
-      words.splice(Math.min(index, words.length), 0, deleted);
+    if ((await toast.closed) === 'action') {
+      words.splice(index, 0, removed);
+      total += 1;
       render();
       return;
     }
     try {
       await api(`/api/words/${encodeURIComponent(id)}`, { method: 'DELETE' });
     } catch (error) {
-      words.splice(Math.min(index, words.length), 0, deleted);
+      words.splice(index, 0, removed);
+      total += 1;
       render();
-      if (mounted) renderInlineError(root, error.message || '删除失败，请重试');
+      if (mounted) renderInlineError(root, error.message || '删除失败');
     }
   }
 
-  async function judgeWord(id, remembered) {
-    const word = words.find(item => String(item.id) === id);
-    if (!word) return;
-    word.familiarity = nextFamiliarity(word.familiarity, remembered);
-    word.last_tested_at = Date.now();
-    testRevealed = false;
-    render();
+  async function review(id, rating, button) {
+    for (const item of root.querySelectorAll('[data-action="judge"]')) item.disabled = true;
+    const word = reviewWords.find(item => String(item.id) === id);
+    const attempt = reviewAttempts.get(id) || {
+      reviewId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      version: Number(word?.version || 0),
+      rating
+    };
+    reviewAttempts.set(id, attempt);
     try {
-      const result = await api(`/api/words/${encodeURIComponent(id)}`, {
-        method: 'PATCH', body: JSON.stringify({ familiarity: word.familiarity })
+      await api(`/api/words/${encodeURIComponent(id)}/reviews`, {
+        method: 'POST',
+        body: JSON.stringify({
+          reviewId: attempt.reviewId,
+          rating: attempt.rating,
+          version: attempt.version
+        })
       });
-      if (Number.isFinite(Number(result?.last_tested_at))) {
-        word.last_tested_at = Number(result.last_tested_at);
-      }
-    } catch { /* familiarity remains best effort, matching the original behavior */ }
-  }
-
-  function header() {
-    const editing = words.some(word => String(word.id) === editingId);
-    return `<div class="pc-header"><div class="pc-eyebrow">PHONETIC CARDS · 语音卡片</div><div class="pc-title">记词本</div><div class="pc-sub">共 <b>${words.length}</b> 词 · <b>${dueCount()}</b> 个待巩固</div></div>
-      <div class="pc-toolbar"><div class="pc-tabs" aria-label="学习模式">
-        <button class="pc-tab ${mode === 'learn' ? 'active' : ''}" data-action="mode" data-mode="learn">学习模式</button>
-        <button class="pc-tab ${mode === 'test' ? 'active' : ''}" data-action="mode" data-mode="test">自测模式</button>
-      </div><div class="pc-toolbar-right">
-        <label class="pc-slow-toggle"><input type="checkbox" data-action="slow" ${slowMode ? 'checked' : ''}> 慢速朗读</label>
-        <button class="pc-addbtn" data-action="toggle-form">+ 添加新词</button>
-      </div></div>
-      <div class="pc-form${editing ? ' open' : ''}" id="pc-word-form"><div class="pc-full pc-conversion-title" data-role="word-form-title">${editing ? '编辑单词' : '添加新词'}</div><div><label for="f-en">单词（原形）</label><input id="f-en" placeholder="confirm"></div>
-        <div><label for="f-zh">中文含义</label><input id="f-zh" placeholder="确认"></div>
-        <div class="pc-full"><label for="f-stress">重音标注（可选，大写标重音）</label><input id="f-stress" placeholder="con-FIRM"></div>
-        <div class="pc-full"><label for="f-example">例句（可选）</label><textarea id="f-example" rows="2"></textarea></div>
-        <div class="pc-form-actions"><button class="pc-btn-ghost" data-action="cancel-form">取消</button><button class="pc-btn-primary" data-action="submit-form">${editing ? '保存修改' : '添加'}</button></div>
-      </div>`;
-  }
-
-  function learnBody() {
-    return `<div class="pc-grid">${words.map(word => `<div class="pc-card" data-id="${word.id}"><div class="pc-card-top"><div>
-      <div class="pc-word">${renderStressWord(primaryWord(word), word.stress)}</div>${renderWordForms(word)}<div class="pc-zh">${escapeHtml(word.zh)}</div></div>
-      <div class="pc-card-top-actions"><button class="pc-edit" data-action="edit" data-id="${word.id}" aria-label="编辑 ${escapeHtml(primaryWord(word))}">${editIcon()}</button><button class="pc-del" data-action="del" data-id="${word.id}" aria-label="删除 ${escapeHtml(primaryWord(word))}">×</button></div></div>
-      ${word.example ? `<div class="pc-example">${escapeHtml(word.example)}</div>` : ''}
-      <div class="pc-card-footer"><div class="pc-controls"><button class="pc-play" data-action="play" data-text="${escapeHtml(primaryWord(word))}" data-id="${word.id}" aria-label="朗读单词">${playIcon()}</button>
-      ${word.example ? `<button class="pc-play" data-action="play" data-text="${escapeHtml(word.example)}" data-id="${word.id}-ex" aria-label="朗读例句">${playIcon()}</button>` : ''}<div class="pc-wave" id="wave-${word.id}"><span></span><span></span><span></span><span></span></div></div>${familiarityDots(word.familiarity)}</div></div>`).join('')}</div>`;
-  }
-
-  function testBody() {
-    const queue = testQueue();
-    if (testIndex >= queue.length) testIndex = 0;
-    const word = queue[testIndex];
-    if (!word) return '<div class="pc-empty">暂无生词可自测。</div>';
-    return `<div class="pc-test-wrap"><div class="pc-testcard" data-action="reveal" tabindex="0"><div class="pc-zh">${escapeHtml(word.zh)}</div>
-      ${word.example ? `<div class="pc-example">${escapeHtml(maskWordForms(word.example, word))}</div>` : ''}
-      <div class="pc-controls pc-controls-center"><button class="pc-play" data-action="play" data-text="${escapeHtml(primaryWord(word))}" data-id="${word.id}" aria-label="朗读单词">${playIcon()}</button><div class="pc-wave" id="wave-${word.id}"><span></span><span></span><span></span><span></span></div></div>
-      ${testRevealed ? `<div class="pc-reveal"><div class="pc-word">${renderStressWord(primaryWord(word), word.stress)}</div>${renderWordForms(word)}<div class="pc-judge"><button class="yes" data-action="judge" data-id="${word.id}" data-ok="1">记得 ✓</button><button class="no" data-action="judge" data-id="${word.id}" data-ok="0">没想起来</button></div></div>` : '<div class="pc-hint-tap">点击卡片查看拼写</div>'}</div><div class="pc-test-count">第 ${testIndex + 1} / ${queue.length} 个</div></div>`;
-  }
-
-  function render() {
-    if (!mounted) return;
-    root.innerHTML = header() + (words.length === 0
-      ? '<div class="pc-empty">还没有生词。点击“添加新词”记下第一个吧。</div>'
-      : mode === 'learn' ? learnBody() : testBody());
-    const editingWord = words.find(word => String(word.id) === editingId);
-    if (editingWord) {
-      root.querySelector('#f-en').value = primaryWord(editingWord);
-      root.querySelector('#f-zh').value = editingWord.zh || '';
-      root.querySelector('#f-stress').value = editingWord.stress || '';
-      root.querySelector('#f-example').value = editingWord.example || '';
-      root.querySelector('#f-en').focus();
-    }
-    if (!speech.isSupported) {
-      const unavailable = document.createElement('div');
-      unavailable.className = 'pc-speech-unavailable';
-      unavailable.dataset.role = 'speech-unavailable';
-      unavailable.setAttribute('role', 'status');
-      unavailable.textContent = '当前浏览器不支持语音朗读，其他功能仍可正常使用。';
-      root.querySelector('.pc-header')?.after(unavailable);
-      for (const button of root.querySelectorAll('[data-action="play"]')) button.disabled = true;
-      const slow = root.querySelector('[data-action="slow"]');
-      if (slow) slow.disabled = true;
-    }
-  }
-
-  function onClick(event) {
-    const actionNode = event.target.closest('[data-action]');
-    if (!actionNode || !root.contains(actionNode)) return;
-    const action = actionNode.dataset.action;
-    if (action === 'mode') { mode = actionNode.dataset.mode; testRevealed = false; testIndex = 0; render(); }
-    if (action === 'toggle-form') {
-      const wasOpen = !editingId && root.querySelector('#pc-word-form')?.classList.contains('open');
-      editingId = null;
+      reviewAttempts.delete(id);
+      reviewWords = reviewWords.filter(word => String(word.id) !== id);
+      revealed = false;
       render();
-      if (!wasOpen) {
-        root.querySelector('#pc-word-form')?.classList.add('open');
-        root.querySelector('#f-en')?.focus();
-      }
-    }
-    if (action === 'cancel-form') {
-      if (editingId) { editingId = null; render(); }
-      else root.querySelector('#pc-word-form')?.classList.remove('open');
-    }
-    if (action === 'edit') { editingId = actionNode.dataset.id; render(); }
-    if (action === 'submit-form') {
-      const form = root.querySelector('#pc-word-form');
-      const data = {
-        en: root.querySelector('#f-en').value,
-        zh: root.querySelector('#f-zh').value,
-        stress: root.querySelector('#f-stress').value,
-        example: root.querySelector('#f-example').value
-      };
-      if (!data.en.trim() || !data.zh.trim()) {
-        renderInlineError(form, '请至少填写单词和中文含义');
-        root.querySelector('#f-en').setAttribute('aria-invalid', String(!data.en.trim()));
-        root.querySelector('#f-zh').setAttribute('aria-invalid', String(!data.zh.trim()));
+    } catch (error) {
+      if (error?.code === 'REVIEW_CONFLICT') {
+        reviewAttempts.delete(id);
+        await loadReview();
         return;
       }
-      form.querySelector(':scope > [data-inline-error]')?.remove();
-      root.querySelector('#f-en').setAttribute('aria-invalid', 'false');
-      root.querySelector('#f-zh').setAttribute('aria-invalid', 'false');
-      if (editingId) updateWord(editingId, data, form);
-      else addWord(data, form);
+      if (mounted) {
+        renderInlineError(root, error.message || '复习提交失败');
+        for (const item of root.querySelectorAll('[data-action="judge"]')) {
+          item.disabled = Number(item.dataset.rating) !== attempt.rating;
+        }
+      }
     }
-    if (action === 'del') { event.stopPropagation(); deleteWord(actionNode.dataset.id); }
-    if (action === 'play') {
-      event.stopPropagation();
-      const wave = root.querySelector(`#wave-${CSS.escape(actionNode.dataset.id)}`) || actionNode.parentElement.querySelector('.pc-wave');
-      speech.speakOnce(actionNode.dataset.text, {
-        rate: slowMode ? 0.5 : speech.getRate?.() || 1,
-        onStart: () => wave?.classList.add('playing'),
-        onEnd: () => wave?.classList.remove('playing')
-      });
-    }
-    if (action === 'reveal' && !event.target.closest('[data-action="play"], [data-action="judge"]')) { testRevealed = true; render(); }
-    if (action === 'judge') { event.stopPropagation(); judgeWord(actionNode.dataset.id, actionNode.dataset.ok === '1'); }
   }
 
-  function onChange(event) {
-    if (event.target.matches('[data-action="slow"]')) slowMode = event.target.checked;
+  async function toggleDetails(id) {
+    if (expandedId === id) {
+      expandedId = null;
+      relations = [];
+      relationTargets = [];
+      render();
+      return;
+    }
+    expandedId = id;
+    try {
+      const [relationResult, targetResult] = await Promise.all([
+        api(`/api/words/${encodeURIComponent(id)}/relations`),
+        api('/api/words?pageSize=100&sort=word')
+      ]);
+      relations = relationResult.relations || [];
+      relationTargets = targetResult.words || [];
+      render();
+    } catch (error) {
+      renderInlineError(root, error.message || '关系加载失败');
+    }
+  }
+
+  async function onClick(event) {
+    const target = event.target.closest('[data-action]');
+    if (!target || !root.contains(target)) return;
+    const action = target.dataset.action;
+    if (action === 'toggle-form') {
+      editingId = null;
+      render();
+      root.querySelector('#pc-word-form')?.classList.add('open');
+      root.querySelector('#f-en')?.focus();
+    }
+    if (action === 'cancel-form') { editingId = null; render(); }
+    if (action === 'submit-form') saveWord();
+    if (action === 'edit') { editingId = target.dataset.id; render(); }
+    if (action === 'del') deleteWord(target.dataset.id);
+    if (action === 'detail') toggleDetails(target.dataset.id);
+    if (action === 'page-prev' && currentPage > 1) { currentPage -= 1; loadLibrary(); }
+    if (action === 'page-next') { currentPage += 1; loadLibrary(); }
+    if (action === 'play') {
+      event.stopPropagation();
+      player.speakWord(target.dataset.id, target.dataset.mode, target.dataset.text, {
+        rate: speech?.getRate?.() || 1
+      });
+    }
+    if (action === 'reveal' && !event.target.closest('[data-action="play"], [data-action="judge"]')) {
+      revealed = true;
+      render();
+    }
+    if (action === 'judge') {
+      event.stopPropagation();
+      review(target.dataset.id, Number(target.dataset.rating), target);
+    }
+    if (action === 'delete-relation') {
+      await api(`/api/words/${encodeURIComponent(expandedId)}/relations/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE' });
+      toggleDetails(expandedId);
+    }
+    if (action === 'delete-tag') {
+      await api(`/api/tags/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE' });
+      await loadSettings();
+    }
+    if (action === 'search-relation-targets') {
+      const form = target.closest('[data-role="relation-form"]');
+      const keyword = form?.elements.targetKeyword.value.trim() || '';
+      const result = await api(`/api/words?pageSize=100&sort=word&keyword=${encodeURIComponent(keyword)}`);
+      relationTargets = result.words || [];
+      render();
+    }
+  }
+
+  async function onSubmit(event) {
+    if (event.target.matches('[data-role="word-filters"]')) {
+      event.preventDefault();
+      const data = new FormData(event.target);
+      filters = {
+        keyword: String(data.get('keyword') || '').trim(),
+        tag: String(data.get('tag') || ''),
+        state: String(data.get('state') || ''),
+        due: data.get('due') === 'on'
+      };
+      currentPage = 1;
+      loadLibrary();
+    }
+    if (event.target.matches('[data-role="relation-form"]')) {
+      event.preventDefault();
+      const data = new FormData(event.target);
+      if (!data.get('targetWordId')) return;
+      await api(`/api/words/${encodeURIComponent(event.target.dataset.wordId)}/relations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          targetWordId: data.get('targetWordId'),
+          relationType: data.get('relationType'),
+          note: data.get('note')
+        })
+      });
+      expandedId = null;
+      toggleDetails(event.target.dataset.wordId);
+    }
+    if (event.target.matches('[data-role="tag-form"]')) {
+      event.preventDefault();
+      const data = new FormData(event.target);
+      await api('/api/tags', {
+        method: 'POST',
+        body: JSON.stringify({ name: data.get('name') })
+      });
+      await loadSettings();
+    }
   }
 
   function onKeydown(event) {
     const card = event.target.closest('[data-action="reveal"]');
-    const nestedAction = event.target.closest('[data-action]')?.dataset.action;
-    if (!card || !root.contains(card) || !shouldRevealTestCard(event.key, nestedAction)) return;
+    const nested = event.target.closest('[data-action]')?.dataset.action;
+    if (!card || !shouldRevealTestCard(event.key, nested)) return;
     event.preventDefault();
-    testRevealed = true;
+    revealed = true;
     render();
   }
 
   root.addEventListener('click', onClick);
-  root.addEventListener('change', onChange);
+  root.addEventListener('submit', onSubmit);
   root.addEventListener('keydown', onKeydown);
   root.innerHTML = '<div class="pc-empty">加载中…</div>';
-  api('/api/words').then(result => { words = result; render(); }).catch(() => { words = []; render(); });
+  if (page === 'review') loadReview();
+  else if (page === 'settings') loadSettings();
+  else loadLibrary();
 
   return () => {
     mounted = false;
     root.removeEventListener('click', onClick);
-    root.removeEventListener('change', onChange);
+    root.removeEventListener('submit', onSubmit);
     root.removeEventListener('keydown', onKeydown);
-    speech.stop?.();
+    player.stop?.();
   };
 }

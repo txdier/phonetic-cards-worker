@@ -184,7 +184,8 @@ async function convertMarkedTerm(request, env, termId, userId) {
     !optionalString(body, 'strategy') ||
     !optionalString(body, 'targetWordId') ||
     !optionalString(body, 'example') ||
-    !optionalString(body, 'stress')
+    !optionalString(body, 'stress') ||
+    !optionalStringArray(body, 'tagIds')
   ) return invalidBody();
   if (
     Object.prototype.hasOwnProperty.call(body, 'strategy') &&
@@ -200,9 +201,11 @@ async function convertMarkedTerm(request, env, termId, userId) {
   const zh = uniqueMeanings(body.zh).join('；');
   const lemma = normalizeTerm(body.lemma || pending.normalized_text);
   if (!zh || !lemma) return invalidBody();
+  const tagIds = [...new Set(body.tagIds || [])];
+  if (!(await ownsTags(env.DB, userId, tagIds))) return notFound('TAG_NOT_FOUND');
 
   const { results: matches } = await env.DB.prepare(`
-    SELECT id, en, lemma, zh, example, stress, familiarity, created_at
+    SELECT id, en, lemma, zh, example, stress, created_at
     FROM words WHERE lemma = ? AND user_id = ? ORDER BY created_at DESC
   `).bind(lemma, userId).all();
   if (!body.strategy && matches.length) {
@@ -215,15 +218,15 @@ async function convertMarkedTerm(request, env, termId, userId) {
 
   if (body.strategy === 'merge') {
     if (!body.targetWordId.trim()) return invalidBody();
-    return mergeIntoWord(env, pending, body, lemma, zh, userId);
+    return mergeIntoWord(env, pending, body, lemma, zh, userId, tagIds);
   }
-  return createWord(env, pending, body, lemma, zh, userId);
+  return createWord(env, pending, body, lemma, zh, userId, tagIds);
 }
 
-async function mergeIntoWord(env, pending, body, lemma, zh, userId) {
+async function mergeIntoWord(env, pending, body, lemma, zh, userId, tagIds) {
   const targetWordId = body.targetWordId.trim();
   const target = await env.DB.prepare(`
-    SELECT id, en, lemma, zh, example, stress, familiarity, created_at
+    SELECT id, en, lemma, zh, example, stress, created_at
     FROM words WHERE id = ? AND lemma = ? AND user_id = ?
   `).bind(targetWordId, lemma, userId).first();
   if (!target) return notFound('WORD_NOT_FOUND');
@@ -297,6 +300,10 @@ async function mergeIntoWord(env, pending, body, lemma, zh, userId) {
     `).bind(
       formId, target.id, userId, createdAt, pending.id, userId
     ),
+    ...tagIds.map(tagId => env.DB.prepare(`
+      INSERT OR IGNORE INTO word_tags (word_id, tag_id, created_at)
+      VALUES (?, ?, ?)
+    `).bind(target.id, tagId, createdAt)),
     env.DB.prepare(`
       UPDATE article_markings
       SET marked_term_id = NULL, word_id = ?
@@ -306,15 +313,15 @@ async function mergeIntoWord(env, pending, body, lemma, zh, userId) {
       DELETE FROM marked_terms WHERE id = ? AND user_id = ?
     `).bind(pending.id, userId),
     env.DB.prepare(`
-      SELECT id, en, lemma, zh, example, stress, familiarity, created_at
+      SELECT id, en, lemma, zh, example, stress, created_at
       FROM words WHERE id = ? AND lemma = ? AND user_id = ?
     `).bind(target.id, lemma, userId)
   ]);
-  if (!results[3].meta.changes) return alreadyConverted();
-  return jsonResponse(results[4].results[0]);
+  if (!results.at(-2).meta.changes) return alreadyConverted();
+  return jsonResponse(results.at(-1).results[0]);
 }
 
-async function createWord(env, pending, body, lemma, zh, userId) {
+async function createWord(env, pending, body, lemma, zh, userId, tagIds) {
   const wordId = crypto.randomUUID();
   const formId = crypto.randomUUID();
   const createdAt = Date.now();
@@ -323,8 +330,8 @@ async function createWord(env, pending, body, lemma, zh, userId) {
   const results = await env.DB.batch([
     env.DB.prepare(`
       INSERT INTO words
-        (id, user_id, en, lemma, zh, example, stress, familiarity, created_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?
+        (id, user_id, en, lemma, zh, example, stress, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?
       FROM marked_terms WHERE id = ? AND user_id = ?
     `).bind(
       wordId, userId, lemma, lemma, zh, example, stress, createdAt,
@@ -338,6 +345,20 @@ async function createWord(env, pending, body, lemma, zh, userId) {
     `).bind(
       formId, wordId, userId, createdAt, pending.id, userId
     ),
+    env.DB.prepare(`
+      INSERT INTO word_review_state
+        (word_id, user_id, due_at, created_at, updated_at)
+      SELECT ?, ?, ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM marked_terms WHERE id = ? AND user_id = ?
+      )
+    `).bind(
+      wordId, userId, createdAt, createdAt, createdAt, pending.id, userId
+    ),
+    ...tagIds.map(tagId => env.DB.prepare(`
+      INSERT INTO word_tags (word_id, tag_id, created_at)
+      VALUES (?, ?, ?)
+    `).bind(wordId, tagId, createdAt)),
     env.DB.prepare(`
       UPDATE article_markings
       SET marked_term_id = NULL, word_id = ?
@@ -355,8 +376,11 @@ async function createWord(env, pending, body, lemma, zh, userId) {
     zh,
     example,
     stress,
-    familiarity: 0,
     created_at: createdAt,
+    due_at: createdAt,
+    state: 0,
+    reps: 0,
+    lapses: 0,
     forms: [{ form: pending.display_text, normalized_form: pending.normalized_text }]
   }, { status: 201 });
 }
@@ -376,6 +400,21 @@ function isObject(value) {
 
 function optionalString(body, name) {
   return !Object.prototype.hasOwnProperty.call(body, name) || typeof body[name] === 'string';
+}
+
+function optionalStringArray(body, name) {
+  return !Object.prototype.hasOwnProperty.call(body, name)
+    || (Array.isArray(body[name]) && body[name].every(value => typeof value === 'string'));
+}
+
+async function ownsTags(DB, userId, tagIds) {
+  if (!tagIds.length) return true;
+  const placeholders = tagIds.map(() => '?').join(',');
+  const row = await DB.prepare(`
+    SELECT COUNT(*) AS count FROM tags
+    WHERE user_id = ? AND id IN (${placeholders})
+  `).bind(userId, ...tagIds).first();
+  return Number(row?.count) === tagIds.length;
 }
 
 function splitMeanings(value) {
