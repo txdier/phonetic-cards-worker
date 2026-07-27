@@ -42,6 +42,18 @@ test('navigation and word filters follow the responsive content layout', async (
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-username\s*\{[^}]*text-overflow:\s*ellipsis/);
 });
 
+test('word relation controls stay within narrow cards', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const relationForm = css.match(/\.pc-relation-panel form\s*\{([^}]*)\}/)?.[1];
+  const relationRow = css.match(/\.pc-relation-row\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(relationForm, 'relation form should have a style rule');
+  assert.ok(relationRow, 'relation row should have a style rule');
+  assert.match(relationForm, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(relationRow, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-relation-panel form,\s*\.pc-relation-row\s*\{[^}]*grid-template-columns:\s*1fr/);
+});
+
 test('pending organizer uses the responsive three two one column ledger', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const pendingList = css.match(/\.pc-pending-list\s*\{([^}]*)\}/)?.[1];

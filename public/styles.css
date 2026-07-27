@@ -412,11 +412,11 @@
   .pc-pagination button { min-height: 44px; }
   .pc-relation-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
   .pc-relation-panel form {
-    display: grid; grid-template-columns: minmax(120px, 1fr) minmax(110px, .7fr) minmax(120px, 1fr) auto;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px; margin-top: 10px;
   }
   .pc-relation-row {
-    display: grid; grid-template-columns: minmax(90px, 1fr) auto minmax(80px, 1fr) auto;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line);
   }
   .pc-settings-card {
