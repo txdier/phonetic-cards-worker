@@ -234,7 +234,6 @@ wrangler deploy
 - 会话有效期为 30 天，存放在使用 `HttpOnly`、`Secure`、`SameSite=Lax` 的 `session` cookie 中。
 - 除登录接口外，业务 API 都要求有效会话，并使用当前 `user_id` 限制查询和修改。
 - 同一个账号在手机、电脑和平板上看到同一份 D1 数据。
-- 旧的 `words.device_id` 字段为兼容已有数据而保留，当前代码不再依赖它识别用户。
 
 ## 关键行为与维护注意事项
 
