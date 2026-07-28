@@ -107,15 +107,42 @@
   }
   .pc-card:hover { border-color: var(--amber-dim); }
 
-  .pc-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-  .pc-card-top-actions { display: flex; align-items: center; gap: 4px; }
-  .pc-edit {
-    display: inline-grid; place-items: center; min-width: 44px; min-height: 44px; padding: 6px;
+  .pc-card-top {
+    display: grid; grid-template-columns: minmax(0, 1fr) 96px;
+    align-items: start; gap: 8px;
+  }
+  .pc-card-main { min-width: 0; }
+  .pc-card-top-actions {
+    position: relative; display: grid; grid-template-columns: repeat(2, 44px);
+    gap: 8px; width: 96px;
+  }
+  .pc-card-icon-button {
+    display: inline-grid; place-items: center; width: 44px; height: 44px; padding: 0;
     border: 0; border-radius: 7px; background: transparent; color: var(--teal); cursor: pointer;
   }
-  .pc-edit svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .pc-edit:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+  .pc-card-icon-button svg, .pc-card-menu-item svg {
+    width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .pc-card-icon-button:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+  .pc-card-action-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+    width: 168px; padding: 5px; display: grid; gap: 3px;
+    border: 1px solid var(--line); border-radius: 9px;
+    background: var(--bg-panel); box-shadow: 0 12px 28px rgba(0,0,0,.22);
+  }
+  .pc-card-menu-item {
+    min-height: 44px; padding: 8px 10px; display: flex; align-items: center; gap: 9px;
+    border: 0; border-radius: 7px; background: transparent; color: var(--ink);
+    font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .pc-card-menu-item:hover { background: var(--bg-panel-2); }
+  .pc-card-menu-item.pc-danger { color: var(--coral); }
   .pc-word { font-family: 'JetBrains Mono', monospace; font-size: 19px; font-weight: 700; letter-spacing: 0.01em; }
+  .pc-word-phrase { white-space: normal; overflow-wrap: normal; }
+  .pc-word-single { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pc-word-long { font-size: 17px; }
+  .pc-word-extra-long { font-size: 15px; }
   .pc-word .stress { color: var(--amber); }
   .pc-zh { color: var(--teal); font-size: 14px; margin-top: 3px; }
   .pc-example { color: var(--ink-dim); font-size: 12.5px; margin-top: 8px; line-height: 1.5; font-style: italic; }
@@ -135,12 +162,6 @@
   .pc-wave span:nth-child(3) { animation-delay: .24s; }
   .pc-wave span:nth-child(4) { animation-delay: .36s; }
   @keyframes pc-bounce { 0%,100% { height: 3px; } 50% { height: 14px; } }
-
-  .pc-del {
-    background: none; border: none; color: var(--ink-dim); cursor: pointer; font-size: 16px; line-height: 1;
-    min-width: 44px; min-height: 44px; padding: 2px 4px; opacity: 0.5;
-  }
-  .pc-del:hover { opacity: 1; color: var(--coral); }
 
   .pc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
   .pc-dot.on { background: var(--teal); }
@@ -387,14 +408,13 @@
   .pc-conflict-candidate { padding-block: 10px; border-top: 1px solid var(--line); }
   .pc-pending-list {
     width: 100%; max-width: 920px; margin: 0 auto;
-    display: grid; grid-template-columns: 1fr; gap: 1px;
-    overflow: hidden; border: 1px solid var(--line); border-radius: 12px;
-    background: var(--line);
+    display: grid; grid-template-columns: 1fr; gap: 14px;
   }
   .pc-pending-row {
     min-width: 0; min-height: 96px; padding: 12px 14px;
     display: grid; grid-template-columns: minmax(0, 1fr) auto;
     align-items: center; gap: 12px; background: var(--bg-panel);
+    border: 1px solid var(--line); border-radius: 12px;
   }
   .pc-pending-content { min-width: 0; }
   .pc-pending-term {
@@ -458,12 +478,21 @@
     gap: 9px; align-items: center;
   }
   .pc-library-filters input, .pc-library-filters select,
-  .pc-relation-panel input, .pc-relation-panel select {
+  .pc-relation-dialog input, .pc-relation-dialog select {
     min-width: 0; min-height: 44px; padding: 9px 10px; border: 1px solid var(--line);
     border-radius: 8px; background: var(--bg-panel); color: var(--ink); font: inherit;
   }
   .pc-tag-field { display: flex; flex-wrap: wrap; gap: 8px 14px; border: 0; padding: 0; }
   .pc-tag-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-dim); }
+  .pc-conversion-form .pc-tag-field { display: block; }
+  .pc-tag-create {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px; align-items: end; margin-bottom: 10px;
+  }
+  .pc-tag-create label { min-width: 0; margin: 0; }
+  .pc-tag-create .pc-btn-ghost { min-height: 44px; }
+  .pc-tag-options { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+  .pc-tag-error { margin-top: 8px; color: var(--coral); font-size: 12px; }
   .pc-word-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .pc-word-tags span, .pc-state-badge {
     padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px;
@@ -472,15 +501,29 @@
   .pc-state-badge { white-space: nowrap; }
   .pc-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 20px 0; }
   .pc-pagination button { min-height: 44px; }
-  .pc-relation-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-  .pc-relation-panel form {
+  .pc-relation-dialog {
+    width: min(640px, 100%); max-height: min(80vh, 720px); max-height: min(80dvh, 720px);
+    overflow-y: auto;
+  }
+  .pc-relation-dialog-head {
+    position: sticky; top: -20px; z-index: 1; margin: -4px -4px 12px;
+    padding: 4px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--bg-panel);
+  }
+  .pc-relation-dialog-head .pc-dialog-title { margin: 0; overflow-wrap: anywhere; }
+  .pc-relation-dialog-body { display: grid; gap: 18px; }
+  .pc-relation-dialog-body h3 { margin: 0 0 9px; font-size: 15px; }
+  .pc-relation-dialog form {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px; margin-top: 10px;
   }
+  .pc-relation-dialog form label { min-width: 0; color: var(--ink-dim); font-size: 12px; }
+  .pc-relation-dialog form label :is(input, select) { width: 100%; margin-top: 5px; }
   .pc-relation-row {
     display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line);
   }
+  .pc-relation-copy { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px 9px; align-items: baseline; overflow-wrap: anywhere; }
   .pc-settings-card {
     max-width: 720px; margin: 0 auto 14px; padding: 18px; border: 1px solid var(--line);
     border-radius: 12px; background: var(--bg-panel);
@@ -518,8 +561,9 @@
     .pc-grid { grid-template-columns: 1fr; gap: 12px; }
     .pc-play { width: 44px; height: 44px; }
     .pc-play svg { width: 16px; height: 16px; }
-    .pc-del { font-size: 20px; padding: 4px 6px; }
     .pc-word { font-size: 20px; }
+    .pc-word-long { font-size: 18px; }
+    .pc-word-extra-long { font-size: 16px; }
     .pc-testcard { padding: 18px; }
     .pc-topnav { align-items: stretch; flex-direction: column; }
     .pc-account-actions { order: -1; width: 100%; flex-wrap: nowrap; }
@@ -539,9 +583,12 @@
     .pc-dialog-backdrop { padding: 14px; }
     .pc-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .pc-toast-region { left: 14px; right: 14px; bottom: 14px; width: auto; }
-    .pc-library-filters, .pc-relation-panel form, .pc-relation-row { grid-template-columns: 1fr; }
+    .pc-library-filters, .pc-relation-dialog form, .pc-relation-row { grid-template-columns: 1fr; }
     .pc-library-filters input, .pc-library-filters select,
-    .pc-relation-panel input, .pc-relation-panel select { font-size: 16px; }
+    .pc-relation-dialog input, .pc-relation-dialog select { font-size: 16px; }
+    .pc-relation-dialog { width: 100%; max-height: calc(100dvh - 28px); }
+    .pc-tag-create { grid-template-columns: 1fr; }
+    .pc-tag-create .pc-btn-ghost { width: 100%; }
   }
   @media (max-width: 640px), (max-width: 900px) and (pointer: coarse) {
     .pc-selection-action, .pc-term-popover.pc-reader-popover {

@@ -44,7 +44,9 @@ export function mountConversionForm({
 }) {
   let active = true;
   let submitting = false;
+  let creatingTag = false;
   let lastPayload = null;
+  const availableTags = new Map();
   const panel = element('section', 'pc-conversion-panel');
   panel.dataset.role = 'conversion-panel';
   panel.setAttribute('role', 'dialog');
@@ -58,7 +60,22 @@ export function mountConversionForm({
   field(form, 'example', '例句（可编辑）', term.context_sentence || '', { multiline: true, full: true });
   field(form, 'stress', '重音（可选）', '');
   const tagField = element('fieldset', 'pc-full pc-tag-field');
-  tagField.append(element('legend', '', '标签（可选）'), element('span', 'pc-muted', '加载标签中…'));
+  tagField.append(element('legend', '', '标签（可选）'));
+  const tagCreate = element('div', 'pc-tag-create');
+  const tagLabel = element('label', '', '新标签');
+  const tagInput = document.createElement('input');
+  tagInput.type = 'text';
+  tagInput.maxLength = 50;
+  tagInput.autocomplete = 'off';
+  tagInput.dataset.role = 'new-tag-input';
+  tagLabel.append(tagInput);
+  const addTag = button('create-tag', '添加');
+  tagCreate.append(tagLabel, addTag);
+  const tagOptions = element('div', 'pc-tag-options');
+  tagOptions.dataset.role = 'tag-options';
+  const tagStatus = element('span', 'pc-muted', '加载标签中…');
+  tagStatus.dataset.role = 'tag-status';
+  tagField.append(tagCreate, tagOptions, tagStatus);
   form.append(tagField);
   const conflict = element('div', 'pc-conversion-conflict pc-full');
   conflict.dataset.role = 'conversion-conflict';
@@ -66,7 +83,7 @@ export function mountConversionForm({
   const actions = element('div', 'pc-form-actions');
   const cancel = button('cancel-conversion', '取消');
   actions.append(cancel);
-  const save = button('submit-conversion', '转换', 'pc-btn-primary');
+  const save = button('submit-conversion', '保存', 'pc-btn-primary');
   save.type = 'submit';
   actions.append(save);
   form.append(conflict, actions);
@@ -88,13 +105,81 @@ export function mountConversionForm({
   }
 
   function showError(message) {
-    renderInlineError(form, message || '转换失败，请重试');
+    renderInlineError(form, message || '保存失败，请重试');
     form.querySelector(':scope > [data-inline-error]').dataset.role = 'conversion-error';
+  }
+
+  function syncDisabledState() {
+    for (const control of form.querySelectorAll('button')) {
+      control.disabled = submitting || (
+        creatingTag && (control === addTag || control === save)
+      );
+    }
+    tagInput.disabled = submitting || creatingTag;
+    for (const input of tagOptions.querySelectorAll('input')) input.disabled = submitting;
   }
 
   function setSubmitting(value) {
     submitting = Boolean(value);
-    for (const control of form.querySelectorAll('button')) control.disabled = submitting;
+    syncDisabledState();
+  }
+
+  function renderTagOptions(autoSelectId = '') {
+    const selectedIds = new Set(
+      [...tagOptions.querySelectorAll('input[name="tagIds"]:checked')].map(input => input.value)
+    );
+    if (autoSelectId) selectedIds.add(String(autoSelectId));
+    tagOptions.replaceChildren();
+    for (const tag of availableTags.values()) {
+      const label = element('label', 'pc-tag-choice');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = 'tagIds';
+      input.value = tag.id;
+      input.checked = selectedIds.has(String(tag.id));
+      label.append(input, document.createTextNode(tag.name));
+      tagOptions.append(label);
+    }
+    tagStatus.textContent = availableTags.size ? '' : '暂无标签，可在上方添加';
+    syncDisabledState();
+  }
+
+  function showTagError(message) {
+    tagField.querySelector('[data-role="tag-error"]')?.remove();
+    const error = element('div', 'pc-tag-error', message || '标签创建失败，请重试');
+    error.dataset.role = 'tag-error';
+    error.setAttribute('role', 'alert');
+    tagField.append(error);
+  }
+
+  async function createTag() {
+    if (submitting || creatingTag) return;
+    const name = tagInput.value.trim();
+    if (!name) {
+      tagInput.focus();
+      return;
+    }
+    creatingTag = true;
+    syncDisabledState();
+    tagField.querySelector('[data-role="tag-error"]')?.remove();
+    try {
+      const result = await api('/api/tags', {
+        method: 'POST', body: JSON.stringify({ name })
+      });
+      if (!current()) return;
+      const tag = result?.tag;
+      if (!tag?.id || !tag?.name) throw new Error('标签创建失败，请重试');
+      availableTags.set(String(tag.id), { id: String(tag.id), name: String(tag.name) });
+      renderTagOptions(tag.id);
+      tagInput.value = '';
+    } catch (error) {
+      if (current()) showTagError(error.message);
+    } finally {
+      if (current()) {
+        creatingTag = false;
+        syncDisabledState();
+      }
+    }
   }
 
   function renderConflict(matches) {
@@ -174,9 +259,15 @@ export function mountConversionForm({
       lastPayload = payload();
       send('new');
     }
+    if (target.dataset.action === 'create-tag') createTag();
   }
 
   function onKeyDown(event) {
+    if (event.key === 'Enter' && event.target === tagInput) {
+      event.preventDefault();
+      createTag();
+      return;
+    }
     if (event.key !== 'Escape') return;
     event.preventDefault();
     event.stopPropagation();
@@ -190,19 +281,14 @@ export function mountConversionForm({
   panel.addEventListener('keydown', onKeyDown);
   Promise.resolve(api('/api/tags')).then(result => {
     if (!current()) return;
-    tagField.replaceChildren(element('legend', '', '标签（可选）'));
     for (const tag of result?.tags || []) {
-      const label = element('label', 'pc-tag-choice');
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.name = 'tagIds';
-      input.value = tag.id;
-      label.append(input, document.createTextNode(tag.name));
-      tagField.append(label);
+      if (tag?.id && tag?.name) {
+        availableTags.set(String(tag.id), { id: String(tag.id), name: String(tag.name) });
+      }
     }
-    if (!(result?.tags || []).length) tagField.append(element('span', 'pc-muted', '暂无标签'));
+    renderTagOptions();
   }).catch(() => {
-    if (current()) tagField.replaceChildren(element('legend', '', '标签（可选）'), element('span', 'pc-muted', '标签暂不可用'));
+    if (current()) tagStatus.textContent = '标签列表暂不可用，仍可尝试新建';
   });
   form.elements.zh.focus();
   return () => {

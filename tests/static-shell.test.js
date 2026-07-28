@@ -101,29 +101,51 @@ test('navigation and word filters follow the responsive content layout', async (
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-username\s*\{[^}]*text-overflow:\s*ellipsis/);
 });
 
-test('word relation controls stay within narrow cards', async () => {
+test('word card actions and relation dialog stay responsive', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
-  const relationForm = css.match(/\.pc-relation-panel form\s*\{([^}]*)\}/)?.[1];
+  const cardTop = css.match(/\.pc-card-top\s*\{([^}]*)\}/)?.[1];
+  const cardActions = css.match(/\.pc-card-top-actions\s*\{([^}]*)\}/)?.[1];
+  const relationDialog = css.match(/\.pc-relation-dialog\s*\{([^}]*)\}/)?.[1];
+  const relationForm = css.match(/\.pc-relation-dialog form\s*\{([^}]*)\}/)?.[1];
   const relationRow = css.match(/\.pc-relation-row\s*\{([^}]*)\}/)?.[1];
 
+  assert.ok(cardTop, 'word card header should have a style rule');
+  assert.ok(cardActions, 'word card actions should have a style rule');
+  assert.ok(relationDialog, 'relation dialog should have a style rule');
   assert.ok(relationForm, 'relation form should have a style rule');
   assert.ok(relationRow, 'relation row should have a style rule');
+  assert.match(cardTop, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+96px/);
+  assert.match(cardActions, /grid-template-columns:\s*repeat\(2,\s*44px\)/);
+  assert.match(cardActions, /gap:\s*8px/);
+  assert.match(relationDialog, /max-height:/);
+  assert.match(relationDialog, /overflow-y:\s*auto/);
   assert.match(relationForm, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(relationRow, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
-  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-relation-panel form,\s*\.pc-relation-row\s*\{[^}]*grid-template-columns:\s*1fr/);
+  assert.match(css, /\.pc-word-phrase\s*\{[^}]*white-space:\s*normal/);
+  assert.match(css, /\.pc-word-long\s*\{[^}]*font-size:\s*17px/);
+  assert.match(css, /\.pc-word-extra-long\s*\{[^}]*font-size:\s*15px/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-relation-dialog form,\s*\.pc-relation-row\s*\{[^}]*grid-template-columns:\s*1fr/);
 });
 
 test('pending organizer uses the responsive three two one column ledger', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const pendingList = css.match(/\.pc-pending-list\s*\{([^}]*)\}/)?.[1];
+  const pendingRow = css.match(/\.pc-pending-row\s*\{([^}]*)\}/)?.[1];
   const pendingTerm = css.match(/\.pc-pending-term\s*\{([^}]*)\}/)?.[1];
   assert.ok(pendingList, 'pending list should have a style rule');
+  assert.ok(pendingRow, 'pending row should have a style rule');
   assert.ok(pendingTerm, 'pending term should have a style rule');
   assert.match(pendingList, /display:\s*grid/);
   assert.match(pendingList, /width:\s*100%/);
   assert.match(pendingList, /max-width:\s*920px/);
   assert.match(pendingList, /grid-template-columns:\s*1fr/);
   assert.match(pendingList, /margin:\s*0\s+auto/);
+  assert.match(pendingList, /gap:\s*14px/);
+  assert.doesNotMatch(pendingList, /background:/);
+  assert.doesNotMatch(pendingList, /border:/);
+  assert.match(pendingRow, /background:\s*var\(--bg-panel\)/);
+  assert.match(pendingRow, /border:\s*1px\s+solid\s+var\(--line\)/);
+  assert.match(pendingRow, /border-radius:\s*12px/);
   assert.match(css, /@media\s*\(min-width:\s*700px\)[\s\S]*?\.pc-pending-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(css, /@media\s*\(min-width:\s*1100px\)[\s\S]*?\.pc-pending-list\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(pendingTerm, /font-size:\s*16px/);

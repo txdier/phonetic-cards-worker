@@ -3,6 +3,15 @@ import { renderInlineError, showToast } from './lib/dom.js';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重新学习'];
 const REVIEW_LABELS = ['忘记', '困难', '良好', '简单'];
+const RELATION_LABELS = {
+  family: '同词族',
+  derivative: '派生',
+  synonym: '同义',
+  antonym: '反义',
+  confusable: '易混',
+  other: '其他'
+};
+let relationDialogSequence = 0;
 
 export function sortWordTestQueue(words) {
   return [...words].sort((a, b) =>
@@ -36,9 +45,8 @@ export function createWordsView({
   let reviewWords = [];
   let revealed = false;
   let editingId = null;
-  let expandedId = null;
-  let relations = [];
-  let relationTargets = [];
+  let cardMenu = null;
+  let relationDialogCleanup = null;
   let usage = null;
   let stats = null;
   const reviewAttempts = new Map();
@@ -57,6 +65,66 @@ export function createWordsView({
 
   function stateLabel(value) {
     return STATE_LABELS[Number(value)] || STATE_LABELS[0];
+  }
+
+  function actionIcon(kind) {
+    const paths = {
+      edit: '<path d="M4 20h4l11-11-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>',
+      more: '<circle cx="12" cy="5" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="19" r="1.3"/>',
+      relation: '<circle cx="6" cy="7" r="2.5"/><circle cx="18" cy="7" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="m8.2 8.3 2.6 7.2m5-7.2-2.6 7.2M8.5 7h7"/>',
+      delete: '<path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"/>'
+    };
+    return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[kind] || ''}</svg>`;
+  }
+
+  function wordTitleClasses(value) {
+    const text = String(value || '').trim();
+    if (/\s/.test(text)) return 'pc-word pc-word-phrase';
+    const length = [...text].length;
+    if (length >= 17) return 'pc-word pc-word-single pc-word-extra-long';
+    if (length >= 13) return 'pc-word pc-word-single pc-word-long';
+    return 'pc-word pc-word-single';
+  }
+
+  function closeCardMenu(restoreFocus = false) {
+    if (!cardMenu) return;
+    const { menu, trigger } = cardMenu;
+    cardMenu = null;
+    menu.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && trigger.isConnected) trigger.focus();
+  }
+
+  function menuButton(action, id, label, icon, danger = false) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `pc-card-menu-item${danger ? ' pc-danger' : ''}`;
+    item.dataset.action = action;
+    item.dataset.id = id;
+    item.setAttribute('role', 'menuitem');
+    item.innerHTML = `${actionIcon(icon)}<span>${label}</span>`;
+    return item;
+  }
+
+  function openCardMenu(trigger, id) {
+    if (cardMenu?.trigger === trigger) {
+      closeCardMenu(true);
+      return;
+    }
+    closeCardMenu(false);
+    const menu = document.createElement('div');
+    menu.className = 'pc-card-action-menu';
+    menu.dataset.role = 'card-action-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', `${trigger.dataset.wordLabel} 的更多操作`);
+    menu.append(
+      menuButton('open-relations', id, '管理关系', 'relation'),
+      menuButton('del', id, '删除词卡', 'delete', true)
+    );
+    trigger.closest('.pc-card-top-actions')?.append(menu);
+    trigger.setAttribute('aria-expanded', 'true');
+    cardMenu = { id, menu, trigger };
+    menu.querySelector('[role="menuitem"]')?.focus();
   }
 
   function tagChoices(selected = []) {
@@ -101,41 +169,236 @@ export function createWordsView({
       : '';
   }
 
-  function relationPanel(word) {
-    if (expandedId !== String(word.id)) return '';
-    return `<div class="pc-relation-panel">
-      <h4>词间关系</h4>
-      ${relations.length ? relations.map(relation =>
-        `<div class="pc-relation-row"><b>${escapeHtml(relation.target_lemma)}</b><span>${escapeHtml(relation.relation_type)}</span><span>${escapeHtml(relation.note || '')}</span><button data-action="delete-relation" data-id="${escapeHtml(relation.id)}">删除</button></div>`
-      ).join('') : '<div class="pc-muted">尚未添加关系</div>'}
-      <form data-role="relation-form" data-word-id="${escapeHtml(word.id)}">
-        <input name="targetKeyword" placeholder="搜索关联词">
-        <button type="button" class="pc-btn-ghost" data-action="search-relation-targets">搜索</button>
-        <select name="targetWordId" aria-label="关联词">${relationTargets.filter(item => item.id !== word.id).map(item =>
-          `<option value="${escapeHtml(item.id)}">${escapeHtml(primaryWord(item))}</option>`
-        ).join('')}</select>
-        <select name="relationType" aria-label="关系类型">
-          <option value="family">同词族</option><option value="derivative">派生</option>
-          <option value="synonym">同义</option><option value="antonym">反义</option>
-          <option value="confusable">易混</option><option value="other">其他</option>
-        </select>
-        <input name="note" placeholder="备注（可选）">
-        <button class="pc-btn-ghost">添加关系</button>
-      </form>
-    </div>`;
+  function mountRelationDialog({ host, word, api: request, trigger }) {
+    let active = true;
+    let loading = true;
+    let busy = false;
+    let errorMessage = '';
+    let relations = [];
+    let relationTargets = [];
+    let searchKeyword = '';
+    const wordId = String(word.id);
+    const wordLabel = primaryWord(word);
+    const overlay = document.createElement('div');
+    overlay.className = 'pc-dialog-backdrop pc-relation-dialog-backdrop';
+    overlay.dataset.role = 'relation-dialog-backdrop';
+    const dialog = document.createElement('section');
+    const titleId = `pc-relation-title-${++relationDialogSequence}`;
+    dialog.className = 'pc-dialog pc-relation-dialog';
+    dialog.dataset.role = 'relation-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', titleId);
+    const heading = document.createElement('div');
+    heading.className = 'pc-relation-dialog-head';
+    heading.innerHTML = `<h2 class="pc-dialog-title" id="${titleId}">${escapeHtml(wordLabel)} 的词间关系</h2>
+      <button type="button" class="pc-card-icon-button" data-action="close-relations" aria-label="关闭词间关系" title="关闭">×</button>`;
+    const body = document.createElement('div');
+    body.className = 'pc-relation-dialog-body';
+    dialog.append(heading, body);
+    overlay.append(dialog);
+    host.append(overlay);
+
+    function relationRows() {
+      if (!relations.length) return '<div class="pc-muted">尚未添加关系</div>';
+      return relations.map(relation => `<div class="pc-relation-row">
+        <div class="pc-relation-copy">
+          <b>${escapeHtml(relation.target_lemma)}</b>
+          <span>${escapeHtml(RELATION_LABELS[relation.relation_type] || relation.relation_type)}</span>
+          ${relation.note ? `<span class="pc-muted">${escapeHtml(relation.note)}</span>` : ''}
+        </div>
+        <button type="button" class="pc-btn-ghost pc-danger" data-action="delete-relation" data-id="${escapeHtml(relation.id)}">删除</button>
+      </div>`).join('');
+    }
+
+    function renderDialog() {
+      if (!active) return;
+      if (loading) {
+        body.innerHTML = '<div class="pc-empty">加载词间关系中…</div>';
+        return;
+      }
+      const targetOptions = relationTargets
+        .filter(item => String(item.id) !== wordId)
+        .map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(primaryWord(item))}</option>`)
+        .join('');
+      body.innerHTML = `${errorMessage ? `<div class="pc-inline-error" data-role="relation-dialog-error" role="alert">
+          <span>${escapeHtml(errorMessage)}</span>
+          <button type="button" class="pc-btn-ghost" data-action="retry-relations">重试</button>
+        </div>` : ''}
+        <section class="pc-relation-list" aria-label="已有关系">
+          <h3>已有关系</h3>${relationRows()}
+        </section>
+        <section class="pc-relation-add">
+          <h3>添加关系</h3>
+          <form data-role="relation-form" data-word-id="${escapeHtml(wordId)}">
+            <label>搜索关联词<input name="targetKeyword" value="${escapeHtml(searchKeyword)}" placeholder="输入单词或释义"></label>
+            <button type="button" class="pc-btn-ghost" data-action="search-relation-targets">搜索</button>
+            <label>关联词<select name="targetWordId">${targetOptions}</select></label>
+            <label>关系类型<select name="relationType">
+              ${Object.entries(RELATION_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
+            </select></label>
+            <label>备注（可选）<input name="note"></label>
+            <button class="pc-btn-primary" ${targetOptions ? '' : 'disabled'}>添加关系</button>
+          </form>
+        </section>`;
+      for (const control of body.querySelectorAll('button, input, select')) {
+        if (busy) control.disabled = true;
+      }
+    }
+
+    async function loadInitial() {
+      try {
+        const [relationResult, targetResult] = await Promise.all([
+          request(`/api/words/${encodeURIComponent(wordId)}/relations`),
+          request('/api/words?pageSize=100&sort=word')
+        ]);
+        if (!active) return;
+        relations = relationResult?.relations || [];
+        relationTargets = targetResult?.words || [];
+        loading = false;
+        renderDialog();
+      } catch (error) {
+        if (!active) return;
+        loading = false;
+        errorMessage = error.message || '关系加载失败';
+        renderDialog();
+      }
+    }
+
+    async function refreshRelations() {
+      const result = await request(`/api/words/${encodeURIComponent(wordId)}/relations`);
+      if (active) relations = result?.relations || [];
+    }
+
+    async function runMutation(operation) {
+      if (busy || !active) return;
+      busy = true;
+      errorMessage = '';
+      renderDialog();
+      try {
+        await operation();
+        if (!active) return;
+        await refreshRelations();
+      } catch (error) {
+        if (active) errorMessage = error.message || '关系操作失败';
+      } finally {
+        if (active) {
+          busy = false;
+          renderDialog();
+        }
+      }
+    }
+
+    async function searchTargets(form) {
+      if (busy) return;
+      searchKeyword = form.elements.targetKeyword.value.trim();
+      busy = true;
+      errorMessage = '';
+      renderDialog();
+      try {
+        const query = encodeURIComponent(searchKeyword);
+        const result = await request(`/api/words?pageSize=100&sort=word&keyword=${query}`);
+        if (active) relationTargets = result?.words || [];
+      } catch (error) {
+        if (active) errorMessage = error.message || '关联词搜索失败';
+      } finally {
+        if (active) {
+          busy = false;
+          renderDialog();
+        }
+      }
+    }
+
+    function finish(restoreFocus = true) {
+      if (!active) return;
+      active = false;
+      overlay.remove();
+      overlay.removeEventListener('click', onClick);
+      overlay.removeEventListener('submit', onSubmit);
+      overlay.removeEventListener('keydown', onKeyDown);
+      if (restoreFocus && trigger?.isConnected) trigger.focus();
+    }
+
+    function onClick(event) {
+      const target = event.target.closest('[data-action]');
+      if (event.target === overlay || target?.dataset.action === 'close-relations') {
+        finish(true);
+        return;
+      }
+      if (target?.dataset.action === 'search-relation-targets') {
+        const form = target.closest('[data-role="relation-form"]');
+        if (form) searchTargets(form);
+      }
+      if (target?.dataset.action === 'retry-relations') {
+        loading = true;
+        errorMessage = '';
+        renderDialog();
+        loadInitial();
+      }
+      if (target?.dataset.action === 'delete-relation') {
+        runMutation(() => request(
+          `/api/words/${encodeURIComponent(wordId)}/relations/${encodeURIComponent(target.dataset.id)}`,
+          { method: 'DELETE' }
+        ));
+      }
+    }
+
+    function onSubmit(event) {
+      if (!event.target.matches('[data-role="relation-form"]')) return;
+      event.preventDefault();
+      const FormDataClass = event.target.ownerDocument.defaultView.FormData;
+      const data = new FormDataClass(event.target);
+      if (!data.get('targetWordId')) return;
+      const payload = {
+        targetWordId: data.get('targetWordId'),
+        relationType: data.get('relationType'),
+        note: data.get('note')
+      };
+      runMutation(() => request(`/api/words/${encodeURIComponent(wordId)}/relations`, {
+        method: 'POST', body: JSON.stringify(payload)
+      }));
+    }
+
+    function onKeyDown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(true);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled)')];
+      if (!controls.length) return;
+      const index = controls.indexOf(document.activeElement);
+      if (event.shiftKey && index <= 0) {
+        event.preventDefault();
+        controls.at(-1).focus();
+      } else if (!event.shiftKey && index === controls.length - 1) {
+        event.preventDefault();
+        controls[0].focus();
+      }
+    }
+
+    overlay.addEventListener('click', onClick);
+    overlay.addEventListener('submit', onSubmit);
+    overlay.addEventListener('keydown', onKeyDown);
+    heading.querySelector('[data-action="close-relations"]').focus();
+    loadInitial();
+    return () => finish(false);
   }
 
   function wordCard(word) {
     const forms = distinctForms(word);
+    const label = primaryWord(word);
     return `<article class="pc-card" data-id="${escapeHtml(word.id)}">
-      <div class="pc-card-top"><div>
-        <div class="pc-word">${escapeHtml(primaryWord(word))}</div>
+      <div class="pc-card-top"><div class="pc-card-main">
+        <div class="${wordTitleClasses(label)}" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
         ${forms.length ? `<div class="pc-word-forms">词形：${forms.map(escapeHtml).join(' · ')}</div>` : ''}
         <div class="pc-zh">${escapeHtml(word.zh)}</div>${tagsHtml(word)}
       </div><div class="pc-card-top-actions">
-        <button class="pc-edit" data-action="detail" data-id="${escapeHtml(word.id)}">详情</button>
-        <button class="pc-edit" data-action="edit" data-id="${escapeHtml(word.id)}" aria-label="编辑 ${escapeHtml(primaryWord(word))}">编辑</button>
-        <button class="pc-del" data-action="del" data-id="${escapeHtml(word.id)}" aria-label="删除 ${escapeHtml(primaryWord(word))}">×</button>
+        <button class="pc-card-icon-button" data-action="edit" data-id="${escapeHtml(word.id)}" title="编辑" aria-label="编辑 ${escapeHtml(label)}">${actionIcon('edit')}</button>
+        <button class="pc-card-icon-button" data-action="toggle-card-menu" data-id="${escapeHtml(word.id)}"
+          data-word-label="${escapeHtml(label)}" title="更多操作" aria-label="${escapeHtml(label)} 的更多操作"
+          aria-haspopup="menu" aria-expanded="false">${actionIcon('more')}</button>
       </div></div>
       ${word.example ? `<div class="pc-example">${escapeHtml(word.example)}</div>` : ''}
       <div class="pc-card-footer"><div class="pc-controls">
@@ -143,7 +406,6 @@ export function createWordsView({
         ${word.example ? `<button class="pc-play" data-action="play" data-mode="example" data-id="${escapeHtml(word.id)}" data-text="${escapeHtml(word.example)}" aria-label="朗读例句">例</button>` : ''}
         <button class="pc-play" data-action="play" data-mode="spell" data-id="${escapeHtml(word.id)}" data-text="${escapeHtml(primaryWord(word).split('').join('. '))}" aria-label="拼读单词">拼</button>
       </div><span class="pc-state-badge">${stateLabel(word.state)} · ${Number(word.reps || 0)} 次</span></div>
-      ${relationPanel(word)}
     </article>`;
   }
 
@@ -201,6 +463,7 @@ export function createWordsView({
 
   function render() {
     if (!mounted) return;
+    closeCardMenu(false);
     root.innerHTML = page === 'review'
       ? reviewBody()
       : page === 'settings'
@@ -369,28 +632,6 @@ export function createWordsView({
     }
   }
 
-  async function toggleDetails(id) {
-    if (expandedId === id) {
-      expandedId = null;
-      relations = [];
-      relationTargets = [];
-      render();
-      return;
-    }
-    expandedId = id;
-    try {
-      const [relationResult, targetResult] = await Promise.all([
-        api(`/api/words/${encodeURIComponent(id)}/relations`),
-        api('/api/words?pageSize=100&sort=word')
-      ]);
-      relations = relationResult.relations || [];
-      relationTargets = targetResult.words || [];
-      render();
-    } catch (error) {
-      renderInlineError(root, error.message || '关系加载失败');
-    }
-  }
-
   async function onClick(event) {
     const target = event.target.closest('[data-action]');
     if (!target || !root.contains(target)) return;
@@ -405,7 +646,16 @@ export function createWordsView({
     if (action === 'submit-form') saveWord();
     if (action === 'edit') { editingId = target.dataset.id; render(); }
     if (action === 'del') deleteWord(target.dataset.id);
-    if (action === 'detail') toggleDetails(target.dataset.id);
+    if (action === 'toggle-card-menu') openCardMenu(target, target.dataset.id);
+    if (action === 'open-relations') {
+      const word = words.find(item => String(item.id) === String(target.dataset.id));
+      const trigger = cardMenu?.trigger;
+      closeCardMenu(false);
+      if (word && trigger) {
+        relationDialogCleanup?.();
+        relationDialogCleanup = mountRelationDialog({ host: root, word, api, trigger });
+      }
+    }
     if (action === 'page-prev' && currentPage > 1) { currentPage -= 1; loadLibrary(); }
     if (action === 'page-next') { currentPage += 1; loadLibrary(); }
     if (action === 'play') {
@@ -422,20 +672,9 @@ export function createWordsView({
       event.stopPropagation();
       review(target.dataset.id, Number(target.dataset.rating), target);
     }
-    if (action === 'delete-relation') {
-      await api(`/api/words/${encodeURIComponent(expandedId)}/relations/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE' });
-      toggleDetails(expandedId);
-    }
     if (action === 'delete-tag') {
       await api(`/api/tags/${encodeURIComponent(target.dataset.id)}`, { method: 'DELETE' });
       await loadSettings();
-    }
-    if (action === 'search-relation-targets') {
-      const form = target.closest('[data-role="relation-form"]');
-      const keyword = form?.elements.targetKeyword.value.trim() || '';
-      const result = await api(`/api/words?pageSize=100&sort=word&keyword=${encodeURIComponent(keyword)}`);
-      relationTargets = result.words || [];
-      render();
     }
   }
 
@@ -452,21 +691,6 @@ export function createWordsView({
       currentPage = 1;
       loadLibrary();
     }
-    if (event.target.matches('[data-role="relation-form"]')) {
-      event.preventDefault();
-      const data = new FormData(event.target);
-      if (!data.get('targetWordId')) return;
-      await api(`/api/words/${encodeURIComponent(event.target.dataset.wordId)}/relations`, {
-        method: 'POST',
-        body: JSON.stringify({
-          targetWordId: data.get('targetWordId'),
-          relationType: data.get('relationType'),
-          note: data.get('note')
-        })
-      });
-      expandedId = null;
-      toggleDetails(event.target.dataset.wordId);
-    }
     if (event.target.matches('[data-role="tag-form"]')) {
       event.preventDefault();
       const data = new FormData(event.target);
@@ -479,6 +703,22 @@ export function createWordsView({
   }
 
   function onKeydown(event) {
+    const menu = event.target.closest('[data-role="card-action-menu"]');
+    if (menu) {
+      const items = [...menu.querySelectorAll('[role="menuitem"]')];
+      const index = items.indexOf(document.activeElement);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCardMenu(true);
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        items[(index + direction + items.length) % items.length]?.focus();
+        return;
+      }
+    }
     const card = event.target.closest('[data-action="reveal"]');
     const nested = event.target.closest('[data-action]')?.dataset.action;
     if (!card || !shouldRevealTestCard(event.key, nested)) return;
@@ -487,9 +727,16 @@ export function createWordsView({
     render();
   }
 
+  function onDocumentPointerDown(event) {
+    if (!cardMenu) return;
+    if (cardMenu.menu.contains(event.target) || cardMenu.trigger.contains(event.target)) return;
+    closeCardMenu(false);
+  }
+
   root.addEventListener('click', onClick);
   root.addEventListener('submit', onSubmit);
   root.addEventListener('keydown', onKeydown);
+  root.ownerDocument.addEventListener('pointerdown', onDocumentPointerDown);
   root.innerHTML = '<div class="pc-empty">加载中…</div>';
   if (page === 'review') loadReview();
   else if (page === 'settings') loadSettings();
@@ -497,9 +744,12 @@ export function createWordsView({
 
   return () => {
     mounted = false;
+    closeCardMenu(false);
+    relationDialogCleanup?.();
     root.removeEventListener('click', onClick);
     root.removeEventListener('submit', onSubmit);
     root.removeEventListener('keydown', onKeydown);
+    root.ownerDocument.removeEventListener('pointerdown', onDocumentPointerDown);
     player.stop?.();
   };
 }

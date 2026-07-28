@@ -1851,6 +1851,114 @@ test('pending organizer renders vertically ordered actions with accessible term 
   }
 });
 
+test('pending conversion saves selected and newly created tags', async () => {
+  const env = installDom('http://local.test/#/articles/pending');
+  const calls = [];
+  const term = {
+    id: 't1', display_text: 'deploy', normalized_text: 'deploy',
+    kind: 'word', source_count: 1, created_at: 1, context_sentence: 'Deploy it.'
+  };
+  const api = async (path, init = {}) => {
+    calls.push({ path, init });
+    if (path === '/api/marked-terms' && !init.method) return [term];
+    if (path === '/api/tags' && !init.method) {
+      return { tags: [{ id: 'tag-existing', name: '工作' }] };
+    }
+    if (path === '/api/tags' && init.method === 'POST') {
+      assert.deepEqual(JSON.parse(init.body), { name: '云平台' });
+      return { tag: { id: 'tag-new', name: '云平台' } };
+    }
+    if (path === '/api/marked-terms/t1/add-to-word' && init.method === 'POST') {
+      return { id: 'w1', lemma: 'deploy', zh: '部署', forms: [] };
+    }
+    throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+  };
+  const cleanup = createPendingView({ root: env.root, api });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="convert"]'));
+    await flush();
+    const form = env.root.querySelector('[data-role="conversion-form"]');
+    assert.equal(form.querySelector('[data-action="submit-conversion"]').textContent, '保存');
+    const existing = form.querySelector('input[name="tagIds"][value="tag-existing"]');
+    assert.ok(existing);
+    existing.checked = true;
+
+    const newTag = form.querySelector('[data-role="new-tag-input"]');
+    newTag.value = ' 云平台 ';
+    newTag.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true
+    }));
+    await flush();
+
+    const created = form.querySelector('input[name="tagIds"][value="tag-new"]');
+    assert.ok(created);
+    assert.equal(created.checked, true);
+    assert.equal(form.querySelectorAll('input[name="tagIds"]').length, 2);
+
+    form.elements.zh.value = '部署';
+    submit(env.window, form);
+    await flush();
+    const saveCall = calls.find(call => call.path.endsWith('/add-to-word'));
+    assert.deepEqual(JSON.parse(saveCall.init.body).tagIds.sort(), ['tag-existing', 'tag-new']);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('pending tag creation deduplicates, reports failure, and ignores a late response', async () => {
+  const env = installDom('http://local.test/#/articles/pending');
+  const lateTag = deferred();
+  let attempts = 0;
+  const term = {
+    id: 't1', display_text: 'deploy', normalized_text: 'deploy',
+    kind: 'word', source_count: 1, created_at: 1
+  };
+  const api = async (path, init = {}) => {
+    if (path === '/api/marked-terms' && !init.method) return [term];
+    if (path === '/api/tags' && !init.method) {
+      return { tags: [{ id: 'tag-existing', name: '工作' }] };
+    }
+    if (path === '/api/tags' && init.method === 'POST') {
+      attempts += 1;
+      if (attempts === 1) throw new Error('标签服务暂不可用');
+      if (attempts === 2) return { tag: { id: 'tag-existing', name: '工作' } };
+      return lateTag.promise;
+    }
+    throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+  };
+  const cleanup = createPendingView({ root: env.root, api });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="convert"]'));
+    await flush();
+    const form = env.root.querySelector('[data-role="conversion-form"]');
+    const input = form.querySelector('[data-role="new-tag-input"]');
+    input.value = '工作';
+    click(env.window, form.querySelector('[data-action="create-tag"]'));
+    await flush();
+    assert.equal(form.querySelector('[data-role="tag-error"]').textContent, '标签服务暂不可用');
+    assert.equal(input.value, '工作');
+
+    click(env.window, form.querySelector('[data-action="create-tag"]'));
+    await flush();
+    assert.equal(form.querySelectorAll('input[name="tagIds"][value="tag-existing"]').length, 1);
+    assert.equal(form.querySelector('input[value="tag-existing"]').checked, true);
+
+    input.value = '稍后';
+    click(env.window, form.querySelector('[data-action="create-tag"]'));
+    assert.equal(form.querySelector('[data-action="submit-conversion"]').disabled, true);
+    click(env.window, form.querySelector('[data-action="cancel-conversion"]'));
+    lateTag.resolve({ tag: { id: 'late', name: '稍后' } });
+    await flush();
+    assert.equal(env.root.querySelector('[data-role="conversion-form"]'), null);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('pending organizer wires conflict merge/new conversions, global delete, errors, and cleanup', async () => {
   const env = installDom('http://local.test/#/articles/pending');
   const calls = [];

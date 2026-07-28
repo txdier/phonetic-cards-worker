@@ -259,7 +259,8 @@ test('word cards expose an accessible edit form and retain FSRS metadata after s
     const edit = env.root.querySelector('[data-id="w1"] [data-action="edit"]');
     assert.ok(edit);
     assert.equal(edit.getAttribute('aria-label'), '编辑 deploy');
-    assert.equal(edit.textContent.trim(), '编辑');
+    assert.equal(edit.textContent.trim(), '');
+    assert.ok(edit.querySelector('svg'));
     click(env.window, edit);
     const form = env.root.querySelector('#pc-word-form');
     assert.equal(form.classList.contains('open'), true);
@@ -283,6 +284,200 @@ test('word cards expose an accessible edit form and retain FSRS metadata after s
     assert.match(env.root.querySelector('[data-id="w1"]').textContent, /启动/);
     assert.equal(initial.state, 2);
     assert.equal(initial.due_at, 99);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word cards reserve icon actions and wrap phrases without wrapping ordinary words', async () => {
+  const env = installDom();
+  const words = [
+    { id: 'w1', lemma: 'make progress', zh: '取得进展', forms: [], tags: [] },
+    { id: 'w2', lemma: 'infrastructure', zh: '基础设施', forms: [], tags: [] },
+    { id: 'w3', lemma: 'counterrevolutionaries', zh: '反革命者', forms: [], tags: [] }
+  ];
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/words') return words;
+      if (path === '/api/tags') return { tags: [] };
+      throw new Error(`unexpected request GET ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    const phrase = env.root.querySelector('[data-id="w1"] .pc-word');
+    const longWord = env.root.querySelector('[data-id="w2"] .pc-word');
+    const extraLongWord = env.root.querySelector('[data-id="w3"] .pc-word');
+    assert.ok(phrase.classList.contains('pc-word-phrase'));
+    assert.ok(longWord.classList.contains('pc-word-long'));
+    assert.ok(extraLongWord.classList.contains('pc-word-extra-long'));
+    assert.equal(extraLongWord.title, 'counterrevolutionaries');
+
+    const card = env.root.querySelector('[data-id="w2"]');
+    const actions = [...card.querySelectorAll('.pc-card-top-actions > button')];
+    assert.deepEqual(actions.map(button => button.dataset.action), ['edit', 'toggle-card-menu']);
+    assert.ok(actions.every(button => button.querySelector('svg')));
+    assert.equal(actions[1].getAttribute('aria-haspopup'), 'menu');
+    assert.equal(actions[1].getAttribute('aria-expanded'), 'false');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word card more menu supports keyboard navigation and restores focus', async () => {
+  const env = installDom();
+  const word = { id: 'w1', lemma: 'deploy', zh: '部署', forms: [], tags: [] };
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/words') return [word];
+      if (path === '/api/tags') return { tags: [] };
+      throw new Error(`unexpected request GET ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    const toggle = env.root.querySelector('[data-action="toggle-card-menu"]');
+    click(env.window, toggle);
+    const menu = env.root.querySelector('[data-role="card-action-menu"]');
+    assert.ok(menu);
+    assert.equal(menu.getAttribute('role'), 'menu');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    const items = [...menu.querySelectorAll('[role="menuitem"]')];
+    assert.deepEqual(items.map(item => item.dataset.action), ['open-relations', 'del']);
+    assert.equal(env.window.document.activeElement, items[0]);
+
+    items[0].dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'ArrowDown', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.window.document.activeElement, items[1]);
+    items[1].dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.querySelector('[data-role="card-action-menu"]'), null);
+    assert.equal(env.window.document.activeElement, toggle);
+
+    click(env.window, toggle);
+    env.window.document.body.dispatchEvent(new env.window.Event('pointerdown', {
+      bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.querySelector('[data-role="card-action-menu"]'), null);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word relations open in a modal and update without stretching the card', async () => {
+  const env = installDom();
+  const calls = [];
+  const word = { id: 'w1', lemma: 'deploy', zh: '部署', forms: [], tags: [] };
+  let relations = [{
+    id: 'r1', target_word_id: 'w2', target_lemma: 'deployment',
+    relation_type: 'derivative', note: 'noun'
+  }];
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async (path, init = {}) => {
+      calls.push({ path, init });
+      if (path === '/api/words' && !init.method) return [word];
+      if (path === '/api/tags' && !init.method) return { tags: [] };
+      if (path === '/api/words/w1/relations' && !init.method) return { relations };
+      if (path === '/api/words?pageSize=100&sort=word' && !init.method) {
+        return { words: [word, { id: 'w2', lemma: 'deployment', zh: '部署行为' }] };
+      }
+      if (path === '/api/words/w1/relations' && init.method === 'POST') {
+        relations = [...relations, {
+          id: 'r2', target_word_id: 'w2', target_lemma: 'deployment',
+          relation_type: 'family', note: ''
+        }];
+        return { relation: relations.at(-1) };
+      }
+      if (path === '/api/words/w1/relations/r1' && init.method === 'DELETE') {
+        relations = relations.filter(item => item.id !== 'r1');
+        return { ok: true };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    const toggle = env.root.querySelector('[data-action="toggle-card-menu"]');
+    click(env.window, toggle);
+    click(env.window, env.root.querySelector('[data-action="open-relations"]'));
+    const dialog = env.root.querySelector('[data-role="relation-dialog"]');
+    assert.ok(dialog);
+    assert.equal(dialog.getAttribute('aria-modal'), 'true');
+    assert.match(dialog.querySelector('.pc-dialog-title').textContent, /deploy 的词间关系/);
+    await flush();
+    assert.equal(env.root.querySelector('.pc-card .pc-relation-panel'), null);
+    assert.match(dialog.textContent, /deployment/);
+    assert.match(dialog.textContent, /派生/);
+
+    const form = dialog.querySelector('[data-role="relation-form"]');
+    form.elements.relationType.value = 'family';
+    submit(env.window, form);
+    await flush();
+    assert.ok(calls.some(call => call.path === '/api/words/w1/relations' && call.init.method === 'POST'));
+    assert.ok(env.root.querySelector('[data-role="relation-dialog"]'));
+
+    click(env.window, env.root.querySelector('[data-action="delete-relation"][data-id="r1"]'));
+    await flush();
+    assert.ok(calls.some(call => call.path === '/api/words/w1/relations/r1' && call.init.method === 'DELETE'));
+    assert.ok(env.root.querySelector('[data-role="relation-dialog"]'));
+
+    click(env.window, env.root.querySelector('[data-action="close-relations"]'));
+    assert.equal(env.root.querySelector('[data-role="relation-dialog"]'), null);
+    assert.equal(env.window.document.activeElement, toggle);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('relation dialog reports a load failure, retries, and ignores a late close', async () => {
+  const env = installDom();
+  const lateRelations = deferred();
+  const word = { id: 'w1', lemma: 'deploy', zh: '部署', forms: [], tags: [] };
+  let relationAttempts = 0;
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/words') return [word];
+      if (path === '/api/tags') return { tags: [] };
+      if (path === '/api/words?pageSize=100&sort=word') return { words: [word] };
+      if (path === '/api/words/w1/relations') {
+        relationAttempts += 1;
+        if (relationAttempts === 1) throw new Error('关系加载失败');
+        return lateRelations.promise;
+      }
+      throw new Error(`unexpected request GET ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    const toggle = env.root.querySelector('[data-action="toggle-card-menu"]');
+    click(env.window, toggle);
+    click(env.window, env.root.querySelector('[data-action="open-relations"]'));
+    await flush();
+    assert.equal(
+      env.root.querySelector('[data-role="relation-dialog-error"] span').textContent,
+      '关系加载失败'
+    );
+    click(env.window, env.root.querySelector('[data-action="retry-relations"]'));
+    assert.match(env.root.querySelector('[data-role="relation-dialog"]').textContent, /加载词间关系中/);
+    click(env.window, env.root.querySelector('[data-action="close-relations"]'));
+    lateRelations.resolve({ relations: [] });
+    await flush();
+    assert.equal(env.root.querySelector('[data-role="relation-dialog"]'), null);
+    assert.equal(env.window.document.activeElement, toggle);
   } finally {
     cleanup();
     env.restore();
@@ -323,6 +518,7 @@ test('words view uses inline errors and supports undo before delayed deletion', 
     assert.match(env.root.textContent, /added/);
     assert.ok(calls.some(call => call.init.method === 'POST'));
 
+    click(env.window, env.root.querySelector('[data-id="w2"] [data-action="toggle-card-menu"]'));
     click(env.window, env.root.querySelector('[data-action="del"][data-id="w2"]'));
     assert.equal(env.root.querySelector('[data-id="w2"]'), null);
     assert.equal(calls.some(call => call.path === '/api/words/w2' && call.init.method === 'DELETE'), false);
@@ -331,6 +527,7 @@ test('words view uses inline errors and supports undo before delayed deletion', 
     assert.ok(env.root.querySelector('[data-id="w2"]'));
     assert.equal(calls.some(call => call.path === '/api/words/w2' && call.init.method === 'DELETE'), false);
 
+    click(env.window, env.root.querySelector('[data-id="w2"] [data-action="toggle-card-menu"]'));
     click(env.window, env.root.querySelector('[data-action="del"][data-id="w2"]'));
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.ok(calls.some(call => call.path === '/api/words/w2' && call.init.method === 'DELETE'));
@@ -370,6 +567,7 @@ test('words view retains failed additions and restores failed delayed deletions'
     assert.equal(form.querySelector('#f-en').value, 'failed');
 
     click(env.window, env.root.querySelector('[data-action="cancel-form"]'));
+    click(env.window, env.root.querySelector('[data-id="w1"] [data-action="toggle-card-menu"]'));
     click(env.window, env.root.querySelector('[data-action="del"][data-id="w1"]'));
     await new Promise(resolve => setTimeout(resolve, 5));
     assert.ok(env.root.querySelector('[data-id="w1"]'));
