@@ -118,8 +118,12 @@ export function sendProgressItem(api, item) {
     });
   }
   if (item.kind === 'position') {
+    const body = { lastPositionRatio: item.lastPositionRatio };
+    if (Object.prototype.hasOwnProperty.call(item, 'lastAloudSentenceIndex')) {
+      body.lastAloudSentenceIndex = item.lastAloudSentenceIndex;
+    }
     return api(`/api/articles/${articleId}/progress`, {
-      method: 'PATCH', body: JSON.stringify({ lastPositionRatio: item.lastPositionRatio })
+      method: 'PATCH', body: JSON.stringify(body)
     });
   }
   return Promise.reject(new Error('unknown progress queue item'));

@@ -104,12 +104,25 @@ test('progress sender maps queued events and positions to the API contract', asy
     event: { id: 'e1', type: 'active_ms', amount: 50 }
   });
   await sendProgressItem(api, { kind: 'position', articleId: 'a/1', lastPositionRatio: 0.4 });
+  await sendProgressItem(api, {
+    kind: 'position', articleId: 'a/1', lastPositionRatio: 0.5,
+    lastAloudSentenceIndex: null
+  });
   assert.deepEqual(calls, [{
     path: '/api/articles/a%2F1/progress/events',
     init: { method: 'POST', body: JSON.stringify({ id: 'e1', type: 'active_ms', amount: 50 }) }
   }, {
     path: '/api/articles/a%2F1/progress',
     init: { method: 'PATCH', body: JSON.stringify({ lastPositionRatio: 0.4 }) }
+  }, {
+    path: '/api/articles/a%2F1/progress',
+    init: {
+      method: 'PATCH',
+      body: JSON.stringify({
+        lastPositionRatio: 0.5,
+        lastAloudSentenceIndex: null
+      })
+    }
   }]);
 });
 

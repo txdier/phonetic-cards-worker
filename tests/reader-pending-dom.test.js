@@ -62,6 +62,34 @@ function validSelection(sentence, {
   };
 }
 
+function controlledTimeouts() {
+  let nextId = 0;
+  const tasks = new Map();
+  const cleared = [];
+  return {
+    runtime: {
+      setTimeout(callback, delay) {
+        const id = ++nextId;
+        tasks.set(id, { callback, delay });
+        return id;
+      },
+      clearTimeout(id) {
+        cleared.push(id);
+        tasks.delete(id);
+      }
+    },
+    tasks,
+    cleared,
+    runLatest() {
+      const entry = [...tasks.entries()].at(-1);
+      if (!entry) return;
+      const [id, task] = entry;
+      tasks.delete(id);
+      task.callback();
+    }
+  };
+}
+
 function submit(window, form) {
   form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
 }
@@ -138,6 +166,326 @@ function assertSharedReaderPopover(panel, word) {
   );
 }
 
+test('long reading exposes offscreen floating controls and a cross-device resume marker', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const submissions = [];
+  let observerCallback = null;
+  let observedToolbar = null;
+  let disconnects = 0;
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      progress: { last_position_ratio: 0, last_aloud_sentence_index: 1 }
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressQueue: { submit: async item => { submissions.push(item); return true; } },
+    progressRuntime: {
+      setInterval: () => 1,
+      clearInterval() {},
+      requestAnimationFrame: callback => callback(),
+      createIntersectionObserver(callback) {
+        observerCallback = callback;
+        return {
+          observe(node) { observedToolbar = node; },
+          disconnect() { disconnects += 1; }
+        };
+      }
+    }
+  });
+  try {
+    await flush();
+    assert.equal(observedToolbar.dataset.role, 'speech-toolbar');
+    const entry = env.root.querySelector('[data-role="aloud-resume-entry"]');
+    assert.equal(entry.querySelector('[data-action="speech-continue-resume"]'), null);
+    assert.equal(entry.querySelector('[data-action="speech-jump-resume"]').textContent, '\u8df3\u8f6c');
+    assert.match(env.root.querySelector('[data-role="aloud-resume-entry"]').textContent, /第 2 句/);
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]').nextElementSibling.dataset.sentenceIndex, '1');
+
+    const resumedSentence = env.root.querySelector('[data-sentence-index="1"]');
+    let located = null;
+    resumedSentence.scrollIntoView = options => { located = options; };
+    click(env.window, env.root.querySelector('[data-action="speech-jump-resume"]'));
+    assert.equal(located.block, 'center');
+    assert.equal(env.window.document.activeElement, resumedSentence);
+    assert.equal(speech.calls.some(call => call[0] === 'startAt'), false);
+
+    observerCallback([{ isIntersecting: false }]);
+    const savedFloatingToggle = env.root.querySelector('[data-role="floating-speech-toggle"]');
+    assert.equal(savedFloatingToggle.textContent, '继续');
+
+    speech.emit({ state: 'once', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(savedFloatingToggle.textContent, '选择起点');
+    const callsBeforeSelection = speech.calls.length;
+    click(env.window, savedFloatingToggle);
+    assert.equal(speech.calls.length, callsBeforeSelection);
+    assert.equal(env.root.querySelector('[data-role="reader-start-hint"]').hidden, false);
+    click(env.window, savedFloatingToggle);
+    assert.equal(env.root.querySelector('[data-role="reader-start-hint"]').hidden, true);
+    speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(savedFloatingToggle.textContent, '继续');
+
+    click(env.window, savedFloatingToggle);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
+
+    const primary = env.root.querySelector('[data-action="speech-primary"]');
+    assert.equal(primary.textContent, '继续');
+    assert.equal(env.root.querySelector('[data-action="speech-restart"]').hidden, false);
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
+
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    observerCallback([{ isIntersecting: false }]);
+    const floating = env.root.querySelector('[data-role="floating-speech"]');
+    assert.equal(floating.hidden, false);
+    click(env.window, env.root.querySelector('[data-action="speech-rate-cycle"]'));
+    assert.deepEqual(speech.calls.at(-1), ['setRate', 1.5]);
+    assert.equal(env.root.querySelector('[data-role="floating-speech-rate"]').textContent, '1.5×');
+
+    speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(env.root.querySelector('[data-role="floating-speech-toggle"]').textContent, '继续');
+    assert.equal(submissions.at(-1).lastAloudSentenceIndex, 1);
+
+    click(env.window, env.root.querySelector('.pc-term'));
+    assert.equal(floating.hidden, true);
+    click(env.window, env.root.querySelector('[data-action="close-popover"]'));
+    assert.equal(floating.hidden, false);
+
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['resume']);
+
+    speech.emit({
+      state: 'idle', currentIndex: null,
+      completion: { reachedEnd: true }, completionEvent: { counted: true }
+    });
+    assert.equal(floating.hidden, false);
+    assert.equal(env.root.querySelector('[data-role="floating-speech-toggle"]').textContent, '选择起点');
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-entry"]').hidden, true);
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]'), null);
+    assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, null);
+  } finally {
+    cleanup();
+    assert.equal(disconnects, 1);
+    env.restore();
+  }
+});
+
+test('keeps the active full-reading sentence within the viewport safe zone', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const scrollCalls = [];
+  Object.defineProperty(env.window, 'innerHeight', {
+    configurable: true, value: 800
+  });
+  env.window.scrollTo = options => { scrollCalls.push(options); };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: { requestAnimationFrame: callback => callback() }
+  });
+  try {
+    await flush();
+    scrollCalls.length = 0;
+
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    sentence.getBoundingClientRect = () => ({
+      top: 200, bottom: 300, height: 100
+    });
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 0);
+
+    const below = env.root.querySelector('[data-sentence-index="2"]');
+    below.getBoundingClientRect = () => ({
+      top: 690, bottom: 760, height: 70
+    });
+    speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 1);
+    assert.equal(scrollCalls[0].behavior, 'smooth');
+    assert.equal(scrollCalls[0].top, 434);
+
+    speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 1);
+
+    speech.emit({ state: 'paused', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 1);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('does not follow a stale full-reading animation-frame callback', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const frames = [];
+  const scrollCalls = [];
+  Object.defineProperty(env.window, 'innerHeight', {
+    configurable: true, value: 800
+  });
+  env.window.scrollTo = options => { scrollCalls.push(options); };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: {
+      requestAnimationFrame: callback => { frames.push(callback); return frames.length; }
+    }
+  });
+  try {
+    await flush();
+    frames.length = 0;
+
+    const first = env.root.querySelector('[data-sentence-index="1"]');
+    const current = env.root.querySelector('[data-sentence-index="2"]');
+    first.getBoundingClientRect = () => ({
+      top: 690, bottom: 760, height: 70
+    });
+    current.getBoundingClientRect = () => ({
+      top: 690, bottom: 760, height: 70
+    });
+
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(frames.length, 2);
+
+    frames[0]();
+    assert.equal(scrollCalls.length, 0);
+
+    frames[1]();
+    assert.equal(scrollCalls.length, 1);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('uses instant auto-follow scrolling when reduced motion is preferred', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const scrollCalls = [];
+  Object.defineProperty(env.window, 'innerHeight', {
+    configurable: true, value: 800
+  });
+  env.window.scrollTo = options => { scrollCalls.push(options); };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: {
+      requestAnimationFrame: callback => callback(),
+      prefersReducedMotion: () => true
+    }
+  });
+  try {
+    await flush();
+    scrollCalls.length = 0;
+
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    sentence.getBoundingClientRect = () => ({
+      top: 20, bottom: 90, height: 70
+    });
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.at(-1).behavior, 'auto');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('long reading start sentence selection uses an idle floating capsule and preserves ordinary sentence actions', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  let observerCallback = null;
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      progress: { last_position_ratio: 0, last_aloud_sentence_index: null }
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: {
+      setInterval: () => 1,
+      clearInterval() {},
+      requestAnimationFrame: callback => callback(),
+      createIntersectionObserver(callback) {
+        observerCallback = callback;
+        return { observe() {}, disconnect() {} };
+      }
+    }
+  });
+  try {
+    await flush();
+    observerCallback([{ isIntersecting: false }]);
+    const floating = env.root.querySelector('[data-role="floating-speech"]');
+    const toggle = floating.querySelector('[data-role="floating-speech-toggle"]');
+    assert.equal(floating.hidden, false);
+    assert.equal(toggle.textContent, '选择起点');
+    assert.equal(toggle.getAttribute('aria-label'), '选择全文朗读起点');
+
+    click(env.window, toggle);
+    assert.ok(env.root.classList.contains('pc-reader-start-selecting'));
+    assert.equal(toggle.textContent, '取消选择');
+    assert.equal(env.root.querySelector('[data-role="reader-start-hint"]').hidden, false);
+    assert.equal(speech.calls.some(call => call[0] === 'startAt'), false);
+
+    const chosen = env.root.querySelector('[data-sentence-index="2"]');
+    click(env.window, chosen);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 2]);
+    assert.equal(env.root.classList.contains('pc-reader-start-selecting'), false);
+
+    click(env.window, toggle);
+    const term = env.root.querySelector('[data-sentence-index="2"] .pc-term');
+    click(env.window, term);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 2]);
+    assert.equal(env.root.querySelector('[data-role="term-popover"]'), null);
+
+    click(env.window, toggle);
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.classList.contains('pc-reader-start-selecting'), false);
+
+    click(env.window, env.root.querySelector('[data-sentence-index="0"]'));
+    assert.equal(speech.calls.at(-1)[0], 'speakOnce');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('long reading preserves the complete saved sentence for CSS truncation', async () => {
+  const env = installDom();
+  const savedSentence = 'This saved sentence is deliberately longer than thirty-two characters so CSS handles truncation.';
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      body: `First sentence. ${savedSentence} Last sentence.`,
+      progress: { last_position_ratio: 0, last_aloud_sentence_index: 1 }
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: createReaderSpeechFake().controller
+  });
+  try {
+    await flush();
+    const entry = env.root.querySelector('[data-role="aloud-resume-entry"]');
+    assert.ok(entry.textContent.includes(savedSentence));
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('selection suppresses the following collapsed sentence click', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();
@@ -155,6 +503,89 @@ test('selection suppresses the following collapsed sentence click', async () => 
     selected = false;
     sentence.dispatchEvent(new env.window.MouseEvent('click', { bubbles: true }));
     assert.equal(speech.calls.some(call => call[0] === 'speakOnce'), false);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('selectionchange opens the selection panel after a 150ms debounce', async () => {
+  const env = installDom();
+  const timeouts = controlledTimeouts();
+  const cleanup = createReaderView({
+    root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {},
+    speech: createReaderSpeechFake().controller, progressRuntime: timeouts.runtime
+  });
+  try {
+    await flush();
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    env.window.getSelection = () => validSelection(sentence, { text: 'Select this phrase' });
+
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
+    assert.equal(timeouts.tasks.size, 1);
+    assert.equal([...timeouts.tasks.values()][0].delay, 150);
+    timeouts.runLatest();
+    assert.equal(
+      env.root.querySelector('[data-role="selection-action"]').dataset.selectedText,
+      'Select this phrase'
+    );
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('selectionchange coalesces handle updates and keeps only a valid final selection', async () => {
+  const env = installDom();
+  const timeouts = controlledTimeouts();
+  const cleanup = createReaderView({
+    root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {},
+    speech: createReaderSpeechFake().controller, progressRuntime: timeouts.runtime
+  });
+  try {
+    await flush();
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    let selection = validSelection(sentence, { text: 'Select' });
+    env.window.getSelection = () => selection;
+
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    selection = validSelection(sentence, { text: 'Select this phrase' });
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+
+    assert.equal(timeouts.tasks.size, 1);
+    assert.equal(timeouts.cleared.length, 1);
+    timeouts.runLatest();
+    assert.equal(
+      env.root.querySelector('[data-role="selection-action"]').dataset.selectedText,
+      'Select this phrase'
+    );
+
+    selection = { isCollapsed: true, rangeCount: 0, toString: () => '' };
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    timeouts.runLatest();
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
+
+    const firstSentence = env.root.querySelector('[data-sentence-index="0"]');
+    selection = {
+      anchorNode: firstSentence.firstChild, focusNode: sentence.firstChild,
+      isCollapsed: false, rangeCount: 1, toString: () => 'safely. Select',
+      getRangeAt: () => ({ getBoundingClientRect: () => ({}) })
+    };
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    timeouts.runLatest();
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
+
+    const outside = env.window.document.body.appendChild(env.window.document.createTextNode('Outside text'));
+    selection = {
+      anchorNode: outside, focusNode: outside, isCollapsed: false, rangeCount: 1,
+      toString: () => 'Outside text',
+      getRangeAt: () => ({ getBoundingClientRect: () => ({}) })
+    };
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    timeouts.runLatest();
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
   } finally {
     cleanup();
     env.restore();
@@ -352,20 +783,31 @@ test('selection, marked term, and detail use the same popover skeleton', async (
     const selectionSentence = env.root.querySelector('[data-sentence-index="1"]');
     env.window.getSelection = () => validSelection(selectionSentence, { text: 'Select this phrase' });
     selectionSentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
-    assertSharedReaderPopover(env.root.querySelector('[data-role="selection-action"]'), 'Select this phrase');
+    let panel = env.root.querySelector('[data-role="selection-action"]');
+    assertSharedReaderPopover(panel, 'Select this phrase');
+    assert.equal(panel.dataset.termState, 'unmarked');
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /未标记/);
+    assert.ok(panel.querySelector('.pc-reader-popover-status-unmarked'));
     click(env.window, env.root.querySelector('[data-action="close-selection"]'));
 
     click(env.window, env.root.querySelector('.pc-term-pending'));
-    let panel = env.root.querySelector('[data-role="term-popover"]');
+    panel = env.root.querySelector('[data-role="term-popover"]');
     assertSharedReaderPopover(panel, 'Again');
+    assert.equal(panel.dataset.termState, 'marked');
     assert.ok(panel.querySelector('[data-role="reader-popover-ribbon"]'));
-    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /已标记为生词/);
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /已标记 · 待整理/);
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /尚未加入记词本/);
+    assert.ok(panel.querySelector('.pc-reader-popover-status-marked'));
     click(env.window, panel.querySelector('[data-action="close-popover"]'));
 
     click(env.window, env.root.querySelector('.pc-term-word'));
     panel = env.root.querySelector('[data-role="term-popover"]');
     assertSharedReaderPopover(panel, 'Deployed');
+    assert.equal(panel.dataset.termState, 'saved');
     assert.ok(panel.querySelector('[data-role="reader-popover-ribbon"]'));
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /已加入记词本/);
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /可在词库中复习/);
+    assert.ok(panel.querySelector('.pc-reader-popover-status-saved'));
     assert.match(panel.textContent, /deploy/);
     assert.match(panel.textContent, /词形：Deployed/);
     assert.match(panel.textContent, /部署；发布/);
@@ -677,7 +1119,7 @@ test('long article keeps compact controls and starts full reading at zero', asyn
     assert.equal(env.root.querySelectorAll('[data-sentence-index]').length, 60);
     assert.equal(env.root.querySelector('[data-action="speech-start"]'), null);
     assert.equal(env.root.querySelectorAll('.pc-reader-speech option').length, 0);
-    click(env.window, env.root.querySelector('[data-action="speech-play"]'));
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
     assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
   } finally {
     cleanup();
@@ -743,6 +1185,71 @@ test('rate value follows real range input and controller rate', async () => {
   }
 });
 
+test('reader exposes one stateful full-reading action and restart only after progress', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const submissions = [];
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressQueue: { submit: async item => { submissions.push(item); return true; } },
+    progressRuntime: {
+      setInterval: () => 1,
+      clearInterval() {},
+      requestAnimationFrame: callback => callback()
+    }
+  });
+  try {
+    await flush();
+    const primary = env.root.querySelector('[data-action="speech-primary"]');
+    const restart = env.root.querySelector('[data-action="speech-restart"]');
+    assert.equal(primary.textContent, '播放');
+    assert.equal(restart.hidden, true);
+    assert.equal(env.root.querySelector('[data-action="speech-stop"]'), null);
+
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
+
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '暂停');
+    assert.equal(restart.hidden, true);
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['pause']);
+
+    speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '继续');
+    assert.equal(restart.hidden, false);
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['resume']);
+
+    speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
+    speech.emit({ state: 'once', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '播放');
+    assert.equal(restart.hidden, true);
+    speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '继续');
+    assert.equal(restart.hidden, false);
+    click(env.window, restart);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
+    assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, null);
+
+    speech.emit({
+      state: 'idle',
+      currentIndex: null,
+      completion: { reachedEnd: true },
+      completionEvent: { counted: true }
+    });
+    assert.equal(primary.textContent, '播放');
+    assert.equal(restart.hidden, true);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('reader wires sequenced controls, rate, sentence and selection speech, active state, and cleanup', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();
@@ -759,11 +1266,8 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     const loaded = speech.calls.find(call => call[0] === 'load');
     assert.equal(loaded[1].length, 3);
 
-    click(env.window, env.root.querySelector('[data-action="speech-play"]'));
-    click(env.window, env.root.querySelector('[data-action="speech-pause"]'));
-    click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
-    click(env.window, env.root.querySelector('[data-action="speech-stop"]'));
-    assert.deepEqual(speech.calls.slice(-4), [['startAt', 0], ['pause'], ['resume'], ['stop']]);
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
 
     const rate = env.root.querySelector('[data-action="speech-rate"]');
     assert.equal(rate.type, 'range');
@@ -805,9 +1309,6 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     assert.equal(speechStatus.textContent, '全文朗读已暂停');
     speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false, coverage: 0.3, counted: false } });
     assert.equal(speechStatus.textContent, '继续全文朗读');
-    click(env.window, env.root.querySelector('[data-action="speech-stop"]'));
-    speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false, coverage: 0, counted: false } });
-    assert.equal(speechStatus.textContent, '全文朗读已停止');
     speech.emit({ state: 'once', currentIndex: null, completion: { reachedEnd: false, coverage: 0, counted: false } });
     assert.equal(speechStatus.textContent, '正在朗读所选内容');
     speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false, coverage: 0, counted: false } });
@@ -817,7 +1318,7 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     assert.equal(speechStatus.textContent, '全文朗读完成');
     assert.equal(sentence.classList.contains('pc-sentence-speaking'), false);
 
-    const play = env.root.querySelector('[data-action="speech-play"]');
+    const play = env.root.querySelector('[data-action="speech-primary"]');
     cleanup();
     const afterCleanup = speech.calls.length;
     click(env.window, play);
@@ -1243,7 +1744,7 @@ test('reader disables speech controls and explains unsupported browsers', async 
   try {
     await flush();
     const controls = [...env.root.querySelectorAll('[data-speech-control]')];
-    assert.ok(controls.length >= 5);
+    assert.equal(controls.length, 3);
     assert.ok(controls.every(control => control.disabled));
     assert.match(env.root.querySelector('[data-role="speech-unavailable"]').textContent, /浏览器.*语音/);
     click(env.window, env.root.querySelector('.pc-term-word'));
@@ -1653,17 +2154,19 @@ test('pending organizer serializes unrelated mutations while a conversion is in 
   }
 });
 
-test('reader cleanup removes real click, pointer selection, and document key listeners', async () => {
+test('reader cleanup removes click, pointer, selectionchange, and document key listeners', async () => {
   const env = installDom();
   let navigations = 0;
   let cleared = 0;
+  const timeouts = controlledTimeouts();
   const api = async path => {
     if (path === '/api/articles/a1') return articleDetail();
     throw new Error(`unexpected request ${path}`);
   };
   const cleanup = createReaderView({
     root: env.root, api, articleId: 'a1', navigate: () => { navigations += 1; },
-    speech: { isSupported: true, speakOnce() {}, load() {}, startAt() {}, pause() {}, resume() {}, setRate() {}, getRate: () => 1, subscribe: () => () => {}, stop() {} }
+    speech: { isSupported: true, speakOnce() {}, load() {}, startAt() {}, pause() {}, resume() {}, setRate() {}, getRate: () => 1, subscribe: () => () => {}, stop() {} },
+    progressRuntime: timeouts.runtime
   });
   try {
     await flush();
@@ -1678,12 +2181,17 @@ test('reader cleanup removes real click, pointer selection, and document key lis
     });
     const back = env.root.querySelector('[data-action="back-library"]');
     const term = env.root.querySelector('.pc-term-word');
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    assert.equal(timeouts.tasks.size, 1);
     cleanup();
     assert.equal(cleared, 1);
+    assert.equal(timeouts.tasks.size, 0);
 
     click(env.window, back);
     click(env.window, term);
     sentence.dispatchEvent(new env.window.MouseEvent('pointerup', { bubbles: true }));
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    assert.equal(timeouts.tasks.size, 0);
     assert.equal(navigations, 0);
     assert.equal(env.root.querySelector('[data-role="term-popover"]'), null);
     assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);

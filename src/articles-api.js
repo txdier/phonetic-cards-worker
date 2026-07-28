@@ -7,7 +7,8 @@ export async function handleArticlesApi(request, env, path, userId) {
       SELECT
         a.id, a.title, a.author, a.source, a.notes, a.created_at, a.updated_at,
         p.last_position_ratio, p.completed, p.read_count, p.active_read_ms,
-        p.full_read_aloud_count, p.updated_at AS progress_updated_at
+        p.full_read_aloud_count, p.last_aloud_sentence_index,
+        p.updated_at AS progress_updated_at
       FROM articles a
       JOIN article_progress p ON p.article_id = a.id AND p.user_id = a.user_id
       WHERE a.user_id = ?
@@ -62,7 +63,8 @@ export async function handleArticlesApi(request, env, path, userId) {
       SELECT
         a.id, a.title, a.body, a.author, a.source, a.notes, a.created_at, a.updated_at,
         p.last_position_ratio, p.completed, p.read_count, p.active_read_ms,
-        p.full_read_aloud_count, p.updated_at AS progress_updated_at
+        p.full_read_aloud_count, p.last_aloud_sentence_index,
+        p.updated_at AS progress_updated_at
       FROM articles a
       JOIN article_progress p ON p.article_id = a.id AND p.user_id = a.user_id
       WHERE a.id = ? AND a.user_id = ?
@@ -169,7 +171,8 @@ export async function handleArticlesApi(request, env, path, userId) {
         env.DB.prepare(`
           UPDATE article_progress
           SET last_position_ratio = 0, completed = 0, read_count = 0,
-              active_read_ms = 0, full_read_aloud_count = 0, updated_at = ?
+              active_read_ms = 0, full_read_aloud_count = 0,
+              last_aloud_sentence_index = NULL, updated_at = ?
           WHERE article_id = ? AND user_id = ?
         `).bind(updated.updated_at, articleId, userId),
         env.DB.prepare(`
@@ -177,6 +180,12 @@ export async function handleArticlesApi(request, env, path, userId) {
           WHERE article_id = ? AND user_id = ?
         `).bind(articleId, userId)
       );
+    } else if (updated.body !== current.body) {
+      statements.push(env.DB.prepare(`
+        UPDATE article_progress
+        SET last_aloud_sentence_index = NULL, updated_at = ?
+        WHERE article_id = ? AND user_id = ?
+      `).bind(updated.updated_at, articleId, userId));
     }
     await env.DB.batch(statements);
     return jsonResponse({
@@ -233,6 +242,7 @@ function toArticleSummary(row) {
       read_count: row.read_count,
       active_read_ms: row.active_read_ms,
       full_read_aloud_count: row.full_read_aloud_count,
+      last_aloud_sentence_index: row.last_aloud_sentence_index ?? null,
       updated_at: row.progress_updated_at
     }
   };
@@ -276,6 +286,7 @@ function zeroProgress(updatedAt) {
     read_count: 0,
     active_read_ms: 0,
     full_read_aloud_count: 0,
+    last_aloud_sentence_index: null,
     updated_at: updatedAt
   };
 }

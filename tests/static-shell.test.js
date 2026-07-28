@@ -22,10 +22,69 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
   assert.match(css, /\.pc-reader-sentence:focus-visible\s*\{[^}]*outline:[^}]*var\(--teal\)/);
   assert.doesNotMatch(css, /#pc-root\s+button\s*,/);
   assert.match(css, /\.pc-inline-error\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
-  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*\.pc-selection-action\s*\{[^}]*position:\s*static/);
   const selectionReading = css.match(/\.pc-selection-reading\s*\{([^}]*)\}/)?.[1];
   assert.ok(selectionReading, 'selection reading group should have a responsive style rule');
   assert.doesNotMatch(selectionReading, /(?:^|[;\s])(?:(?:width|min-width)\s*:|position\s*:\s*(?:fixed|absolute)|(?:left|right)\s*:)/);
+});
+
+test('reader popovers become safe-area bottom sheets on phones and coarse tablets', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const responsiveQuery = css.match(
+    /@media\s*\(max-width:\s*640px\)\s*,\s*\(max-width:\s*900px\)\s*and\s*\(pointer:\s*coarse\)\s*\{([\s\S]*?)\n\s*\}/
+  )?.[1];
+
+  assert.ok(responsiveQuery, 'phone and coarse-tablet reader popovers should share a media query');
+  assert.match(
+    responsiveQuery,
+    /\.pc-selection-action\s*,\s*\.pc-term-popover\.pc-reader-popover\s*\{[^}]*position:\s*fixed/
+  );
+  assert.match(responsiveQuery, /bottom:\s*0/);
+  assert.match(responsiveQuery, /left:\s*0/);
+  assert.match(responsiveQuery, /right:\s*0/);
+  assert.match(responsiveQuery, /max-height:\s*70dvh/);
+  assert.match(responsiveQuery, /overflow-y:\s*auto/);
+  assert.match(responsiveQuery, /padding-bottom:\s*calc\([^;]*env\(safe-area-inset-bottom\)[^;]*\)/);
+  assert.match(responsiveQuery, /border-radius:\s*[^;]+\s+[^;]+\s+0\s+0/);
+  assert.doesNotMatch(responsiveQuery, /position:\s*static/);
+});
+
+test('reader popovers visually distinguish marked and saved terms', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.pc-reader-popover\[data-term-state="marked"\]\s+\.pc-reader-popover-ribbon\s*\{[^}]*background:\s*var\(--amber\)/);
+  assert.match(css, /\.pc-reader-popover\[data-term-state="saved"\]\s+\.pc-reader-popover-ribbon\s*\{[^}]*background:\s*var\(--teal\)/);
+  assert.match(css, /\.pc-reader-popover-status-marked\s*\{[^}]*var\(--amber\)/);
+  assert.match(css, /\.pc-reader-popover-status-saved\s*\{[^}]*var\(--teal\)/);
+});
+
+test('long-reading capsule is fixed, safe-area aware, compact, and accessible', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const capsule = css.match(/\.pc-floating-speech\s*\{([^}]*)\}/)?.[1];
+  const action = css.match(/\.pc-floating-speech-action\s*\{([^}]*)\}/)?.[1];
+  const phoneAndCoarseTablet = css.match(
+    /@media\s*\(max-width:\s*640px\)\s*,\s*\(max-width:\s*900px\)\s*and\s*\(pointer:\s*coarse\)\s*\{([\s\S]*?)\n\s*@media\s*\(max-width:\s*380px\)/
+  )?.[1];
+
+  assert.ok(capsule);
+  assert.match(capsule, /position:\s*fixed/);
+  assert.match(capsule, /left:\s*50%/);
+  assert.match(capsule, /safe-area-inset-bottom/);
+  assert.match(capsule, /border-radius:\s*999px/);
+  assert.ok(action);
+  assert.match(action, /min-height:\s*44px/);
+  assert.match(action, /background:\s*transparent/);
+  assert.match(css, /\.pc-floating-speech-action:focus-visible/);
+  assert.match(css, /\.pc-reader-start-selecting\s+\.pc-reader-sentence\s*\{[^}]*outline/);
+  assert.match(css, /\.pc-reader-start-selecting\s+\.pc-reader-sentence:focus-visible/);
+  assert.match(css, /\.pc-reader-start-hint\s*\{[^}]*color:\s*var\(--ink-dim\)/);
+  assert.ok(phoneAndCoarseTablet);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry\s*\{[^}]*display:\s*grid/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-copy\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-copy\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-copy\s*\{[^}]*text-overflow:\s*ellipsis/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry \.pc-btn-ghost\s*\{[^}]*min-height:\s*44px/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry \.pc-btn-ghost\s*\{[^}]*white-space:\s*nowrap/);
 });
 
 test('navigation and word filters follow the responsive content layout', async () => {
