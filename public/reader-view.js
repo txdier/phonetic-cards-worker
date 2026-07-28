@@ -498,7 +498,7 @@ export function createReaderView({
     if (!Number.isInteger(index) || index === lastAutoFollowedSentenceIndex) return;
     lastAutoFollowedSentenceIndex = index;
     runtime.requestAnimationFrame(() => {
-      if (!mounted || speechState !== 'speaking') return;
+      if (!mounted || speechState !== 'speaking' || activeAloudSentenceIndex !== index) return;
       const sentence = root.querySelector(`[data-sentence-index="${index}"]`);
       if (!sentence) return;
       const rect = sentence.getBoundingClientRect();

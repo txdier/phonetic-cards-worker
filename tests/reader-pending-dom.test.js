@@ -304,6 +304,53 @@ test('keeps the active full-reading sentence within the viewport safe zone', asy
   }
 });
 
+test('does not follow a stale full-reading animation-frame callback', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const frames = [];
+  const scrollCalls = [];
+  Object.defineProperty(env.window, 'innerHeight', {
+    configurable: true, value: 800
+  });
+  env.window.scrollTo = options => { scrollCalls.push(options); };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: {
+      requestAnimationFrame: callback => { frames.push(callback); return frames.length; }
+    }
+  });
+  try {
+    await flush();
+    frames.length = 0;
+
+    const first = env.root.querySelector('[data-sentence-index="1"]');
+    const current = env.root.querySelector('[data-sentence-index="2"]');
+    first.getBoundingClientRect = () => ({
+      top: 690, bottom: 760, height: 70
+    });
+    current.getBoundingClientRect = () => ({
+      top: 690, bottom: 760, height: 70
+    });
+
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(frames.length, 2);
+
+    frames[0]();
+    assert.equal(scrollCalls.length, 0);
+
+    frames[1]();
+    assert.equal(scrollCalls.length, 1);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('uses instant auto-follow scrolling when reduced motion is preferred', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();
