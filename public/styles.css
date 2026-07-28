@@ -113,9 +113,11 @@
   }
   .pc-card-main { min-width: 0; }
   .pc-card-top-actions {
-    position: relative; display: grid; grid-template-columns: repeat(2, 44px);
+    position: absolute; top: 0; right: 0;
+    display: grid; grid-template-columns: repeat(2, 44px);
     gap: 8px; width: 96px;
   }
+  .pc-card-top-actions > .pc-card-icon-button:last-of-type { border-radius: 0 11px 0 7px; }
   .pc-card-icon-button {
     display: inline-grid; place-items: center; width: 44px; height: 44px; padding: 0;
     border: 0; border-radius: 7px; background: transparent; color: var(--teal); cursor: pointer;

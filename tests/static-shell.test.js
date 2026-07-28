@@ -127,6 +127,13 @@ test('word card actions and relation dialog stay responsive', async () => {
   assert.match(cardTop, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+96px/);
   assert.match(cardActions, /grid-template-columns:\s*repeat\(2,\s*44px\)/);
   assert.match(cardActions, /gap:\s*8px/);
+  assert.match(cardActions, /position:\s*absolute/);
+  assert.match(cardActions, /top:\s*0/);
+  assert.match(cardActions, /right:\s*0/);
+  assert.match(
+    css,
+    /\.pc-card-top-actions\s*>\s*\.pc-card-icon-button:last-of-type\s*\{[^}]*border-radius:\s*0\s+11px\s+0\s+7px/
+  );
   assert.match(relationDialog, /max-height:/);
   assert.match(relationDialog, /overflow-y:\s*auto/);
   assert.match(relationForm, /display:\s*grid/);
