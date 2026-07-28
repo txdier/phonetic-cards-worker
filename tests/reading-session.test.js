@@ -96,6 +96,28 @@ test('progress queue loads stored work and serializes simultaneous retries', asy
   assert.equal(calls, 1);
 });
 
+test('progress queue compacts legacy stored positions to the latest snapshot per article', async () => {
+  const stored = [
+    { kind: 'event', articleId: 'a1', event: { id: 'e1', type: 'active_ms', amount: 10 } },
+    { kind: 'position', articleId: 'a1', lastPositionRatio: 0.1, lastAloudSentenceIndex: null },
+    { kind: 'event', articleId: 'a1', event: { id: 'e2', type: 'read_complete', amount: 1 } },
+    { kind: 'position', articleId: 'a2', lastPositionRatio: 0.4, lastAloudSentenceIndex: 2 },
+    { kind: 'position', articleId: 'a1', lastPositionRatio: 0.9, lastAloudSentenceIndex: 5 }
+  ];
+  const storage = memoryStorage({ 'pc-progress-queue': JSON.stringify(stored) });
+  const sent = [];
+  const queue = createProgressQueue({
+    storage,
+    send: async item => { sent.push(item); }
+  });
+
+  const expected = [stored[0], stored[2], stored[3], stored[4]];
+  assert.deepEqual(queue.snapshot(), expected);
+  assert.equal(await queue.retry(), true);
+  assert.deepEqual(sent, expected);
+  assert.equal(storage.read('pc-progress-queue'), null);
+});
+
 test('progress sender maps queued events and positions to the API contract', async () => {
   const calls = [];
   const api = async (path, init) => { calls.push({ path, init }); return { ok: true }; };

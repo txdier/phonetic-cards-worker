@@ -71,8 +71,22 @@ function readStored(storage, key) {
   }
 }
 
+function compactStoredPositions(items) {
+  const seenArticles = new Set();
+  const compacted = [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === 'position' && typeof item.articleId === 'string') {
+      if (seenArticles.has(item.articleId)) continue;
+      seenArticles.add(item.articleId);
+    }
+    compacted.push(item);
+  }
+  return compacted.reverse();
+}
+
 export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY }) {
-  let items = readStored(storage, key);
+  let items = compactStoredPositions(readStored(storage, key));
   let activeRetry = null;
 
   function persist() {
