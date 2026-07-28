@@ -537,6 +537,23 @@
       border-radius: 14px 14px 0 0;
     }
     .pc-reader-popover-actions, .pc-selection-reading { grid-template-columns: 1fr; }
+    .pc-aloud-resume-entry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+    }
+    .pc-aloud-resume-copy {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pc-aloud-resume-entry .pc-btn-ghost {
+      min-height: 44px;
+      padding-inline: 10px;
+      white-space: nowrap;
+    }
   }
   @media (max-width: 380px) {
     .pc-toolbar-right { flex-direction: column; align-items: stretch; }

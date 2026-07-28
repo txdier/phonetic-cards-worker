@@ -364,9 +364,8 @@ export function createReaderView({
     const snippet = sentence?.text.trim() || '';
     host.append(
       element('span', 'pc-aloud-resume-copy',
-        `上次朗读：第 ${savedAloudSentenceIndex + 1} 句 “${snippet.slice(0, 32)}${snippet.length > 32 ? '…' : ''}”`),
-      actionButton('speech-locate-resume', '定位'),
-      actionButton('speech-continue-resume', '继续朗读')
+        `上次朗读：第 ${savedAloudSentenceIndex + 1} 句 “${snippet}”`),
+      actionButton('speech-jump-resume', '跳转')
     );
     return host;
   }
@@ -945,13 +944,8 @@ export function createReaderView({
     if (action === 'speech-play') {
       startFullReading(0);
     }
-    if (action === 'speech-locate-resume' && Number.isInteger(savedAloudSentenceIndex)) {
+    if (action === 'speech-jump-resume' && Number.isInteger(savedAloudSentenceIndex)) {
       locateSentence(savedAloudSentenceIndex);
-    }
-    if (action === 'speech-continue-resume' && Number.isInteger(savedAloudSentenceIndex)) {
-      const index = savedAloudSentenceIndex;
-      locateSentence(index);
-      startFullReading(index);
     }
     if (action === 'speech-start-selection') {
       const panel = target.closest('[data-role="selection-action"]');
@@ -967,7 +961,13 @@ export function createReaderView({
       if (Number.isInteger(sentenceIndex)) startFullReading(sentenceIndex);
     }
     if (action === 'speech-pause') (tts || speech).pause();
-    if (action === 'speech-resume') (tts || speech).resume();
+    if (action === 'speech-resume') {
+      if (speechState === 'paused') (tts || speech).resume();
+      else if (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex)) {
+        locateSentence(savedAloudSentenceIndex);
+        startFullReading(savedAloudSentenceIndex);
+      }
+    }
     if (action === 'speech-floating-toggle') {
       if (speechState === 'paused') (tts || speech).resume();
       else (tts || speech).pause();

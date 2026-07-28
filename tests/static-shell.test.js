@@ -61,6 +61,9 @@ test('long-reading capsule is fixed, safe-area aware, compact, and accessible', 
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const capsule = css.match(/\.pc-floating-speech\s*\{([^}]*)\}/)?.[1];
   const action = css.match(/\.pc-floating-speech-action\s*\{([^}]*)\}/)?.[1];
+  const phoneAndCoarseTablet = css.match(
+    /@media\s*\(max-width:\s*640px\)\s*,\s*\(max-width:\s*900px\)\s*and\s*\(pointer:\s*coarse\)\s*\{([\s\S]*?)\n\s*@media\s*\(max-width:\s*380px\)/
+  )?.[1];
 
   assert.ok(capsule);
   assert.match(capsule, /position:\s*fixed/);
@@ -71,6 +74,14 @@ test('long-reading capsule is fixed, safe-area aware, compact, and accessible', 
   assert.match(action, /min-height:\s*44px/);
   assert.match(action, /background:\s*transparent/);
   assert.match(css, /\.pc-floating-speech-action:focus-visible/);
+  assert.ok(phoneAndCoarseTablet);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry\s*\{[^}]*display:\s*grid/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-copy\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-copy\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-copy\s*\{[^}]*text-overflow:\s*ellipsis/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry \.pc-btn-ghost\s*\{[^}]*min-height:\s*44px/);
+  assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry \.pc-btn-ghost\s*\{[^}]*white-space:\s*nowrap/);
 });
 
 test('navigation and word filters follow the responsive content layout', async () => {

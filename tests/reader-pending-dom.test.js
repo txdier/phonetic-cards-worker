@@ -198,15 +198,22 @@ test('long reading exposes offscreen floating controls and a cross-device resume
   try {
     await flush();
     assert.equal(observedToolbar.dataset.role, 'speech-toolbar');
+    const entry = env.root.querySelector('[data-role="aloud-resume-entry"]');
+    assert.equal(entry.querySelector('[data-action="speech-continue-resume"]'), null);
+    assert.equal(entry.querySelector('[data-action="speech-jump-resume"]').textContent, '\u8df3\u8f6c');
     assert.match(env.root.querySelector('[data-role="aloud-resume-entry"]').textContent, /第 2 句/);
     assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]').nextElementSibling.dataset.sentenceIndex, '1');
 
     const resumedSentence = env.root.querySelector('[data-sentence-index="1"]');
     let located = null;
     resumedSentence.scrollIntoView = options => { located = options; };
-    click(env.window, env.root.querySelector('[data-action="speech-locate-resume"]'));
+    click(env.window, env.root.querySelector('[data-action="speech-jump-resume"]'));
     assert.equal(located.block, 'center');
     assert.equal(env.window.document.activeElement, resumedSentence);
+    assert.equal(speech.calls.some(call => call[0] === 'startAt'), false);
+
+    click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
 
     speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
     observerCallback([{ isIntersecting: false }]);
@@ -225,8 +232,8 @@ test('long reading exposes offscreen floating controls and a cross-device resume
     click(env.window, env.root.querySelector('[data-action="close-popover"]'));
     assert.equal(floating.hidden, false);
 
-    click(env.window, env.root.querySelector('[data-action="speech-continue-resume"]'));
-    assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
+    click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
+    assert.deepEqual(speech.calls.at(-1), ['resume']);
 
     speech.emit({
       state: 'idle', currentIndex: null,
@@ -239,6 +246,29 @@ test('long reading exposes offscreen floating controls and a cross-device resume
   } finally {
     cleanup();
     assert.equal(disconnects, 1);
+    env.restore();
+  }
+});
+
+test('long reading preserves the complete saved sentence for CSS truncation', async () => {
+  const env = installDom();
+  const savedSentence = 'This saved sentence is deliberately longer than thirty-two characters so CSS handles truncation.';
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      body: `First sentence. ${savedSentence} Last sentence.`,
+      progress: { last_position_ratio: 0, last_aloud_sentence_index: 1 }
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: createReaderSpeechFake().controller
+  });
+  try {
+    await flush();
+    const entry = env.root.querySelector('[data-role="aloud-resume-entry"]');
+    assert.ok(entry.textContent.includes(savedSentence));
+  } finally {
+    cleanup();
     env.restore();
   }
 });
@@ -962,7 +992,7 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     click(env.window, env.root.querySelector('[data-action="speech-pause"]'));
     click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
     click(env.window, env.root.querySelector('[data-action="speech-stop"]'));
-    assert.deepEqual(speech.calls.slice(-4), [['startAt', 0], ['pause'], ['resume'], ['stop']]);
+    assert.deepEqual(speech.calls.slice(-3), [['startAt', 0], ['pause'], ['stop']]);
 
     const rate = env.root.querySelector('[data-action="speech-rate"]');
     assert.equal(rate.type, 'range');
