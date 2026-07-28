@@ -284,7 +284,7 @@ export function createWordsView({
       restoreDialogFocus(focusKey);
     }
 
-    async function loadInitial() {
+    async function loadInitial(focusKey = null) {
       try {
         const [relationResult, targetResult] = await Promise.all([
           request(`/api/words/${encodeURIComponent(wordId)}/relations`),
@@ -294,12 +294,12 @@ export function createWordsView({
         relations = relationResult?.relations || [];
         relationTargets = targetResult?.words || [];
         loading = false;
-        renderDialog();
+        renderDialog(focusKey);
       } catch (error) {
         if (!active) return;
         loading = false;
         errorMessage = error.message || '关系加载失败';
-        renderDialog();
+        renderDialog(focusKey);
       }
     }
 
@@ -370,10 +370,11 @@ export function createWordsView({
         if (form) searchTargets(form);
       }
       if (target?.dataset.action === 'retry-relations') {
+        const focusKey = focusedBodyControlKey();
         loading = true;
         errorMessage = '';
-        renderDialog();
-        loadInitial();
+        renderDialog(focusKey);
+        loadInitial(focusKey);
       }
       if (target?.dataset.action === 'delete-relation') {
         runMutation(() => request(

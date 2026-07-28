@@ -577,8 +577,9 @@ test('relation dialog keeps focus through deferred search, add, and delete opera
   }
 });
 
-test('relation dialog reports a load failure, retries, and ignores a late close', async () => {
+test('relation dialog keeps focus through a load retry and ignores a late close', async () => {
   const env = installDom();
+  const focusedRelations = deferred();
   const lateRelations = deferred();
   const word = { id: 'w1', lemma: 'deploy', zh: '部署', forms: [], tags: [] };
   let relationAttempts = 0;
@@ -590,8 +591,8 @@ test('relation dialog reports a load failure, retries, and ignores a late close'
       if (path === '/api/words?pageSize=100&sort=word') return { words: [word] };
       if (path === '/api/words/w1/relations') {
         relationAttempts += 1;
-        if (relationAttempts === 1) throw new Error('关系加载失败');
-        return lateRelations.promise;
+        if (relationAttempts === 1 || relationAttempts === 3) throw new Error('关系加载失败');
+        return relationAttempts === 2 ? focusedRelations.promise : lateRelations.promise;
       }
       throw new Error(`unexpected request GET ${path}`);
     },
@@ -607,8 +608,32 @@ test('relation dialog reports a load failure, retries, and ignores a late close'
       env.root.querySelector('[data-role="relation-dialog-error"] span').textContent,
       '关系加载失败'
     );
+    const retry = env.root.querySelector('[data-action="retry-relations"]');
+    retry.focus();
+    click(env.window, retry);
+    let dialog = env.root.querySelector('[data-role="relation-dialog"]');
+    assert.match(dialog.textContent, /加载词间关系中/);
+    assert.equal(dialog.contains(env.window.document.activeElement), true);
+
+    focusedRelations.resolve({ relations: [] });
+    await flush();
+    dialog = env.root.querySelector('[data-role="relation-dialog"]');
+    assert.equal(dialog.contains(env.window.document.activeElement), true);
+    assert.equal(
+      env.window.document.activeElement,
+      dialog.querySelector('[data-action="close-relations"]')
+    );
+
+    env.window.document.activeElement.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.querySelector('[data-role="relation-dialog"]'), null);
+    assert.equal(env.window.document.activeElement, toggle);
+
+    click(env.window, toggle);
+    click(env.window, env.root.querySelector('[data-action="open-relations"]'));
+    await flush();
     click(env.window, env.root.querySelector('[data-action="retry-relations"]'));
-    assert.match(env.root.querySelector('[data-role="relation-dialog"]').textContent, /加载词间关系中/);
     click(env.window, env.root.querySelector('[data-action="close-relations"]'));
     lateRelations.resolve({ relations: [] });
     await flush();
