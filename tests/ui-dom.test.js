@@ -420,6 +420,15 @@ test('word relations open in a modal and update without stretching the card', as
     assert.match(dialog.textContent, /deployment/);
     assert.match(dialog.textContent, /派生/);
 
+    const sections = dialog.querySelectorAll('.pc-relation-section');
+    assert.equal(sections.length, 2);
+    assert.ok(dialog.querySelector('.pc-relation-search-field input[name="targetKeyword"]'));
+    assert.ok(dialog.querySelector('.pc-relation-search-field [data-action="search-relation-targets"]'));
+    assert.equal(dialog.querySelectorAll('.pc-relation-pair label').length, 2);
+    assert.ok(dialog.querySelector('.pc-relation-note input[name="note"]'));
+    assert.ok(dialog.querySelector('.pc-relation-form-actions .pc-btn-primary'));
+    assert.ok(dialog.querySelector('.pc-relation-delete[data-action="delete-relation"]'));
+
     const form = dialog.querySelector('[data-role="relation-form"]');
     form.elements.relationType.value = 'family';
     submit(env.window, form);

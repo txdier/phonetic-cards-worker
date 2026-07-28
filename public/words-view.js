@@ -200,14 +200,14 @@ export function createWordsView({
     host.append(overlay);
 
     function relationRows() {
-      if (!relations.length) return '<div class="pc-muted">尚未添加关系</div>';
+      if (!relations.length) return '<div class="pc-relation-empty">尚未添加关系</div>';
       return relations.map(relation => `<div class="pc-relation-row">
         <div class="pc-relation-copy">
           <b>${escapeHtml(relation.target_lemma)}</b>
           <span>${escapeHtml(RELATION_LABELS[relation.relation_type] || relation.relation_type)}</span>
           ${relation.note ? `<span class="pc-muted">${escapeHtml(relation.note)}</span>` : ''}
         </div>
-        <button type="button" class="pc-btn-ghost pc-danger" data-action="delete-relation" data-id="${escapeHtml(relation.id)}">删除</button>
+        <button type="button" class="pc-btn-ghost pc-danger pc-relation-delete" data-action="delete-relation" data-id="${escapeHtml(relation.id)}">删除</button>
       </div>`).join('');
     }
 
@@ -225,20 +225,26 @@ export function createWordsView({
           <span>${escapeHtml(errorMessage)}</span>
           <button type="button" class="pc-btn-ghost" data-action="retry-relations">重试</button>
         </div>` : ''}
-        <section class="pc-relation-list" aria-label="已有关系">
+        <section class="pc-relation-section pc-relation-list" aria-label="已有关系">
           <h3>已有关系</h3>${relationRows()}
         </section>
-        <section class="pc-relation-add">
+        <section class="pc-relation-section pc-relation-add">
           <h3>添加关系</h3>
           <form data-role="relation-form" data-word-id="${escapeHtml(wordId)}">
-            <label>搜索关联词<input name="targetKeyword" value="${escapeHtml(searchKeyword)}" placeholder="输入单词或释义"></label>
-            <button type="button" class="pc-btn-ghost" data-action="search-relation-targets">搜索</button>
-            <label>关联词<select name="targetWordId">${targetOptions}</select></label>
-            <label>关系类型<select name="relationType">
-              ${Object.entries(RELATION_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
-            </select></label>
-            <label>备注（可选）<input name="note"></label>
-            <button class="pc-btn-primary" ${targetOptions ? '' : 'disabled'}>添加关系</button>
+            <div class="pc-relation-search-field">
+              <label>搜索关联词<input name="targetKeyword" value="${escapeHtml(searchKeyword)}" placeholder="输入单词或释义"></label>
+              <button type="button" class="pc-btn-ghost pc-relation-search-button" data-action="search-relation-targets">搜索</button>
+            </div>
+            <div class="pc-relation-pair">
+              <label>关联词<select name="targetWordId">${targetOptions}</select></label>
+              <label>关系类型<select name="relationType">
+                ${Object.entries(RELATION_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
+              </select></label>
+            </div>
+            <label class="pc-relation-note">备注（可选）<input name="note"></label>
+            <div class="pc-relation-form-actions">
+              <button class="pc-btn-primary" ${targetOptions ? '' : 'disabled'}>添加关系</button>
+            </div>
           </form>
         </section>`;
       for (const control of body.querySelectorAll('button, input, select')) {

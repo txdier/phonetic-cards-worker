@@ -511,14 +511,34 @@
     background: var(--bg-panel);
   }
   .pc-relation-dialog-head .pc-dialog-title { margin: 0; overflow-wrap: anywhere; }
-  .pc-relation-dialog-body { display: grid; gap: 18px; }
+  .pc-relation-dialog-body { display: grid; gap: 16px; }
   .pc-relation-dialog-body h3 { margin: 0 0 9px; font-size: 15px; }
+  .pc-relation-section {
+    min-width: 0; padding: 16px; border: 1px solid var(--line);
+    border-radius: 10px; background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg));
+  }
   .pc-relation-dialog form {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px; margin-top: 10px;
+    display: grid; gap: 14px; margin-top: 12px;
   }
   .pc-relation-dialog form label { min-width: 0; color: var(--ink-dim); font-size: 12px; }
   .pc-relation-dialog form label :is(input, select) { width: 100%; margin-top: 5px; }
+  .pc-relation-search-field {
+    display: grid; grid-template-columns: minmax(0, 1fr) 96px;
+    gap: 8px; align-items: end;
+  }
+  .pc-relation-pair {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .pc-relation-note { display: block; }
+  .pc-relation-form-actions { display: flex; justify-content: flex-end; }
+  .pc-relation-search-button { width: 96px; height: 44px; align-self: end; }
+  .pc-relation-form-actions .pc-btn-primary { min-width: 120px; height: 44px; }
+  .pc-relation-delete { min-width: 64px; min-height: 36px; padding: 6px 10px; }
+  .pc-relation-empty {
+    padding: 12px; border: 1px dashed var(--line); border-radius: 8px;
+    color: var(--ink-dim); text-align: center;
+  }
   .pc-relation-row {
     display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line);
@@ -583,7 +603,13 @@
     .pc-dialog-backdrop { padding: 14px; }
     .pc-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .pc-toast-region { left: 14px; right: 14px; bottom: 14px; width: auto; }
-    .pc-library-filters, .pc-relation-dialog form, .pc-relation-row { grid-template-columns: 1fr; }
+    .pc-library-filters { grid-template-columns: 1fr; }
+    .pc-relation-search-field, .pc-relation-pair { grid-template-columns: 1fr; }
+    .pc-relation-search-button,
+    .pc-relation-form-actions .pc-btn-primary { width: 100%; }
+    .pc-relation-form-actions { display: block; }
+    .pc-relation-section { padding: 14px; }
+    .pc-relation-row { grid-template-columns: 1fr auto; }
     .pc-library-filters input, .pc-library-filters select,
     .pc-relation-dialog input, .pc-relation-dialog select { font-size: 16px; }
     .pc-relation-dialog { width: 100%; max-height: calc(100dvh - 28px); }

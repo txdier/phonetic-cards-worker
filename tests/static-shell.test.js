@@ -108,23 +108,43 @@ test('word card actions and relation dialog stay responsive', async () => {
   const relationDialog = css.match(/\.pc-relation-dialog\s*\{([^}]*)\}/)?.[1];
   const relationForm = css.match(/\.pc-relation-dialog form\s*\{([^}]*)\}/)?.[1];
   const relationRow = css.match(/\.pc-relation-row\s*\{([^}]*)\}/)?.[1];
+  const relationSection = css.match(/\.pc-relation-section\s*\{([^}]*)\}/)?.[1];
+  const relationSearch = css.match(/\.pc-relation-search-field\s*\{([^}]*)\}/)?.[1];
+  const relationPair = css.match(/\.pc-relation-pair\s*\{([^}]*)\}/)?.[1];
+  const relationActions = css.match(/\.pc-relation-form-actions\s*\{([^}]*)\}/)?.[1];
+  const relationSearchButton = css.match(/\.pc-relation-search-button\s*\{([^}]*)\}/)?.[1];
 
   assert.ok(cardTop, 'word card header should have a style rule');
   assert.ok(cardActions, 'word card actions should have a style rule');
   assert.ok(relationDialog, 'relation dialog should have a style rule');
   assert.ok(relationForm, 'relation form should have a style rule');
   assert.ok(relationRow, 'relation row should have a style rule');
+  assert.ok(relationSection);
+  assert.ok(relationSearch);
+  assert.ok(relationPair);
+  assert.ok(relationActions);
+  assert.ok(relationSearchButton);
   assert.match(cardTop, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+96px/);
   assert.match(cardActions, /grid-template-columns:\s*repeat\(2,\s*44px\)/);
   assert.match(cardActions, /gap:\s*8px/);
   assert.match(relationDialog, /max-height:/);
   assert.match(relationDialog, /overflow-y:\s*auto/);
-  assert.match(relationForm, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(relationForm, /display:\s*grid/);
   assert.match(relationRow, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(relationSection, /border:\s*1px\s+solid\s+var\(--line\)/);
+  assert.match(relationSearch, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+96px/);
+  assert.match(relationPair, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(relationSearchButton, /height:\s*44px/);
+  assert.match(relationActions, /justify-content:\s*flex-end/);
+  assert.match(css, /\.pc-relation-form-actions \.pc-btn-primary\s*\{[^}]*height:\s*44px/);
+  assert.match(css, /\.pc-relation-delete\s*\{[^}]*min-height:\s*36px/);
   assert.match(css, /\.pc-word-phrase\s*\{[^}]*white-space:\s*normal/);
   assert.match(css, /\.pc-word-long\s*\{[^}]*font-size:\s*17px/);
   assert.match(css, /\.pc-word-extra-long\s*\{[^}]*font-size:\s*15px/);
-  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-relation-dialog form,\s*\.pc-relation-row\s*\{[^}]*grid-template-columns:\s*1fr/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.pc-relation-search-field,\s*\.pc-relation-pair\s*\{[^}]*grid-template-columns:\s*1fr/
+  );
 });
 
 test('pending organizer uses the responsive three two one column ledger', async () => {
