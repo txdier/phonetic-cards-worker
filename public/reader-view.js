@@ -132,6 +132,7 @@ export function createReaderView({
   let activeAloudSentenceIndex = null;
   let lastAutoFollowedSentenceIndex = null;
   let savedAloudSentenceIndex = null;
+  let lastQueuedPosition = null;
   let speechToolbarOffscreen = false;
   let speechToolbarObserver = null;
   let startSelectionMode = false;
@@ -229,12 +230,23 @@ export function createReaderView({
     const currentAloudIndex = fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
       ? activeAloudSentenceIndex
       : savedAloudSentenceIndex;
-    submitProgress({
+    const position = {
       kind: 'position',
       articleId,
       lastPositionRatio: currentPositionRatio(),
       lastAloudSentenceIndex: currentAloudIndex
-    });
+    };
+    const unchanged = lastQueuedPosition
+      && lastQueuedPosition.articleId === position.articleId
+      && lastQueuedPosition.lastPositionRatio === position.lastPositionRatio
+      && lastQueuedPosition.lastAloudSentenceIndex === position.lastAloudSentenceIndex;
+    if (unchanged) return;
+    lastQueuedPosition = {
+      articleId: position.articleId,
+      lastPositionRatio: position.lastPositionRatio,
+      lastAloudSentenceIndex: position.lastAloudSentenceIndex
+    };
+    submitProgress(position);
   }
 
   function restorePosition() {

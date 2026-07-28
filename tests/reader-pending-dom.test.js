@@ -1588,6 +1588,10 @@ test('reader clears only an acknowledged deferred-progress alert', async () => {
   const env = installDom();
   const intervals = [];
   const outcomes = [false, true, false, false, true];
+  let scrollY = 0;
+  Object.defineProperty(env.window, 'innerHeight', { configurable: true, value: 1000 });
+  Object.defineProperty(env.window, 'scrollY', { configurable: true, get: () => scrollY });
+  Object.defineProperty(env.window.document.documentElement, 'scrollHeight', { configurable: true, value: 2000 });
   const api = async (path, init = {}) => {
     if (path === '/api/articles/a1' && !init.method) return articleDetail({ words: [] });
     if (path === '/api/articles/a1/markings/m1' && init.method === 'DELETE') throw new Error('取消标记失败');
@@ -1603,19 +1607,23 @@ test('reader clears only an acknowledged deferred-progress alert', async () => {
     intervals[0]();
     await flush();
     assert.equal(env.root.querySelector('[data-role="reader-error"]').dataset.errorKind, 'progress');
+    scrollY = 250;
     intervals[0]();
     await flush();
     assert.equal(env.root.querySelector('[data-role="reader-error"]'), null);
+    scrollY = 500;
     intervals[0]();
     await flush();
     assert.equal(env.root.querySelector('[data-role="reader-error"]').dataset.errorKind, 'progress');
     click(env.window, env.root.querySelector('.pc-term-pending'));
     click(env.window, env.root.querySelector('[data-action="unmark-local"]'));
     await flush();
+    scrollY = 750;
     assert.equal(env.root.querySelector('[data-role="reader-error"]').textContent, '取消标记失败');
     intervals[0]();
     await flush();
     assert.equal(env.root.querySelector('[data-role="reader-error"]').textContent, '取消标记失败');
+    scrollY = 1000;
     intervals[0]();
     await flush();
     assert.equal(env.root.querySelector('[data-role="reader-error"]').textContent, '取消标记失败');
@@ -1629,6 +1637,10 @@ test('reader progress alerts ignore stale out-of-order outcomes', async () => {
   const env = installDom();
   const intervals = [];
   const submissions = [];
+  let scrollY = 0;
+  Object.defineProperty(env.window, 'innerHeight', { configurable: true, value: 1000 });
+  Object.defineProperty(env.window, 'scrollY', { configurable: true, get: () => scrollY });
+  Object.defineProperty(env.window.document.documentElement, 'scrollHeight', { configurable: true, value: 2000 });
   const cleanup = createReaderView({
     root: env.root,
     api: async (path, init = {}) => {
@@ -1646,6 +1658,7 @@ test('reader progress alerts ignore stale out-of-order outcomes', async () => {
   try {
     await flush();
     intervals[0]();
+    scrollY = 250;
     intervals[0]();
     submissions[1].resolve(true);
     await flush();
@@ -1653,7 +1666,9 @@ test('reader progress alerts ignore stale out-of-order outcomes', async () => {
     await flush();
     assert.equal(env.root.querySelector('[data-role="reader-error"]'), null);
 
+    scrollY = 500;
     intervals[0]();
+    scrollY = 750;
     intervals[0]();
     submissions[3].resolve(false);
     await flush();
@@ -2416,6 +2431,76 @@ test('reader restores position without completing, then queues reading, time, po
     assert.equal(submitted.filter(item => item.event?.type === 'active_ms').at(-1).event.amount, 5_000);
   } finally {
     cleanup();
+    env.restore();
+  }
+});
+
+test('reader skips unchanged position snapshots while preserving active-time events', async () => {
+  const env = installDom();
+  let now = 0;
+  let scrollY = 0;
+  const submitted = [];
+  const intervals = [];
+  const speech = createReaderSpeechFake();
+  Object.defineProperty(env.window, 'innerHeight', { configurable: true, value: 1000 });
+  Object.defineProperty(env.window, 'scrollY', { configurable: true, get: () => scrollY });
+  Object.defineProperty(env.window.document.documentElement, 'scrollHeight', {
+    configurable: true, get: () => 2000
+  });
+  Object.defineProperty(env.window.document, 'visibilityState', {
+    configurable: true, value: 'visible'
+  });
+  env.window.scrollTo = ({ top }) => { scrollY = top; };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/articles/a1') {
+        return articleDetail({ progress: { last_position_ratio: 0 } });
+      }
+      throw new Error(`unexpected request ${path}`);
+    },
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressQueue: { submit: async item => { submitted.push(item); return true; } },
+    progressRuntime: {
+      now: () => now,
+      setInterval: callback => { intervals.push(callback); return callback; },
+      clearInterval() {},
+      requestAnimationFrame: callback => callback()
+    }
+  });
+  try {
+    await flush();
+    env.window.dispatchEvent(new env.window.Event('scroll'));
+    now = 5_000;
+    intervals[0]();
+    now = 10_000;
+    intervals[0]();
+    assert.equal(submitted.filter(item => item.kind === 'position').length, 1);
+    assert.equal(submitted.filter(item => item.event?.type === 'active_ms').length, 2);
+
+    Object.defineProperty(env.window.document, 'visibilityState', {
+      configurable: true, value: 'hidden'
+    });
+    env.window.document.dispatchEvent(new env.window.Event('visibilitychange'));
+    Object.defineProperty(env.window.document, 'visibilityState', {
+      configurable: true, value: 'visible'
+    });
+    env.window.document.dispatchEvent(new env.window.Event('visibilitychange'));
+    assert.equal(submitted.filter(item => item.kind === 'position').length, 1);
+
+    scrollY = 500;
+    intervals[0]();
+    assert.equal(submitted.filter(item => item.kind === 'position').length, 2);
+
+    speech.emit({ state: 'paused', currentIndex: 1 });
+    await Promise.resolve();
+    assert.equal(submitted.filter(item => item.kind === 'position').length, 3);
+
+    cleanup();
+    assert.equal(submitted.filter(item => item.kind === 'position').length, 3);
+  } finally {
     env.restore();
   }
 });
