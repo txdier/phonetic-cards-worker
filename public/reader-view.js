@@ -129,6 +129,11 @@ export function createReaderView({
   let lastProgressFailureId = 0;
   let lastProgressSuccessId = 0;
   let selectionTimer = null;
+  let speechState = 'idle';
+  let activeAloudSentenceIndex = null;
+  let savedAloudSentenceIndex = null;
+  let speechToolbarOffscreen = false;
+  let speechToolbarObserver = null;
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
@@ -136,7 +141,12 @@ export function createReaderView({
     clearInterval: progressRuntime.clearInterval || (timer => window.clearInterval(timer)),
     setTimeout: progressRuntime.setTimeout || ((callback, delay) => window.setTimeout(callback, delay)),
     clearTimeout: progressRuntime.clearTimeout || (timer => window.clearTimeout(timer)),
-    requestAnimationFrame: progressRuntime.requestAnimationFrame || (callback => window.requestAnimationFrame?.(callback) || window.setTimeout(callback, 0))
+    requestAnimationFrame: progressRuntime.requestAnimationFrame || (callback => window.requestAnimationFrame?.(callback) || window.setTimeout(callback, 0)),
+    createIntersectionObserver: progressRuntime.createIntersectionObserver || (
+      typeof globalThis.IntersectionObserver === 'function'
+        ? ((callback, options) => new globalThis.IntersectionObserver(callback, options))
+        : null
+    )
   };
   const readingSession = createReadingSession({ now: runtime.now });
   readingSession.setVisible(document.visibilityState !== 'hidden');
@@ -211,7 +221,15 @@ export function createReaderView({
       queueEvent('active_ms', amount);
       activeMs -= amount;
     }
-    submitProgress({ kind: 'position', articleId, lastPositionRatio: currentPositionRatio() });
+    const currentAloudIndex = fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
+      ? activeAloudSentenceIndex
+      : savedAloudSentenceIndex;
+    submitProgress({
+      kind: 'position',
+      articleId,
+      lastPositionRatio: currentPositionRatio(),
+      lastAloudSentenceIndex: currentAloudIndex
+    });
   }
 
   function restorePosition() {
@@ -280,7 +298,15 @@ export function createReaderView({
     const body = element('div', 'pc-reader-text');
     body.dataset.role = 'reader-text';
     const candidates = highlightCandidates(article);
-    for (const sentence of sentences) body.append(renderSentence(sentence, candidates));
+    for (const sentence of sentences) {
+      if (sentence.index === savedAloudSentenceIndex) {
+        const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
+        marker.dataset.role = 'aloud-resume-marker';
+        marker.setAttribute('aria-hidden', 'true');
+        body.append(marker);
+      }
+      body.append(renderSentence(sentence, candidates));
+    }
     container.append(body);
   }
 
@@ -288,6 +314,7 @@ export function createReaderView({
     const audioController = tts || speech;
     const speechAvailable = Boolean(audioController?.isSupported);
     const toolbar = element('section', 'pc-reader-speech');
+    toolbar.dataset.role = 'speech-toolbar';
     toolbar.setAttribute('role', 'group');
     toolbar.setAttribute('aria-label', '文章语音朗读');
     for (const [action, label] of [
@@ -328,6 +355,115 @@ export function createReaderView({
     return toolbar;
   }
 
+  function resumeEntry() {
+    const host = element('section', 'pc-aloud-resume-entry');
+    host.dataset.role = 'aloud-resume-entry';
+    host.hidden = !Number.isInteger(savedAloudSentenceIndex);
+    if (host.hidden) return host;
+    const sentence = sentences[savedAloudSentenceIndex];
+    const snippet = sentence?.text.trim() || '';
+    host.append(
+      element('span', 'pc-aloud-resume-copy',
+        `上次朗读：第 ${savedAloudSentenceIndex + 1} 句 “${snippet.slice(0, 32)}${snippet.length > 32 ? '…' : ''}”`),
+      actionButton('speech-locate-resume', '定位'),
+      actionButton('speech-continue-resume', '继续朗读')
+    );
+    return host;
+  }
+
+  function floatingSpeechControls() {
+    const capsule = element('section', 'pc-floating-speech');
+    capsule.dataset.role = 'floating-speech';
+    capsule.setAttribute('role', 'group');
+    capsule.setAttribute('aria-label', '悬浮朗读控制');
+    capsule.hidden = true;
+    const toggle = actionButton('speech-floating-toggle', '暂停', 'pc-floating-speech-action');
+    toggle.dataset.role = 'floating-speech-toggle';
+    toggle.setAttribute('aria-label', '暂停全文朗读');
+    const rate = actionButton('speech-rate-cycle', '1×', 'pc-floating-speech-action');
+    rate.dataset.role = 'floating-speech-rate';
+    rate.setAttribute('aria-label', '切换朗读语速，当前 1 倍');
+    capsule.append(toggle, element('span', 'pc-floating-speech-divider'), rate);
+    return capsule;
+  }
+
+  function bottomPanelOpen() {
+    return Boolean(root.querySelector(
+      '[data-role="selection-action"], [data-role="term-popover"], [data-role="conversion-panel"]'
+    ));
+  }
+
+  function syncSpeechControls() {
+    const rate = Number((tts || speech).getRate?.() || speech.getRate?.() || 1);
+    const topRate = root.querySelector('[data-action="speech-rate"]');
+    const topOutput = root.querySelector('[data-role="speech-rate-value"]');
+    if (topRate) topRate.value = String(rate);
+    if (topOutput) topOutput.textContent = `${rate}×`;
+    const floatingRate = root.querySelector('[data-role="floating-speech-rate"]');
+    if (floatingRate) {
+      floatingRate.textContent = `${rate}×`;
+      floatingRate.setAttribute('aria-label', `切换朗读语速，当前 ${rate} 倍`);
+    }
+    const toggle = root.querySelector('[data-role="floating-speech-toggle"]');
+    if (toggle) {
+      const paused = speechState === 'paused';
+      toggle.textContent = paused ? '继续' : '暂停';
+      toggle.setAttribute('aria-label', paused ? '继续全文朗读' : '暂停全文朗读');
+    }
+    const floating = root.querySelector('[data-role="floating-speech"]');
+    if (floating) {
+      floating.hidden = !(
+        speechToolbarOffscreen &&
+        fullSpeechActive &&
+        (speechState === 'speaking' || speechState === 'paused') &&
+        !bottomPanelOpen()
+      );
+    }
+  }
+
+  function observeSpeechToolbar() {
+    speechToolbarObserver?.disconnect?.();
+    speechToolbarObserver = null;
+    const toolbar = root.querySelector('[data-role="speech-toolbar"]');
+    if (!toolbar) return;
+    if (runtime.createIntersectionObserver) {
+      speechToolbarObserver = runtime.createIntersectionObserver(entries => {
+        if (!mounted) return;
+        speechToolbarOffscreen = !entries[entries.length - 1]?.isIntersecting;
+        syncSpeechControls();
+      }, { threshold: 0 });
+      speechToolbarObserver.observe(toolbar);
+    } else {
+      speechToolbarOffscreen = toolbar.getBoundingClientRect().bottom <= 0;
+    }
+  }
+
+  function setSavedAloudIndex(index) {
+    savedAloudSentenceIndex = Number.isInteger(index) && index >= 0 && index < sentences.length
+      ? index
+      : null;
+    if (article?.progress) article.progress.last_aloud_sentence_index = savedAloudSentenceIndex;
+    const previousEntry = root.querySelector('[data-role="aloud-resume-entry"]');
+    if (previousEntry) previousEntry.replaceWith(resumeEntry());
+    root.querySelector('[data-role="aloud-resume-marker"]')?.remove();
+    if (Number.isInteger(savedAloudSentenceIndex)) {
+      const sentence = root.querySelector(`[data-sentence-index="${savedAloudSentenceIndex}"]`);
+      if (sentence) {
+        const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
+        marker.dataset.role = 'aloud-resume-marker';
+        marker.setAttribute('aria-hidden', 'true');
+        sentence.before(marker);
+      }
+    }
+  }
+
+  function locateSentence(index) {
+    const sentence = root.querySelector(`[data-sentence-index="${index}"]`);
+    if (!sentence) return;
+    sentence.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    sentence.focus?.({ preventScroll: true });
+  }
+
   function applySpeechState(next) {
     for (const sentence of root.querySelectorAll('[data-sentence-index]')) {
       const speaking = next?.state === 'speaking'
@@ -335,6 +471,22 @@ export function createReaderView({
       sentence.classList.toggle('pc-sentence-speaking', speaking);
     }
     const nextState = next?.state || 'idle';
+    speechState = nextState;
+    if (
+      (nextState === 'speaking' || nextState === 'paused') &&
+      Number.isInteger(next?.currentIndex)
+    ) {
+      activeAloudSentenceIndex = next.currentIndex;
+    }
+    if (nextState === 'paused') {
+      fullSpeechActive = true;
+      setSavedAloudIndex(activeAloudSentenceIndex);
+      saveProgress();
+    } else if (nextState === 'idle' && next?.completion?.reachedEnd) {
+      setSavedAloudIndex(null);
+      activeAloudSentenceIndex = null;
+      saveProgress();
+    }
     const status = root.querySelector('[data-role="speech-status"]');
     if (previousSpeechState == null) {
       previousSpeechState = nextState;
@@ -364,9 +516,14 @@ export function createReaderView({
     if (next?.completionEvent?.counted) {
       if (readingSession.markReadAloudComplete().readAloudCompleted) queueEvent('read_aloud_complete');
     }
+    syncSpeechControls();
   }
 
   function render() {
+    if (fullSpeechActive) {
+      setSavedAloudIndex(activeAloudSentenceIndex);
+      saveProgress();
+    }
     clearTransient();
     suppressNextSentenceClick = false;
     root.replaceChildren();
@@ -378,16 +535,19 @@ export function createReaderView({
     if (article.source) meta.append(element('span', '', `来源：${article.source}`));
     header.append(meta);
     header.append(speechToolbar());
+    header.append(resumeEntry());
     const content = element('article', 'pc-reader-content');
     renderBody(content);
     const selectionHost = element('div', 'pc-selection-host');
     selectionHost.dataset.role = 'selection-host';
     const popoverHost = element('div', 'pc-popover-host');
     popoverHost.dataset.role = 'popover-host';
-    root.append(header, content, selectionHost, popoverHost);
+    root.append(header, content, selectionHost, popoverHost, floatingSpeechControls());
     (tts || speech).stop?.();
     speech.load(sentences.map(sentence => sentence.text));
     restorePosition();
+    observeSpeechToolbar();
+    syncSpeechControls();
   }
 
   async function load() {
@@ -399,6 +559,12 @@ export function createReaderView({
       if (!isCurrent(version)) return;
       article = next;
       sentences = splitSentences(article.body);
+      const loadedAloudIndex = article.progress?.last_aloud_sentence_index;
+      setSavedAloudIndex(
+        Number.isInteger(loadedAloudIndex) && loadedAloudIndex < sentences.length
+          ? loadedAloudIndex
+          : null
+      );
       render();
     } catch (error) {
       if (!isCurrent(version)) return;
@@ -546,6 +712,7 @@ export function createReaderView({
       rect: context.rect
     });
     host.append(panel);
+    syncSpeechControls();
     panel.querySelector('[data-role="reader-popover-bookmark"]')?.focus();
   }
 
@@ -567,6 +734,7 @@ export function createReaderView({
       onCancel: closePopover,
       onSuccess: () => { load(); }
     });
+    syncSpeechControls();
   }
 
   function renderPending(term, suppliedContext = null) {
@@ -609,6 +777,7 @@ export function createReaderView({
       rect: context.rect
     });
     host.append(panel);
+    syncSpeechControls();
     panel.querySelector('[data-role="reader-popover-bookmark"]')?.focus();
   }
 
@@ -626,12 +795,14 @@ export function createReaderView({
   function closePopover() {
     clearTransient();
     root.querySelector('[data-role="popover-host"]')?.replaceChildren();
+    syncSpeechControls();
     if (popoverTrigger?.isConnected) popoverTrigger.focus();
   }
 
   function clearSelectionPanel() {
     root.querySelector('[data-role="selection-host"]')?.replaceChildren();
     suppressNextSentenceClick = false;
+    syncSpeechControls();
   }
 
   function closeSelection() {
@@ -687,6 +858,7 @@ export function createReaderView({
     });
     host.append(panel);
     suppressNextSentenceClick = true;
+    syncSpeechControls();
   }
 
   async function markSelection(panel, trigger) {
@@ -773,6 +945,14 @@ export function createReaderView({
     if (action === 'speech-play') {
       startFullReading(0);
     }
+    if (action === 'speech-locate-resume' && Number.isInteger(savedAloudSentenceIndex)) {
+      locateSentence(savedAloudSentenceIndex);
+    }
+    if (action === 'speech-continue-resume' && Number.isInteger(savedAloudSentenceIndex)) {
+      const index = savedAloudSentenceIndex;
+      locateSentence(index);
+      startFullReading(index);
+    }
     if (action === 'speech-start-selection') {
       const panel = target.closest('[data-role="selection-action"]');
       const sentenceIndex = Number(panel?.dataset.sentenceIndex);
@@ -788,8 +968,20 @@ export function createReaderView({
     }
     if (action === 'speech-pause') (tts || speech).pause();
     if (action === 'speech-resume') (tts || speech).resume();
+    if (action === 'speech-floating-toggle') {
+      if (speechState === 'paused') (tts || speech).resume();
+      else (tts || speech).pause();
+    }
+    if (action === 'speech-rate-cycle') {
+      const current = Number((tts || speech).getRate?.() || 1);
+      const nextRate = current < 1 ? 1 : current < 1.5 ? 1.5 : 0.5;
+      (tts || speech).setRate(nextRate);
+      syncSpeechControls();
+    }
     if (action === 'speech-stop') {
       manualSpeechStop = true;
+      setSavedAloudIndex(activeAloudSentenceIndex);
+      saveProgress();
       (tts || speech).stop();
     }
     if (action === 'close-popover') {
@@ -830,6 +1022,7 @@ export function createReaderView({
       readingSession.interact();
       const appliedRate = (tts || speech).setRate(event.target.value);
       const displayedRate = Number.isFinite(Number(appliedRate)) ? Number(appliedRate) : Number(event.target.value);
+      runtime.requestAnimationFrame(syncSpeechControls);
       const output = root.querySelector('[data-role="speech-rate-value"]');
       if (output) output.textContent = `${displayedRate}×`;
     }
@@ -870,10 +1063,18 @@ export function createReaderView({
     readingSession.interact();
     const result = readingSession.updatePosition(currentPositionRatio());
     if (result.readCompleted) queueEvent('read_complete');
+    if (!runtime.createIntersectionObserver) {
+      const toolbar = root.querySelector('[data-role="speech-toolbar"]');
+      speechToolbarOffscreen = Boolean(toolbar && toolbar.getBoundingClientRect().bottom <= 0);
+      syncSpeechControls();
+    }
   }
 
   function onVisibilityChange() {
     readingSession.setVisible(document.visibilityState !== 'hidden');
+    if (document.visibilityState === 'hidden' && fullSpeechActive) {
+      setSavedAloudIndex(activeAloudSentenceIndex);
+    }
     saveProgress();
   }
 
@@ -929,6 +1130,7 @@ export function createReaderView({
   load();
 
   return () => {
+    if (fullSpeechActive) setSavedAloudIndex(activeAloudSentenceIndex);
     saveProgress();
     mounted = false;
     document.removeEventListener('selectionchange', onSelectionChange);
@@ -939,6 +1141,8 @@ export function createReaderView({
     clearTransient();
     unsubscribeSpeech?.();
     unsubscribeSpeech = null;
+    speechToolbarObserver?.disconnect?.();
+    speechToolbarObserver = null;
     (tts || speech).stop?.();
     for (const sentence of root.querySelectorAll('.pc-sentence-speaking')) sentence.classList.remove('pc-sentence-speaking');
     root.removeEventListener('click', onClick);

@@ -166,6 +166,83 @@ function assertSharedReaderPopover(panel, word) {
   );
 }
 
+test('long reading exposes offscreen floating controls and a cross-device resume marker', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const submissions = [];
+  let observerCallback = null;
+  let observedToolbar = null;
+  let disconnects = 0;
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      progress: { last_position_ratio: 0, last_aloud_sentence_index: 1 }
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressQueue: { submit: async item => { submissions.push(item); return true; } },
+    progressRuntime: {
+      setInterval: () => 1,
+      clearInterval() {},
+      requestAnimationFrame: callback => callback(),
+      createIntersectionObserver(callback) {
+        observerCallback = callback;
+        return {
+          observe(node) { observedToolbar = node; },
+          disconnect() { disconnects += 1; }
+        };
+      }
+    }
+  });
+  try {
+    await flush();
+    assert.equal(observedToolbar.dataset.role, 'speech-toolbar');
+    assert.match(env.root.querySelector('[data-role="aloud-resume-entry"]').textContent, /第 2 句/);
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]').nextElementSibling.dataset.sentenceIndex, '1');
+
+    const resumedSentence = env.root.querySelector('[data-sentence-index="1"]');
+    let located = null;
+    resumedSentence.scrollIntoView = options => { located = options; };
+    click(env.window, env.root.querySelector('[data-action="speech-locate-resume"]'));
+    assert.equal(located.block, 'center');
+    assert.equal(env.window.document.activeElement, resumedSentence);
+
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    observerCallback([{ isIntersecting: false }]);
+    const floating = env.root.querySelector('[data-role="floating-speech"]');
+    assert.equal(floating.hidden, false);
+    click(env.window, env.root.querySelector('[data-action="speech-rate-cycle"]'));
+    assert.deepEqual(speech.calls.at(-1), ['setRate', 1.5]);
+    assert.equal(env.root.querySelector('[data-role="floating-speech-rate"]').textContent, '1.5×');
+
+    speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(env.root.querySelector('[data-role="floating-speech-toggle"]').textContent, '继续');
+    assert.equal(submissions.at(-1).lastAloudSentenceIndex, 1);
+
+    click(env.window, env.root.querySelector('.pc-term'));
+    assert.equal(floating.hidden, true);
+    click(env.window, env.root.querySelector('[data-action="close-popover"]'));
+    assert.equal(floating.hidden, false);
+
+    click(env.window, env.root.querySelector('[data-action="speech-continue-resume"]'));
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
+
+    speech.emit({
+      state: 'idle', currentIndex: null,
+      completion: { reachedEnd: true }, completionEvent: { counted: true }
+    });
+    assert.equal(floating.hidden, true);
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-entry"]').hidden, true);
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]'), null);
+    assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, null);
+  } finally {
+    cleanup();
+    assert.equal(disconnects, 1);
+    env.restore();
+  }
+});
+
 test('selection suppresses the following collapsed sentence click', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();

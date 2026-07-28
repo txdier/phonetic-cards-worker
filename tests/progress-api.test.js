@@ -57,7 +57,10 @@ test('PATCH rejects malformed and non-object position payloads without data effe
     '{', 'null', '[]', '{}',
     '{"lastPositionRatio":"0.5"}',
     '{"lastPositionRatio":null}',
-    '{"lastPositionRatio":NaN}'
+    '{"lastPositionRatio":NaN}',
+    '{"lastPositionRatio":0.5,"lastAloudSentenceIndex":-1}',
+    '{"lastPositionRatio":0.5,"lastAloudSentenceIndex":1.5}',
+    '{"lastPositionRatio":0.5,"lastAloudSentenceIndex":"2"}'
   ];
 
   for (const rawBody of invalidBodies) {
@@ -72,6 +75,48 @@ test('PATCH rejects malformed and non-object position payloads without data effe
     assert.equal((await response.json()).code, 'INVALID_PROGRESS_BODY', rawBody);
     assert.deepEqual(progressRow(DB, 'a1'), before, rawBody);
   }
+});
+
+test('PATCH writes, preserves, and clears the aloud sentence independently', async t => {
+  const DB = createSeededDb();
+  t.after(() => DB.close());
+  insertArticle(DB, 'a1', 'u1', 10, true);
+
+  let response = await handleProgressApi(
+    jsonRequest('PATCH', {
+      lastPositionRatio: 0.2,
+      lastAloudSentenceIndex: 4
+    }),
+    { DB }, '/api/articles/a1/progress', 'u1'
+  );
+  assert.equal(response.status, 200);
+  assert.equal(DB.get(`
+    SELECT last_aloud_sentence_index AS value
+    FROM article_progress WHERE article_id = 'a1'
+  `).value, 4);
+
+  response = await handleProgressApi(
+    jsonRequest('PATCH', { lastPositionRatio: 0.3 }),
+    { DB }, '/api/articles/a1/progress', 'u1'
+  );
+  assert.equal(response.status, 200);
+  assert.equal(DB.get(`
+    SELECT last_aloud_sentence_index AS value
+    FROM article_progress WHERE article_id = 'a1'
+  `).value, 4);
+
+  response = await handleProgressApi(
+    jsonRequest('PATCH', {
+      lastPositionRatio: 0.4,
+      lastAloudSentenceIndex: null
+    }),
+    { DB }, '/api/articles/a1/progress', 'u1'
+  );
+  assert.equal(response.status, 200);
+  assert.equal(DB.get(`
+    SELECT last_aloud_sentence_index AS value
+    FROM article_progress WHERE article_id = 'a1'
+  `).value, null);
 });
 
 test('events update real aggregates and preserve the last saved position', async t => {

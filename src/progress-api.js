@@ -15,7 +15,12 @@ export async function handleProgressApi(request, env, path, userId) {
     if (!await findOwnedArticle(env, articleId, userId)) return articleNotFound();
 
     const body = await parseObjectBody(request);
-    if (!body || !isFiniteNumber(body.lastPositionRatio)) {
+    const hasAloudIndex = body &&
+      Object.prototype.hasOwnProperty.call(body, 'lastAloudSentenceIndex');
+    if (
+      !body || !isFiniteNumber(body.lastPositionRatio) ||
+      (hasAloudIndex && !isValidAloudIndex(body.lastAloudSentenceIndex))
+    ) {
       return invalidProgressBody();
     }
     const ratio = Math.max(0, Math.min(1, body.lastPositionRatio));
@@ -23,13 +28,21 @@ export async function handleProgressApi(request, env, path, userId) {
     await env.DB.prepare(`
       INSERT INTO article_progress
         (article_id, user_id, last_position_ratio, completed, read_count,
-         active_read_ms, full_read_aloud_count, updated_at)
-      VALUES (?, ?, ?, 0, 0, 0, 0, ?)
+         active_read_ms, full_read_aloud_count, last_aloud_sentence_index, updated_at)
+      VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
       ON CONFLICT(article_id) DO UPDATE SET
         last_position_ratio = excluded.last_position_ratio,
+        last_aloud_sentence_index = CASE
+          WHEN ? = 1 THEN excluded.last_aloud_sentence_index
+          ELSE article_progress.last_aloud_sentence_index
+        END,
         updated_at = excluded.updated_at
       WHERE article_progress.user_id = excluded.user_id
-    `).bind(articleId, userId, ratio, updatedAt).run();
+    `).bind(
+      articleId, userId, ratio,
+      hasAloudIndex ? body.lastAloudSentenceIndex : null,
+      updatedAt, hasAloudIndex ? 1 : 0
+    ).run();
     return jsonResponse({ ok: true, last_position_ratio: ratio, updated_at: updatedAt });
   }
 
@@ -100,6 +113,10 @@ async function parseObjectBody(request) {
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isValidAloudIndex(value) {
+  return value === null || (Number.isInteger(value) && value >= 0);
 }
 
 function isValidEvent(event) {

@@ -57,6 +57,22 @@ test('reader popovers visually distinguish marked and saved terms', async () => 
   assert.match(css, /\.pc-reader-popover-status-saved\s*\{[^}]*var\(--teal\)/);
 });
 
+test('long-reading capsule is fixed, safe-area aware, compact, and accessible', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const capsule = css.match(/\.pc-floating-speech\s*\{([^}]*)\}/)?.[1];
+  const action = css.match(/\.pc-floating-speech-action\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(capsule);
+  assert.match(capsule, /position:\s*fixed/);
+  assert.match(capsule, /left:\s*50%/);
+  assert.match(capsule, /safe-area-inset-bottom/);
+  assert.match(capsule, /border-radius:\s*999px/);
+  assert.ok(action);
+  assert.match(action, /min-height:\s*44px/);
+  assert.match(action, /background:\s*transparent/);
+  assert.match(css, /\.pc-floating-speech-action:focus-visible/);
+});
+
 test('navigation and word filters follow the responsive content layout', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const filters = css.match(/\.pc-library-filters\s*\{([^}]*)\}/)?.[1];
