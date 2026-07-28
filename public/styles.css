@@ -276,9 +276,11 @@
     padding: 16px 18px 14px; overflow-y: auto; overflow-wrap: anywhere;
   }
   .pc-reader-popover-ribbon {
-    position: absolute; top: 0; left: 22px; width: 18px; height: 26px; background: var(--amber);
+    position: absolute; top: 0; left: 22px; width: 18px; height: 26px;
     clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
   }
+  .pc-reader-popover[data-term-state="marked"] .pc-reader-popover-ribbon { background: var(--amber); }
+  .pc-reader-popover[data-term-state="saved"] .pc-reader-popover-ribbon { background: var(--teal); }
   .pc-popover-icon-button {
     width: 44px; height: 44px; padding: 0; border: 1px solid transparent; border-radius: 8px;
     display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
@@ -303,8 +305,17 @@
   .pc-reader-popover-primary-action { width: 100%; }
   .pc-reader-popover-status {
     display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px;
+  }
+  .pc-reader-popover-status-unmarked {
+    color: var(--ink-dim); background: var(--bg-panel-2);
+  }
+  .pc-reader-popover-status-marked {
     color: color-mix(in srgb, var(--amber) 78%, var(--ink));
     background: color-mix(in srgb, var(--amber) 16%, var(--bg-panel));
+  }
+  .pc-reader-popover-status-saved {
+    color: color-mix(in srgb, var(--teal) 78%, var(--ink));
+    background: color-mix(in srgb, var(--teal) 16%, var(--bg-panel));
   }
   .pc-reader-popover-status-main { font-weight: 600; }
   .pc-reader-popover-status-sub { color: var(--ink-dim); font-size: 11px; line-height: 1.4; }

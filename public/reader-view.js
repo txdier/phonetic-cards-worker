@@ -428,7 +428,7 @@ export function createReaderView({
   }
 
   function buildReaderPopover({
-    role, ariaLabel, displayText, marked, closeAction, bookmarkAction, bookmarkData,
+    role, ariaLabel, displayText, marked, termState, closeAction, bookmarkAction, bookmarkData,
     pronounceAction, startReadingAction = 'speech-start-popover', sentenceIndex, speechText, contextSentence, normalizedText,
     headDetails = [], body, rect
   }) {
@@ -437,10 +437,11 @@ export function createReaderView({
       : 'pc-reader-popover pc-term-popover';
     const panel = element('section', className);
     panel.dataset.role = role;
+    panel.dataset.termState = termState;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-label', ariaLabel);
     assignDataset(panel, { sentenceIndex, speechText, contextSentence, normalizedText, selectedText: displayText });
-    if (marked) {
+    if (termState === 'marked' || termState === 'saved') {
       const ribbon = element('span', 'pc-reader-popover-ribbon');
       ribbon.dataset.role = 'reader-popover-ribbon';
       ribbon.setAttribute('aria-hidden', 'true');
@@ -496,6 +497,19 @@ export function createReaderView({
     return panel;
   }
 
+  function readerStatus(state, mainText, subText) {
+    const status = element('div', `pc-reader-popover-status pc-reader-popover-status-${state}`);
+    status.dataset.role = 'reader-popover-status';
+    status.append(svgIcon(state === 'unmarked' ? 'bookmark' : 'check'));
+    const copy = element('div');
+    copy.append(
+      element('div', 'pc-reader-popover-status-main', mainText),
+      element('div', 'pc-reader-popover-status-sub', subText)
+    );
+    status.append(copy);
+    return status;
+  }
+
   function renderLookup(buttonNode, word) {
     const host = root.querySelector('[data-role="popover-host"]');
     if (!host) return;
@@ -509,6 +523,7 @@ export function createReaderView({
     const forms = (word.forms || []).map(form => form.form).filter(Boolean);
     if (forms.length) headDetails.push(element('div', 'pc-word-forms', `词形：${forms.join(' · ')}`));
     const body = element('div');
+    body.append(readerStatus('saved', '已加入记词本', '可在词库中复习'));
     body.append(element('div', 'pc-lookup-meaning', word.zh || ''));
     if (word.example) body.append(element('div', 'pc-example', word.example));
     if (word.stress) body.append(element('div', 'pc-stress-note', word.stress));
@@ -517,6 +532,7 @@ export function createReaderView({
       ariaLabel: `${context.displayText} 的词卡信息`,
       displayText: context.displayText,
       marked: Boolean(marking),
+      termState: 'saved',
       closeAction: 'close-popover',
       bookmarkAction: marking ? 'unmark-local' : 'mark-popover',
       bookmarkData: { markingId: marking?.id },
@@ -564,16 +580,7 @@ export function createReaderView({
       speechText: term.display_text
     });
     const body = element('div');
-    const status = element('div', 'pc-reader-popover-status');
-    status.dataset.role = 'reader-popover-status';
-    status.append(svgIcon('check'));
-    const statusCopy = element('div');
-    statusCopy.append(
-      element('div', 'pc-reader-popover-status-main', '已标记为生词'),
-      element('div', 'pc-reader-popover-status-sub', '来自 Learners 词库')
-    );
-    status.append(statusCopy);
-    body.append(status);
+    body.append(readerStatus('marked', '已标记 · 待整理', '尚未加入记词本'));
     const actions = element('div', 'pc-popover-actions pc-reader-popover-actions');
     const convert = actionButton('convert-pending', '加入记词本', 'pc-btn-primary');
     convert.dataset.termId = term.id;
@@ -589,6 +596,7 @@ export function createReaderView({
       ariaLabel: `${context.displayText || term.display_text} 的待整理操作`,
       displayText: context.displayText || term.display_text,
       marked: true,
+      termState: 'marked',
       closeAction: 'close-popover',
       bookmarkAction: 'unmark-local',
       bookmarkData: { markingId: marking?.id },
@@ -658,12 +666,14 @@ export function createReaderView({
     }
     const rangeRect = selection.getRangeAt(0)?.getBoundingClientRect?.();
     const body = element('div');
+    body.append(readerStatus('unmarked', '未标记', '标记后进入待整理'));
     body.append(actionButton('mark-selection', '标记为生词', 'pc-btn-primary pc-reader-popover-primary-action'));
     const panel = buildReaderPopover({
       role: 'selection-action',
       ariaLabel: `${result.displayText} 的选中文本操作`,
       displayText: result.displayText,
       marked: false,
+      termState: 'unmarked',
       closeAction: 'close-selection',
       bookmarkAction: 'mark-selection',
       pronounceAction: 'pronounce-selection',

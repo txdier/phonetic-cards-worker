@@ -48,6 +48,15 @@ test('reader popovers become safe-area bottom sheets on phones and coarse tablet
   assert.doesNotMatch(responsiveQuery, /position:\s*static/);
 });
 
+test('reader popovers visually distinguish marked and saved terms', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.pc-reader-popover\[data-term-state="marked"\]\s+\.pc-reader-popover-ribbon\s*\{[^}]*background:\s*var\(--amber\)/);
+  assert.match(css, /\.pc-reader-popover\[data-term-state="saved"\]\s+\.pc-reader-popover-ribbon\s*\{[^}]*background:\s*var\(--teal\)/);
+  assert.match(css, /\.pc-reader-popover-status-marked\s*\{[^}]*var\(--amber\)/);
+  assert.match(css, /\.pc-reader-popover-status-saved\s*\{[^}]*var\(--teal\)/);
+});
+
 test('navigation and word filters follow the responsive content layout', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const filters = css.match(/\.pc-library-filters\s*\{([^}]*)\}/)?.[1];

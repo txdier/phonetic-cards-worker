@@ -463,20 +463,31 @@ test('selection, marked term, and detail use the same popover skeleton', async (
     const selectionSentence = env.root.querySelector('[data-sentence-index="1"]');
     env.window.getSelection = () => validSelection(selectionSentence, { text: 'Select this phrase' });
     selectionSentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
-    assertSharedReaderPopover(env.root.querySelector('[data-role="selection-action"]'), 'Select this phrase');
+    let panel = env.root.querySelector('[data-role="selection-action"]');
+    assertSharedReaderPopover(panel, 'Select this phrase');
+    assert.equal(panel.dataset.termState, 'unmarked');
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /未标记/);
+    assert.ok(panel.querySelector('.pc-reader-popover-status-unmarked'));
     click(env.window, env.root.querySelector('[data-action="close-selection"]'));
 
     click(env.window, env.root.querySelector('.pc-term-pending'));
-    let panel = env.root.querySelector('[data-role="term-popover"]');
+    panel = env.root.querySelector('[data-role="term-popover"]');
     assertSharedReaderPopover(panel, 'Again');
+    assert.equal(panel.dataset.termState, 'marked');
     assert.ok(panel.querySelector('[data-role="reader-popover-ribbon"]'));
-    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /已标记为生词/);
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /已标记 · 待整理/);
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /尚未加入记词本/);
+    assert.ok(panel.querySelector('.pc-reader-popover-status-marked'));
     click(env.window, panel.querySelector('[data-action="close-popover"]'));
 
     click(env.window, env.root.querySelector('.pc-term-word'));
     panel = env.root.querySelector('[data-role="term-popover"]');
     assertSharedReaderPopover(panel, 'Deployed');
+    assert.equal(panel.dataset.termState, 'saved');
     assert.ok(panel.querySelector('[data-role="reader-popover-ribbon"]'));
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /已加入记词本/);
+    assert.match(panel.querySelector('[data-role="reader-popover-status"]').textContent, /可在词库中复习/);
+    assert.ok(panel.querySelector('.pc-reader-popover-status-saved'));
     assert.match(panel.textContent, /deploy/);
     assert.match(panel.textContent, /词形：Deployed/);
     assert.match(panel.textContent, /部署；发布/);
