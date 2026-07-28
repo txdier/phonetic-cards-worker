@@ -128,11 +128,14 @@ export function createReaderView({
   let progressSubmissionId = 0;
   let lastProgressFailureId = 0;
   let lastProgressSuccessId = 0;
+  let selectionTimer = null;
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
     setInterval: progressRuntime.setInterval || ((callback, delay) => window.setInterval(callback, delay)),
     clearInterval: progressRuntime.clearInterval || (timer => window.clearInterval(timer)),
+    setTimeout: progressRuntime.setTimeout || ((callback, delay) => window.setTimeout(callback, delay)),
+    clearTimeout: progressRuntime.clearTimeout || (timer => window.clearTimeout(timer)),
     requestAnimationFrame: progressRuntime.requestAnimationFrame || (callback => window.requestAnimationFrame?.(callback) || window.setTimeout(callback, 0))
   };
   const readingSession = createReadingSession({ now: runtime.now });
@@ -618,10 +621,14 @@ export function createReaderView({
     if (popoverTrigger?.isConnected) popoverTrigger.focus();
   }
 
-  function closeSelection() {
+  function clearSelectionPanel() {
     root.querySelector('[data-role="selection-host"]')?.replaceChildren();
-    window.getSelection?.()?.removeAllRanges?.();
     suppressNextSentenceClick = false;
+  }
+
+  function closeSelection() {
+    clearSelectionPanel();
+    window.getSelection?.()?.removeAllRanges?.();
   }
 
   function handleSelection() {
@@ -824,6 +831,30 @@ export function createReaderView({
     handleSelection();
   }
 
+  function onSelectionChange() {
+    if (selectionTimer !== null) runtime.clearTimeout(selectionTimer);
+    selectionTimer = runtime.setTimeout(() => {
+      selectionTimer = null;
+      if (!mounted) return;
+      const selection = window.getSelection?.();
+      if (
+        !selection || selection.isCollapsed || !selection.rangeCount
+        || !selection.toString().trim()
+      ) {
+        clearSelectionPanel();
+        return;
+      }
+      const startNode = sentenceNodeFor(selection.anchorNode, root);
+      const endNode = sentenceNodeFor(selection.focusNode, root);
+      if (!startNode || !endNode || startNode !== endNode) {
+        clearSelectionPanel();
+        return;
+      }
+      readingSession.interact();
+      handleSelection();
+    }, 150);
+  }
+
   function onScroll() {
     if (!article || restoringPosition) return;
     readingSession.interact();
@@ -879,6 +910,7 @@ export function createReaderView({
   root.addEventListener('pointerup', onPointerUp);
   document.addEventListener('click', onDocumentClick);
   document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('selectionchange', onSelectionChange);
   window.addEventListener('scroll', onScroll, { passive: true });
   document.addEventListener('visibilitychange', onVisibilityChange);
   unsubscribeSpeech = speech.subscribe?.(applySpeechState) || null;
@@ -888,8 +920,11 @@ export function createReaderView({
 
   return () => {
     saveProgress();
-    closeSelection();
     mounted = false;
+    document.removeEventListener('selectionchange', onSelectionChange);
+    if (selectionTimer !== null) runtime.clearTimeout(selectionTimer);
+    selectionTimer = null;
+    closeSelection();
     loadVersion += 1;
     clearTransient();
     unsubscribeSpeech?.();

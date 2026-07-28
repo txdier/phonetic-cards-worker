@@ -471,9 +471,6 @@
     .pc-article-nav-link { padding-inline: 4px; }
     .pc-article-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .pc-article-actions .pc-btn-primary { grid-column: 1 / -1; }
-    .pc-selection-action { position: static; margin: 12px 0; width: 100%; max-height: none; }
-    .pc-term-popover.pc-reader-popover { position: static; margin: 12px auto; width: 100%; max-height: none; }
-    .pc-reader-popover-actions, .pc-selection-reading { grid-template-columns: 1fr; }
     .pc-reader-text { line-height: 1.8; }
     .pc-reader-speech { align-items: stretch; }
     .pc-stats-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -483,6 +480,16 @@
     .pc-library-filters, .pc-relation-panel form, .pc-relation-row { grid-template-columns: 1fr; }
     .pc-library-filters input, .pc-library-filters select,
     .pc-relation-panel input, .pc-relation-panel select { font-size: 16px; }
+  }
+  @media (max-width: 640px), (max-width: 900px) and (pointer: coarse) {
+    .pc-selection-action, .pc-term-popover.pc-reader-popover {
+      position: fixed; top: auto; right: 0; bottom: 0; left: 0;
+      width: 100%; max-height: 70vh; max-height: 70dvh; margin: 0;
+      padding-bottom: calc(14px + env(safe-area-inset-bottom));
+      overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+      border-radius: 14px 14px 0 0;
+    }
+    .pc-reader-popover-actions, .pc-selection-reading { grid-template-columns: 1fr; }
   }
   @media (max-width: 380px) {
     .pc-toolbar-right { flex-direction: column; align-items: stretch; }

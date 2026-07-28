@@ -62,6 +62,34 @@ function validSelection(sentence, {
   };
 }
 
+function controlledTimeouts() {
+  let nextId = 0;
+  const tasks = new Map();
+  const cleared = [];
+  return {
+    runtime: {
+      setTimeout(callback, delay) {
+        const id = ++nextId;
+        tasks.set(id, { callback, delay });
+        return id;
+      },
+      clearTimeout(id) {
+        cleared.push(id);
+        tasks.delete(id);
+      }
+    },
+    tasks,
+    cleared,
+    runLatest() {
+      const entry = [...tasks.entries()].at(-1);
+      if (!entry) return;
+      const [id, task] = entry;
+      tasks.delete(id);
+      task.callback();
+    }
+  };
+}
+
 function submit(window, form) {
   form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
 }
@@ -155,6 +183,89 @@ test('selection suppresses the following collapsed sentence click', async () => 
     selected = false;
     sentence.dispatchEvent(new env.window.MouseEvent('click', { bubbles: true }));
     assert.equal(speech.calls.some(call => call[0] === 'speakOnce'), false);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('selectionchange opens the selection panel after a 150ms debounce', async () => {
+  const env = installDom();
+  const timeouts = controlledTimeouts();
+  const cleanup = createReaderView({
+    root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {},
+    speech: createReaderSpeechFake().controller, progressRuntime: timeouts.runtime
+  });
+  try {
+    await flush();
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    env.window.getSelection = () => validSelection(sentence, { text: 'Select this phrase' });
+
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
+    assert.equal(timeouts.tasks.size, 1);
+    assert.equal([...timeouts.tasks.values()][0].delay, 150);
+    timeouts.runLatest();
+    assert.equal(
+      env.root.querySelector('[data-role="selection-action"]').dataset.selectedText,
+      'Select this phrase'
+    );
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('selectionchange coalesces handle updates and keeps only a valid final selection', async () => {
+  const env = installDom();
+  const timeouts = controlledTimeouts();
+  const cleanup = createReaderView({
+    root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {},
+    speech: createReaderSpeechFake().controller, progressRuntime: timeouts.runtime
+  });
+  try {
+    await flush();
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    let selection = validSelection(sentence, { text: 'Select' });
+    env.window.getSelection = () => selection;
+
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    selection = validSelection(sentence, { text: 'Select this phrase' });
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+
+    assert.equal(timeouts.tasks.size, 1);
+    assert.equal(timeouts.cleared.length, 1);
+    timeouts.runLatest();
+    assert.equal(
+      env.root.querySelector('[data-role="selection-action"]').dataset.selectedText,
+      'Select this phrase'
+    );
+
+    selection = { isCollapsed: true, rangeCount: 0, toString: () => '' };
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    timeouts.runLatest();
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
+
+    const firstSentence = env.root.querySelector('[data-sentence-index="0"]');
+    selection = {
+      anchorNode: firstSentence.firstChild, focusNode: sentence.firstChild,
+      isCollapsed: false, rangeCount: 1, toString: () => 'safely. Select',
+      getRangeAt: () => ({ getBoundingClientRect: () => ({}) })
+    };
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    timeouts.runLatest();
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
+
+    const outside = env.window.document.body.appendChild(env.window.document.createTextNode('Outside text'));
+    selection = {
+      anchorNode: outside, focusNode: outside, isCollapsed: false, rangeCount: 1,
+      toString: () => 'Outside text',
+      getRangeAt: () => ({ getBoundingClientRect: () => ({}) })
+    };
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    timeouts.runLatest();
+    assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
   } finally {
     cleanup();
     env.restore();
@@ -1653,17 +1764,19 @@ test('pending organizer serializes unrelated mutations while a conversion is in 
   }
 });
 
-test('reader cleanup removes real click, pointer selection, and document key listeners', async () => {
+test('reader cleanup removes click, pointer, selectionchange, and document key listeners', async () => {
   const env = installDom();
   let navigations = 0;
   let cleared = 0;
+  const timeouts = controlledTimeouts();
   const api = async path => {
     if (path === '/api/articles/a1') return articleDetail();
     throw new Error(`unexpected request ${path}`);
   };
   const cleanup = createReaderView({
     root: env.root, api, articleId: 'a1', navigate: () => { navigations += 1; },
-    speech: { isSupported: true, speakOnce() {}, load() {}, startAt() {}, pause() {}, resume() {}, setRate() {}, getRate: () => 1, subscribe: () => () => {}, stop() {} }
+    speech: { isSupported: true, speakOnce() {}, load() {}, startAt() {}, pause() {}, resume() {}, setRate() {}, getRate: () => 1, subscribe: () => () => {}, stop() {} },
+    progressRuntime: timeouts.runtime
   });
   try {
     await flush();
@@ -1678,12 +1791,17 @@ test('reader cleanup removes real click, pointer selection, and document key lis
     });
     const back = env.root.querySelector('[data-action="back-library"]');
     const term = env.root.querySelector('.pc-term-word');
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    assert.equal(timeouts.tasks.size, 1);
     cleanup();
     assert.equal(cleared, 1);
+    assert.equal(timeouts.tasks.size, 0);
 
     click(env.window, back);
     click(env.window, term);
     sentence.dispatchEvent(new env.window.MouseEvent('pointerup', { bubbles: true }));
+    env.window.document.dispatchEvent(new env.window.Event('selectionchange'));
+    assert.equal(timeouts.tasks.size, 0);
     assert.equal(navigations, 0);
     assert.equal(env.root.querySelector('[data-role="term-popover"]'), null);
     assert.equal(env.root.querySelector('[data-role="selection-action"]'), null);
