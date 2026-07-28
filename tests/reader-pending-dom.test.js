@@ -212,6 +212,12 @@ test('long reading exposes offscreen floating controls and a cross-device resume
     assert.equal(env.window.document.activeElement, resumedSentence);
     assert.equal(speech.calls.some(call => call[0] === 'startAt'), false);
 
+    observerCallback([{ isIntersecting: false }]);
+    const savedFloatingToggle = env.root.querySelector('[data-role="floating-speech-toggle"]');
+    assert.equal(savedFloatingToggle.textContent, '继续');
+    click(env.window, savedFloatingToggle);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
+
     click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
     assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
 
@@ -239,13 +245,76 @@ test('long reading exposes offscreen floating controls and a cross-device resume
       state: 'idle', currentIndex: null,
       completion: { reachedEnd: true }, completionEvent: { counted: true }
     });
-    assert.equal(floating.hidden, true);
+    assert.equal(floating.hidden, false);
+    assert.equal(env.root.querySelector('[data-role="floating-speech-toggle"]').textContent, '选择起点');
     assert.equal(env.root.querySelector('[data-role="aloud-resume-entry"]').hidden, true);
     assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]'), null);
     assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, null);
   } finally {
     cleanup();
     assert.equal(disconnects, 1);
+    env.restore();
+  }
+});
+
+test('long reading start sentence selection uses an idle floating capsule and preserves ordinary sentence actions', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  let observerCallback = null;
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      progress: { last_position_ratio: 0, last_aloud_sentence_index: null }
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: {
+      setInterval: () => 1,
+      clearInterval() {},
+      requestAnimationFrame: callback => callback(),
+      createIntersectionObserver(callback) {
+        observerCallback = callback;
+        return { observe() {}, disconnect() {} };
+      }
+    }
+  });
+  try {
+    await flush();
+    observerCallback([{ isIntersecting: false }]);
+    const floating = env.root.querySelector('[data-role="floating-speech"]');
+    const toggle = floating.querySelector('[data-role="floating-speech-toggle"]');
+    assert.equal(floating.hidden, false);
+    assert.equal(toggle.textContent, '选择起点');
+    assert.equal(toggle.getAttribute('aria-label'), '选择全文朗读起点');
+
+    click(env.window, toggle);
+    assert.ok(env.root.classList.contains('pc-reader-start-selecting'));
+    assert.equal(toggle.textContent, '取消选择');
+    assert.equal(env.root.querySelector('[data-role="reader-start-hint"]').hidden, false);
+    assert.equal(speech.calls.some(call => call[0] === 'startAt'), false);
+
+    const chosen = env.root.querySelector('[data-sentence-index="2"]');
+    click(env.window, chosen);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 2]);
+    assert.equal(env.root.classList.contains('pc-reader-start-selecting'), false);
+
+    click(env.window, toggle);
+    const term = env.root.querySelector('[data-sentence-index="2"] .pc-term');
+    click(env.window, term);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 2]);
+    assert.equal(env.root.querySelector('[data-role="term-popover"]'), null);
+
+    click(env.window, toggle);
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.classList.contains('pc-reader-start-selecting'), false);
+
+    click(env.window, env.root.querySelector('[data-sentence-index="0"]'));
+    assert.equal(speech.calls.at(-1)[0], 'speakOnce');
+  } finally {
+    cleanup();
     env.restore();
   }
 });

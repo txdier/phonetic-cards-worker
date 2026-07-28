@@ -246,6 +246,21 @@
   .pc-reader-text {
     white-space: pre-wrap; overflow-wrap: anywhere; font-size: clamp(1.05rem, 2vw, 1.22rem); line-height: 1.95;
   }
+  .pc-reader-start-hint {
+    margin-bottom: 10px;
+    color: var(--ink-dim);
+    font-size: 12.5px;
+  }
+  .pc-reader-start-hint[hidden] { display: none; }
+  .pc-reader-start-selecting .pc-reader-sentence {
+    outline: 1px dashed color-mix(in srgb, var(--teal) 55%, transparent);
+    outline-offset: 3px;
+    cursor: crosshair;
+  }
+  .pc-reader-start-selecting .pc-reader-sentence:hover,
+  .pc-reader-start-selecting .pc-reader-sentence:focus-visible {
+    outline: 3px solid var(--teal);
+  }
   .pc-reader-sentence { scroll-margin-block: 20vh; border-radius: 4px; cursor: pointer; }
   .pc-reader-sentence:focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
   .pc-reader-sentence.pc-sentence-speaking {

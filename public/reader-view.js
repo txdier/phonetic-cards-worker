@@ -134,6 +134,7 @@ export function createReaderView({
   let savedAloudSentenceIndex = null;
   let speechToolbarOffscreen = false;
   let speechToolbarObserver = null;
+  let startSelectionMode = false;
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
@@ -166,6 +167,7 @@ export function createReaderView({
   }
 
   function startFullReading(index) {
+    setStartSelectionMode(false);
     if (tts?.startArticle) {
       tts.startArticle(
         articleId,
@@ -376,9 +378,10 @@ export function createReaderView({
     capsule.setAttribute('role', 'group');
     capsule.setAttribute('aria-label', '悬浮朗读控制');
     capsule.hidden = true;
-    const toggle = actionButton('speech-floating-toggle', '暂停', 'pc-floating-speech-action');
+    const action = floatingSpeechAction();
+    const toggle = actionButton('speech-floating-toggle', action.label, 'pc-floating-speech-action');
     toggle.dataset.role = 'floating-speech-toggle';
-    toggle.setAttribute('aria-label', '暂停全文朗读');
+    toggle.setAttribute('aria-label', action.ariaLabel);
     const rate = actionButton('speech-rate-cycle', '1×', 'pc-floating-speech-action');
     rate.dataset.role = 'floating-speech-rate';
     rate.setAttribute('aria-label', '切换朗读语速，当前 1 倍');
@@ -390,6 +393,27 @@ export function createReaderView({
     return Boolean(root.querySelector(
       '[data-role="selection-action"], [data-role="term-popover"], [data-role="conversion-panel"]'
     ));
+  }
+
+  function setStartSelectionMode(enabled) {
+    startSelectionMode = Boolean(enabled);
+    root.classList.toggle('pc-reader-start-selecting', startSelectionMode);
+    const hint = root.querySelector('[data-role="reader-start-hint"]');
+    if (hint) hint.hidden = !startSelectionMode;
+    syncSpeechControls();
+  }
+
+  function floatingSpeechAction() {
+    if (speechState === 'speaking') {
+      return { label: '暂停', ariaLabel: '暂停全文朗读' };
+    }
+    if (speechState === 'paused' || Number.isInteger(savedAloudSentenceIndex)) {
+      return { label: '继续', ariaLabel: '继续全文朗读' };
+    }
+    if (startSelectionMode) {
+      return { label: '取消选择', ariaLabel: '取消选择全文朗读起点' };
+    }
+    return { label: '选择起点', ariaLabel: '选择全文朗读起点' };
   }
 
   function syncSpeechControls() {
@@ -405,16 +429,19 @@ export function createReaderView({
     }
     const toggle = root.querySelector('[data-role="floating-speech-toggle"]');
     if (toggle) {
-      const paused = speechState === 'paused';
-      toggle.textContent = paused ? '继续' : '暂停';
-      toggle.setAttribute('aria-label', paused ? '继续全文朗读' : '暂停全文朗读');
+      const action = floatingSpeechAction();
+      toggle.textContent = action.label;
+      toggle.setAttribute('aria-label', action.ariaLabel);
     }
     const floating = root.querySelector('[data-role="floating-speech"]');
     if (floating) {
+      const hasAvailableAction =
+        speechState === 'speaking' ||
+        speechState === 'paused' ||
+        speechState === 'idle';
       floating.hidden = !(
         speechToolbarOffscreen &&
-        fullSpeechActive &&
-        (speechState === 'speaking' || speechState === 'paused') &&
+        hasAvailableAction &&
         !bottomPanelOpen()
       );
     }
@@ -524,6 +551,7 @@ export function createReaderView({
       saveProgress();
     }
     clearTransient();
+    setStartSelectionMode(false);
     suppressNextSentenceClick = false;
     root.replaceChildren();
     const header = element('header', 'pc-reader-header');
@@ -536,6 +564,15 @@ export function createReaderView({
     header.append(speechToolbar());
     header.append(resumeEntry());
     const content = element('article', 'pc-reader-content');
+    const startHint = element(
+      'div',
+      'pc-reader-start-hint',
+      '请选择开始全文朗读的句子'
+    );
+    startHint.dataset.role = 'reader-start-hint';
+    startHint.setAttribute('role', 'status');
+    startHint.hidden = !startSelectionMode;
+    content.append(startHint);
     renderBody(content);
     const selectionHost = element('div', 'pc-selection-host');
     selectionHost.dataset.role = 'selection-host';
@@ -925,6 +962,17 @@ export function createReaderView({
   }
 
   function onClick(event) {
+    const chosenSentence = event.target.closest?.(
+      '[data-role="reader-text"] [data-sentence-index]'
+    );
+    if (startSelectionMode && chosenSentence && root.contains(chosenSentence)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const index = Number(chosenSentence.dataset.sentenceIndex);
+      setStartSelectionMode(false);
+      if (Number.isInteger(index)) startFullReading(index);
+      return;
+    }
     if (suppressNextSentenceClick && event.target.closest('[data-role="reader-text"]')) {
       suppressNextSentenceClick = false;
       event.preventDefault();
@@ -969,8 +1017,15 @@ export function createReaderView({
       }
     }
     if (action === 'speech-floating-toggle') {
-      if (speechState === 'paused') (tts || speech).resume();
-      else (tts || speech).pause();
+      if (speechState === 'speaking') {
+        (tts || speech).pause();
+      } else if (speechState === 'paused') {
+        (tts || speech).resume();
+      } else if (Number.isInteger(savedAloudSentenceIndex)) {
+        startFullReading(savedAloudSentenceIndex);
+      } else {
+        setStartSelectionMode(!startSelectionMode);
+      }
     }
     if (action === 'speech-rate-cycle') {
       const current = Number((tts || speech).getRate?.() || 1);
@@ -1080,6 +1135,21 @@ export function createReaderView({
 
   function onKeyDown(event) {
     const sentence = event.target.closest?.('[data-sentence-index]');
+    if (
+      startSelectionMode && event.target === sentence &&
+      (event.key === 'Enter' || event.key === ' ')
+    ) {
+      event.preventDefault();
+      const index = Number(sentence.dataset.sentenceIndex);
+      setStartSelectionMode(false);
+      if (Number.isInteger(index)) startFullReading(index);
+      return;
+    }
+    if (event.key === 'Escape' && startSelectionMode) {
+      event.preventDefault();
+      setStartSelectionMode(false);
+      return;
+    }
     if (event.target === sentence && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       readingSession.interact();
@@ -1136,6 +1206,7 @@ export function createReaderView({
     document.removeEventListener('selectionchange', onSelectionChange);
     if (selectionTimer !== null) runtime.clearTimeout(selectionTimer);
     selectionTimer = null;
+    setStartSelectionMode(false);
     closeSelection();
     loadVersion += 1;
     clearTransient();

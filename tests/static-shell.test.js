@@ -74,6 +74,9 @@ test('long-reading capsule is fixed, safe-area aware, compact, and accessible', 
   assert.match(action, /min-height:\s*44px/);
   assert.match(action, /background:\s*transparent/);
   assert.match(css, /\.pc-floating-speech-action:focus-visible/);
+  assert.match(css, /\.pc-reader-start-selecting\s+\.pc-reader-sentence\s*\{[^}]*outline/);
+  assert.match(css, /\.pc-reader-start-selecting\s+\.pc-reader-sentence:focus-visible/);
+  assert.match(css, /\.pc-reader-start-hint\s*\{[^}]*color:\s*var\(--ink-dim\)/);
   assert.ok(phoneAndCoarseTablet);
   assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry\s*\{[^}]*display:\s*grid/);
   assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
