@@ -131,6 +131,7 @@ export function createReaderView({
   let selectionTimer = null;
   let speechState = 'idle';
   let activeAloudSentenceIndex = null;
+  let lastAutoFollowedSentenceIndex = null;
   let savedAloudSentenceIndex = null;
   let speechToolbarOffscreen = false;
   let speechToolbarObserver = null;
@@ -143,6 +144,9 @@ export function createReaderView({
     setTimeout: progressRuntime.setTimeout || ((callback, delay) => window.setTimeout(callback, delay)),
     clearTimeout: progressRuntime.clearTimeout || (timer => window.clearTimeout(timer)),
     requestAnimationFrame: progressRuntime.requestAnimationFrame || (callback => window.requestAnimationFrame?.(callback) || window.setTimeout(callback, 0)),
+    prefersReducedMotion: progressRuntime.prefersReducedMotion || (
+      () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+    ),
     createIntersectionObserver: progressRuntime.createIntersectionObserver || (
       typeof globalThis.IntersectionObserver === 'function'
         ? ((callback, options) => new globalThis.IntersectionObserver(callback, options))
@@ -490,6 +494,29 @@ export function createReaderView({
     sentence.focus?.({ preventScroll: true });
   }
 
+  function followSpeakingSentence(index) {
+    if (!Number.isInteger(index) || index === lastAutoFollowedSentenceIndex) return;
+    lastAutoFollowedSentenceIndex = index;
+    runtime.requestAnimationFrame(() => {
+      if (!mounted || speechState !== 'speaking') return;
+      const sentence = root.querySelector(`[data-sentence-index="${index}"]`);
+      if (!sentence) return;
+      const rect = sentence.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || 0;
+      const safeTop = viewportHeight * 0.15;
+      const safeBottom = viewportHeight * 0.78;
+      if (rect.top >= safeTop && rect.bottom <= safeBottom) return;
+      const top = Math.max(
+        0,
+        (window.scrollY || 0) + rect.top - (viewportHeight * 0.32)
+      );
+      window.scrollTo?.({
+        top,
+        behavior: runtime.prefersReducedMotion() ? 'auto' : 'smooth'
+      });
+    });
+  }
+
   function applySpeechState(next) {
     for (const sentence of root.querySelectorAll('[data-sentence-index]')) {
       const speaking = next?.state === 'speaking'
@@ -541,6 +568,11 @@ export function createReaderView({
     }
     if (next?.completionEvent?.counted) {
       if (readingSession.markReadAloudComplete().readAloudCompleted) queueEvent('read_aloud_complete');
+    }
+    if (nextState === 'speaking' && Number.isInteger(next?.currentIndex)) {
+      followSpeakingSentence(next.currentIndex);
+    } else if (nextState !== 'speaking') {
+      lastAutoFollowedSentenceIndex = null;
     }
     syncSpeechControls();
   }

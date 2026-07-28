@@ -257,6 +257,88 @@ test('long reading exposes offscreen floating controls and a cross-device resume
   }
 });
 
+test('keeps the active full-reading sentence within the viewport safe zone', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const scrollCalls = [];
+  Object.defineProperty(env.window, 'innerHeight', {
+    configurable: true, value: 800
+  });
+  env.window.scrollTo = options => { scrollCalls.push(options); };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: { requestAnimationFrame: callback => callback() }
+  });
+  try {
+    await flush();
+    scrollCalls.length = 0;
+
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    sentence.getBoundingClientRect = () => ({
+      top: 200, bottom: 300, height: 100
+    });
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 0);
+
+    const below = env.root.querySelector('[data-sentence-index="2"]');
+    below.getBoundingClientRect = () => ({
+      top: 690, bottom: 760, height: 70
+    });
+    speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 1);
+    assert.equal(scrollCalls[0].behavior, 'smooth');
+    assert.equal(scrollCalls[0].top, 434);
+
+    speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 1);
+
+    speech.emit({ state: 'paused', currentIndex: 2, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.length, 1);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('uses instant auto-follow scrolling when reduced motion is preferred', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const scrollCalls = [];
+  Object.defineProperty(env.window, 'innerHeight', {
+    configurable: true, value: 800
+  });
+  env.window.scrollTo = options => { scrollCalls.push(options); };
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressRuntime: {
+      requestAnimationFrame: callback => callback(),
+      prefersReducedMotion: () => true
+    }
+  });
+  try {
+    await flush();
+    scrollCalls.length = 0;
+
+    const sentence = env.root.querySelector('[data-sentence-index="1"]');
+    sentence.getBoundingClientRect = () => ({
+      top: 20, bottom: 90, height: 70
+    });
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(scrollCalls.at(-1).behavior, 'auto');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('long reading start sentence selection uses an idle floating capsule and preserves ordinary sentence actions', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();
