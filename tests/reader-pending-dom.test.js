@@ -215,10 +215,25 @@ test('long reading exposes offscreen floating controls and a cross-device resume
     observerCallback([{ isIntersecting: false }]);
     const savedFloatingToggle = env.root.querySelector('[data-role="floating-speech-toggle"]');
     assert.equal(savedFloatingToggle.textContent, '继续');
+
+    speech.emit({ state: 'once', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(savedFloatingToggle.textContent, '选择起点');
+    const callsBeforeSelection = speech.calls.length;
+    click(env.window, savedFloatingToggle);
+    assert.equal(speech.calls.length, callsBeforeSelection);
+    assert.equal(env.root.querySelector('[data-role="reader-start-hint"]').hidden, false);
+    click(env.window, savedFloatingToggle);
+    assert.equal(env.root.querySelector('[data-role="reader-start-hint"]').hidden, true);
+    speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(savedFloatingToggle.textContent, '继续');
+
     click(env.window, savedFloatingToggle);
     assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
 
-    click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
+    const primary = env.root.querySelector('[data-action="speech-primary"]');
+    assert.equal(primary.textContent, '继续');
+    assert.equal(env.root.querySelector('[data-action="speech-restart"]').hidden, false);
+    click(env.window, primary);
     assert.deepEqual(speech.calls.at(-1), ['startAt', 1]);
 
     speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
@@ -238,7 +253,7 @@ test('long reading exposes offscreen floating controls and a cross-device resume
     click(env.window, env.root.querySelector('[data-action="close-popover"]'));
     assert.equal(floating.hidden, false);
 
-    click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
+    click(env.window, primary);
     assert.deepEqual(speech.calls.at(-1), ['resume']);
 
     speech.emit({
@@ -1104,7 +1119,7 @@ test('long article keeps compact controls and starts full reading at zero', asyn
     assert.equal(env.root.querySelectorAll('[data-sentence-index]').length, 60);
     assert.equal(env.root.querySelector('[data-action="speech-start"]'), null);
     assert.equal(env.root.querySelectorAll('.pc-reader-speech option').length, 0);
-    click(env.window, env.root.querySelector('[data-action="speech-play"]'));
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
     assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
   } finally {
     cleanup();
@@ -1170,6 +1185,71 @@ test('rate value follows real range input and controller rate', async () => {
   }
 });
 
+test('reader exposes one stateful full-reading action and restart only after progress', async () => {
+  const env = installDom();
+  const speech = createReaderSpeechFake();
+  const submissions = [];
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail(),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    progressQueue: { submit: async item => { submissions.push(item); return true; } },
+    progressRuntime: {
+      setInterval: () => 1,
+      clearInterval() {},
+      requestAnimationFrame: callback => callback()
+    }
+  });
+  try {
+    await flush();
+    const primary = env.root.querySelector('[data-action="speech-primary"]');
+    const restart = env.root.querySelector('[data-action="speech-restart"]');
+    assert.equal(primary.textContent, '播放');
+    assert.equal(restart.hidden, true);
+    assert.equal(env.root.querySelector('[data-action="speech-stop"]'), null);
+
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
+
+    speech.emit({ state: 'speaking', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '暂停');
+    assert.equal(restart.hidden, true);
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['pause']);
+
+    speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '继续');
+    assert.equal(restart.hidden, false);
+    click(env.window, primary);
+    assert.deepEqual(speech.calls.at(-1), ['resume']);
+
+    speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
+    speech.emit({ state: 'once', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '播放');
+    assert.equal(restart.hidden, true);
+    speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false } });
+    assert.equal(primary.textContent, '继续');
+    assert.equal(restart.hidden, false);
+    click(env.window, restart);
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
+    assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, null);
+
+    speech.emit({
+      state: 'idle',
+      currentIndex: null,
+      completion: { reachedEnd: true },
+      completionEvent: { counted: true }
+    });
+    assert.equal(primary.textContent, '播放');
+    assert.equal(restart.hidden, true);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('reader wires sequenced controls, rate, sentence and selection speech, active state, and cleanup', async () => {
   const env = installDom();
   const speech = createReaderSpeechFake();
@@ -1186,11 +1266,8 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     const loaded = speech.calls.find(call => call[0] === 'load');
     assert.equal(loaded[1].length, 3);
 
-    click(env.window, env.root.querySelector('[data-action="speech-play"]'));
-    click(env.window, env.root.querySelector('[data-action="speech-pause"]'));
-    click(env.window, env.root.querySelector('[data-action="speech-resume"]'));
-    click(env.window, env.root.querySelector('[data-action="speech-stop"]'));
-    assert.deepEqual(speech.calls.slice(-3), [['startAt', 0], ['pause'], ['stop']]);
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
 
     const rate = env.root.querySelector('[data-action="speech-rate"]');
     assert.equal(rate.type, 'range');
@@ -1232,9 +1309,6 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     assert.equal(speechStatus.textContent, '全文朗读已暂停');
     speech.emit({ state: 'speaking', currentIndex: 2, completion: { reachedEnd: false, coverage: 0.3, counted: false } });
     assert.equal(speechStatus.textContent, '继续全文朗读');
-    click(env.window, env.root.querySelector('[data-action="speech-stop"]'));
-    speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false, coverage: 0, counted: false } });
-    assert.equal(speechStatus.textContent, '全文朗读已停止');
     speech.emit({ state: 'once', currentIndex: null, completion: { reachedEnd: false, coverage: 0, counted: false } });
     assert.equal(speechStatus.textContent, '正在朗读所选内容');
     speech.emit({ state: 'idle', currentIndex: null, completion: { reachedEnd: false, coverage: 0, counted: false } });
@@ -1244,7 +1318,7 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
     assert.equal(speechStatus.textContent, '全文朗读完成');
     assert.equal(sentence.classList.contains('pc-sentence-speaking'), false);
 
-    const play = env.root.querySelector('[data-action="speech-play"]');
+    const play = env.root.querySelector('[data-action="speech-primary"]');
     cleanup();
     const afterCleanup = speech.calls.length;
     click(env.window, play);
@@ -1670,7 +1744,7 @@ test('reader disables speech controls and explains unsupported browsers', async 
   try {
     await flush();
     const controls = [...env.root.querySelectorAll('[data-speech-control]')];
-    assert.ok(controls.length >= 5);
+    assert.equal(controls.length, 3);
     assert.ok(controls.every(control => control.disabled));
     assert.match(env.root.querySelector('[data-role="speech-unavailable"]').textContent, /浏览器.*语音/);
     click(env.window, env.root.querySelector('.pc-term-word'));

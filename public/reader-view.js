@@ -123,7 +123,6 @@ export function createReaderView({
   let popoverTrigger = null;
   let previousSpeechState = null;
   let fullSpeechActive = false;
-  let manualSpeechStop = false;
   let suppressNextSentenceClick = false;
   let progressSubmissionId = 0;
   let lastProgressFailureId = 0;
@@ -323,14 +322,16 @@ export function createReaderView({
     toolbar.dataset.role = 'speech-toolbar';
     toolbar.setAttribute('role', 'group');
     toolbar.setAttribute('aria-label', '文章语音朗读');
-    for (const [action, label] of [
-      ['speech-play', '播放'], ['speech-pause', '暂停'], ['speech-resume', '继续'], ['speech-stop', '停止']
-    ]) {
-      const button = actionButton(action, label);
-      button.dataset.speechControl = '';
-      button.disabled = !speechAvailable;
-      toolbar.append(button);
-    }
+    const primary = actionButton('speech-primary', '播放');
+    primary.dataset.role = 'speech-primary';
+    primary.dataset.speechControl = '';
+    primary.disabled = !speechAvailable;
+    const restart = actionButton('speech-restart', '从头开始');
+    restart.dataset.role = 'speech-restart';
+    restart.dataset.speechControl = '';
+    restart.disabled = !speechAvailable;
+    restart.hidden = true;
+    toolbar.append(primary, restart);
     const rateLabel = element('label', 'pc-speech-field');
     rateLabel.append(document.createTextNode('语速'));
     const rate = element('input');
@@ -382,7 +383,7 @@ export function createReaderView({
     capsule.setAttribute('role', 'group');
     capsule.setAttribute('aria-label', '悬浮朗读控制');
     capsule.hidden = true;
-    const action = floatingSpeechAction();
+    const action = speechAction(true);
     const toggle = actionButton('speech-floating-toggle', action.label, 'pc-floating-speech-action');
     toggle.dataset.role = 'floating-speech-toggle';
     toggle.setAttribute('aria-label', action.ariaLabel);
@@ -407,17 +408,22 @@ export function createReaderView({
     syncSpeechControls();
   }
 
-  function floatingSpeechAction() {
+  function speechAction(selectableStart = false) {
     if (speechState === 'speaking') {
       return { label: '暂停', ariaLabel: '暂停全文朗读' };
     }
-    if (speechState === 'paused' || Number.isInteger(savedAloudSentenceIndex)) {
+    if (
+      speechState === 'paused' ||
+      (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex))
+    ) {
       return { label: '继续', ariaLabel: '继续全文朗读' };
     }
-    if (startSelectionMode) {
+    if (selectableStart && startSelectionMode) {
       return { label: '取消选择', ariaLabel: '取消选择全文朗读起点' };
     }
-    return { label: '选择起点', ariaLabel: '选择全文朗读起点' };
+    return selectableStart
+      ? { label: '选择起点', ariaLabel: '选择全文朗读起点' }
+      : { label: '播放', ariaLabel: '从头播放全文' };
   }
 
   function syncSpeechControls() {
@@ -433,9 +439,22 @@ export function createReaderView({
     }
     const toggle = root.querySelector('[data-role="floating-speech-toggle"]');
     if (toggle) {
-      const action = floatingSpeechAction();
+      const action = speechAction(true);
       toggle.textContent = action.label;
       toggle.setAttribute('aria-label', action.ariaLabel);
+    }
+    const primary = root.querySelector('[data-role="speech-primary"]');
+    if (primary) {
+      const action = speechAction();
+      primary.textContent = action.label;
+      primary.setAttribute('aria-label', action.ariaLabel);
+    }
+    const restart = root.querySelector('[data-role="speech-restart"]');
+    if (restart) {
+      restart.hidden = !(
+        speechState === 'paused' ||
+        (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex))
+      );
     }
     const floating = root.querySelector('[data-role="floating-speech"]');
     if (floating) {
@@ -554,14 +573,11 @@ export function createReaderView({
         if (previousSpeechState === 'paused') announcement = '继续全文朗读';
         else if (!fullSpeechActive) announcement = '开始全文朗读';
         fullSpeechActive = true;
-        manualSpeechStop = false;
       } else if (nextState === 'idle' && previousSpeechState !== 'idle') {
         if (previousSpeechState === 'once') announcement = '所选内容朗读结束';
         else if (next?.completion?.reachedEnd) announcement = '全文朗读完成';
-        else if (manualSpeechStop) announcement = '全文朗读已停止';
         else if (fullSpeechActive) announcement = '全文朗读已中断';
         fullSpeechActive = false;
-        manualSpeechStop = false;
       }
       if (announcement && status.textContent !== announcement) status.textContent = announcement;
       previousSpeechState = nextState;
@@ -1021,7 +1037,23 @@ export function createReaderView({
     if (action === 'pronounce-selection') {
       speech.speakOnce(target.closest('[data-role="selection-action"]')?.dataset.selectedText || '');
     }
-    if (action === 'speech-play') {
+    if (action === 'speech-primary') {
+      if (speechState === 'speaking') {
+        (tts || speech).pause();
+      } else if (speechState === 'paused') {
+        (tts || speech).resume();
+      } else if (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex)) {
+        locateSentence(savedAloudSentenceIndex);
+        startFullReading(savedAloudSentenceIndex);
+      } else {
+        startFullReading(0);
+      }
+    }
+    if (action === 'speech-restart') {
+      fullSpeechActive = false;
+      activeAloudSentenceIndex = null;
+      setSavedAloudIndex(null);
+      saveProgress();
       startFullReading(0);
     }
     if (action === 'speech-jump-resume' && Number.isInteger(savedAloudSentenceIndex)) {
@@ -1040,20 +1072,15 @@ export function createReaderView({
       else closePopover();
       if (Number.isInteger(sentenceIndex)) startFullReading(sentenceIndex);
     }
-    if (action === 'speech-pause') (tts || speech).pause();
-    if (action === 'speech-resume') {
-      if (speechState === 'paused') (tts || speech).resume();
-      else if (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex)) {
-        locateSentence(savedAloudSentenceIndex);
-        startFullReading(savedAloudSentenceIndex);
-      }
-    }
     if (action === 'speech-floating-toggle') {
       if (speechState === 'speaking') {
         (tts || speech).pause();
       } else if (speechState === 'paused') {
         (tts || speech).resume();
-      } else if (Number.isInteger(savedAloudSentenceIndex)) {
+      } else if (
+        speechState === 'idle' &&
+        Number.isInteger(savedAloudSentenceIndex)
+      ) {
         startFullReading(savedAloudSentenceIndex);
       } else {
         setStartSelectionMode(!startSelectionMode);
@@ -1064,12 +1091,6 @@ export function createReaderView({
       const nextRate = current < 1 ? 1 : current < 1.5 ? 1.5 : 0.5;
       (tts || speech).setRate(nextRate);
       syncSpeechControls();
-    }
-    if (action === 'speech-stop') {
-      manualSpeechStop = true;
-      setSavedAloudIndex(activeAloudSentenceIndex);
-      saveProgress();
-      (tts || speech).stop();
     }
     if (action === 'close-popover') {
       closePopover();
