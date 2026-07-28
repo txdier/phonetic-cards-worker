@@ -198,6 +198,36 @@ export function createWordsView({
     dialog.append(heading, body);
     overlay.append(dialog);
     host.append(overlay);
+    const closeButton = heading.querySelector('[data-action="close-relations"]');
+
+    function focusedBodyControlKey() {
+      const control = document.activeElement;
+      if (!body.contains(control)) return null;
+      return {
+        tagName: control.tagName,
+        action: control.dataset.action || '',
+        id: control.dataset.id || '',
+        name: control.getAttribute('name') || '',
+        formSubmit: control.matches(
+          'form[data-role="relation-form"] button:not([type]), form[data-role="relation-form"] button[type="submit"]'
+        )
+      };
+    }
+
+    function restoreDialogFocus(key) {
+      if (!key) return;
+      const replacement = [...body.querySelectorAll('button, input, select')].find(control => (
+        control.tagName === key.tagName
+        && (control.dataset.action || '') === key.action
+        && (control.dataset.id || '') === key.id
+        && (control.getAttribute('name') || '') === key.name
+        && control.matches(
+          'form[data-role="relation-form"] button:not([type]), form[data-role="relation-form"] button[type="submit"]'
+        ) === key.formSubmit
+      ));
+      if (replacement && !replacement.disabled) replacement.focus();
+      else closeButton.focus();
+    }
 
     function relationRows() {
       if (!relations.length) return '<div class="pc-relation-empty">尚未添加关系</div>';
@@ -211,10 +241,11 @@ export function createWordsView({
       </div>`).join('');
     }
 
-    function renderDialog() {
+    function renderDialog(focusKey = null) {
       if (!active) return;
       if (loading) {
         body.innerHTML = '<div class="pc-empty">加载词间关系中…</div>';
+        restoreDialogFocus(focusKey);
         return;
       }
       const targetOptions = relationTargets
@@ -250,6 +281,7 @@ export function createWordsView({
       for (const control of body.querySelectorAll('button, input, select')) {
         if (busy) control.disabled = true;
       }
+      restoreDialogFocus(focusKey);
     }
 
     async function loadInitial() {
@@ -278,9 +310,10 @@ export function createWordsView({
 
     async function runMutation(operation) {
       if (busy || !active) return;
+      const focusKey = focusedBodyControlKey();
       busy = true;
       errorMessage = '';
-      renderDialog();
+      renderDialog(focusKey);
       try {
         await operation();
         if (!active) return;
@@ -290,17 +323,18 @@ export function createWordsView({
       } finally {
         if (active) {
           busy = false;
-          renderDialog();
+          renderDialog(focusKey);
         }
       }
     }
 
     async function searchTargets(form) {
       if (busy) return;
+      const focusKey = focusedBodyControlKey();
       searchKeyword = form.elements.targetKeyword.value.trim();
       busy = true;
       errorMessage = '';
-      renderDialog();
+      renderDialog(focusKey);
       try {
         const query = encodeURIComponent(searchKeyword);
         const result = await request(`/api/words?pageSize=100&sort=word&keyword=${query}`);
@@ -310,7 +344,7 @@ export function createWordsView({
       } finally {
         if (active) {
           busy = false;
-          renderDialog();
+          renderDialog(focusKey);
         }
       }
     }
@@ -387,7 +421,7 @@ export function createWordsView({
     overlay.addEventListener('click', onClick);
     overlay.addEventListener('submit', onSubmit);
     overlay.addEventListener('keydown', onKeyDown);
-    heading.querySelector('[data-action="close-relations"]').focus();
+    closeButton.focus();
     loadInitial();
     return () => finish(false);
   }

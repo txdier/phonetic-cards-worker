@@ -198,10 +198,9 @@ export function createReaderView({
     });
   }
 
-  function submitProgress(item) {
-    if (!progressQueue) return;
+  function trackProgressResult(result) {
     const submissionId = ++progressSubmissionId;
-    Promise.resolve(progressQueue.submit(item)).then(sent => {
+    Promise.resolve(result).then(sent => {
       if (!mounted) return;
       if (sent === false) {
         if (submissionId < lastProgressSuccessId) return;
@@ -217,6 +216,16 @@ export function createReaderView({
       lastProgressFailureId = Math.max(lastProgressFailureId, submissionId);
       showError('阅读进度已暂存，将在网络恢复后自动重试。', 'progress');
     });
+  }
+
+  function submitProgress(item) {
+    if (!progressQueue) return;
+    trackProgressResult(progressQueue.submit(item));
+  }
+
+  function retryProgress() {
+    if (!progressQueue) return;
+    trackProgressResult(progressQueue.retry());
   }
 
   function saveProgress() {
@@ -240,7 +249,10 @@ export function createReaderView({
       && lastQueuedPosition.articleId === position.articleId
       && lastQueuedPosition.lastPositionRatio === position.lastPositionRatio
       && lastQueuedPosition.lastAloudSentenceIndex === position.lastAloudSentenceIndex;
-    if (unchanged) return;
+    if (unchanged) {
+      retryProgress();
+      return;
+    }
     lastQueuedPosition = {
       articleId: position.articleId,
       lastPositionRatio: position.lastPositionRatio,

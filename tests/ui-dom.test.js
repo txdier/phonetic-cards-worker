@@ -450,6 +450,133 @@ test('word relations open in a modal and update without stretching the card', as
   }
 });
 
+test('relation dialog keeps focus through deferred search, add, and delete operations', async () => {
+  const scenarios = [{
+    name: 'search',
+    start(dialog, window) {
+      const form = dialog.querySelector('[data-role="relation-form"]');
+      form.elements.targetKeyword.value = 'deploy';
+      const control = form.querySelector('[data-action="search-relation-targets"]');
+      control.focus();
+      click(window, control);
+    },
+    settle(operation) {
+      operation.resolve({
+        words: [
+          { id: 'w1', lemma: 'deploy', zh: '部署' },
+          { id: 'w2', lemma: 'deployment', zh: '部署行为' }
+        ]
+      });
+    },
+    expectedFocus(dialog) {
+      return dialog.querySelector('[data-action="search-relation-targets"]');
+    }
+  }, {
+    name: 'add',
+    start(dialog, window) {
+      const form = dialog.querySelector('[data-role="relation-form"]');
+      const control = form.querySelector('.pc-btn-primary');
+      control.focus();
+      submit(window, form);
+    },
+    settle(operation, state) {
+      state.relations.push({
+        id: 'r2', target_word_id: 'w2', target_lemma: 'deployment',
+        relation_type: 'family', note: ''
+      });
+      operation.resolve({ relation: state.relations.at(-1) });
+    },
+    expectedFocus(dialog) {
+      return dialog.querySelector('[data-role="relation-form"] .pc-btn-primary');
+    }
+  }, {
+    name: 'delete',
+    start(dialog, window) {
+      const control = dialog.querySelector('[data-action="delete-relation"][data-id="r1"]');
+      control.focus();
+      click(window, control);
+    },
+    settle(operation, state) {
+      state.relations = [];
+      operation.resolve({ ok: true });
+    },
+    expectedFocus(dialog) {
+      return dialog.querySelector('[data-action="close-relations"]');
+    }
+  }];
+
+  for (const scenario of scenarios) {
+    const env = installDom();
+    const operation = deferred();
+    const state = {
+      relations: [{
+        id: 'r1', target_word_id: 'w2', target_lemma: 'deployment',
+        relation_type: 'derivative', note: 'noun'
+      }]
+    };
+    const word = { id: 'w1', lemma: 'deploy', zh: '部署', forms: [], tags: [] };
+    const target = { id: 'w2', lemma: 'deployment', zh: '部署行为' };
+    const cleanup = createWordsView({
+      root: env.root,
+      api: async (path, init = {}) => {
+        if (path === '/api/words' && !init.method) return [word];
+        if (path === '/api/tags' && !init.method) return { tags: [] };
+        if (path === '/api/words/w1/relations' && !init.method) {
+          return { relations: state.relations };
+        }
+        if (path === '/api/words?pageSize=100&sort=word' && !init.method) {
+          return { words: [word, target] };
+        }
+        if (path === '/api/words?pageSize=100&sort=word&keyword=deploy' && !init.method) {
+          return operation.promise;
+        }
+        if (path === '/api/words/w1/relations' && init.method === 'POST') {
+          return operation.promise;
+        }
+        if (path === '/api/words/w1/relations/r1' && init.method === 'DELETE') {
+          return operation.promise;
+        }
+        throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+      },
+      speech: { isSupported: true, speakOnce() {}, stop() {} }
+    });
+    try {
+      await flush();
+      const trigger = env.root.querySelector('[data-action="toggle-card-menu"]');
+      click(env.window, trigger);
+      click(env.window, env.root.querySelector('[data-action="open-relations"]'));
+      await flush();
+
+      let dialog = env.root.querySelector('[data-role="relation-dialog"]');
+      scenario.start(dialog, env.window);
+      dialog = env.root.querySelector('[data-role="relation-dialog"]');
+      assert.equal(
+        dialog.contains(env.window.document.activeElement),
+        true,
+        `${scenario.name} keeps focus in the dialog while pending`
+      );
+
+      scenario.settle(operation, state);
+      await flush();
+      dialog = env.root.querySelector('[data-role="relation-dialog"]');
+      assert.equal(
+        env.window.document.activeElement,
+        scenario.expectedFocus(dialog),
+        `${scenario.name} restores the corresponding control or close button`
+      );
+
+      env.window.document.activeElement.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true
+      }));
+      assert.equal(env.root.querySelector('[data-role="relation-dialog"]'), null);
+      assert.equal(env.window.document.activeElement, trigger);
+    } finally {
+      cleanup();
+      env.restore();
+    }
+  }
+});
+
 test('relation dialog reports a load failure, retries, and ignores a late close', async () => {
   const env = installDom();
   const lateRelations = deferred();

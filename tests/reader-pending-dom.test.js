@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
+import { createProgressQueue, PROGRESS_QUEUE_KEY } from '../public/lib/reading-session.js';
 import { createPendingView } from '../public/pending-view.js';
 import { createReaderView } from '../public/reader-view.js';
 
@@ -181,7 +182,10 @@ test('long reading exposes offscreen floating controls and a cross-device resume
     articleId: 'a1',
     navigate() {},
     speech: speech.controller,
-    progressQueue: { submit: async item => { submissions.push(item); return true; } },
+    progressQueue: {
+      submit: async item => { submissions.push(item); return true; },
+      retry: async () => true
+    },
     progressRuntime: {
       setInterval: () => 1,
       clearInterval() {},
@@ -1195,7 +1199,10 @@ test('reader exposes one stateful full-reading action and restart only after pro
     articleId: 'a1',
     navigate() {},
     speech: speech.controller,
-    progressQueue: { submit: async item => { submissions.push(item); return true; } },
+    progressQueue: {
+      submit: async item => { submissions.push(item); return true; },
+      retry: async () => true
+    },
     progressRuntime: {
       setInterval: () => 1,
       clearInterval() {},
@@ -1358,7 +1365,7 @@ test('reader persistently reports deferred progress without unhandled rejection'
   const cleanup = createReaderView({
     root: env.root, api: async () => articleDetail(), articleId: 'a1', navigate() {},
     speech: { isSupported: true, speakOnce() {}, load() {}, startAt() {}, pause() {}, resume() {}, setRate() {}, getRate: () => 1, subscribe: () => () => {}, stop() {} },
-    progressQueue: { submit: async () => false },
+    progressQueue: { submit: async () => false, retry: async () => false },
     progressRuntime: {
       setInterval: callback => { intervals.push(callback); return callback; },
       clearInterval() {}, requestAnimationFrame: callback => callback()
@@ -1599,7 +1606,10 @@ test('reader clears only an acknowledged deferred-progress alert', async () => {
   };
   const cleanup = createReaderView({
     root: env.root, api, articleId: 'a1', navigate() {}, speech: createReaderSpeechFake().controller,
-    progressQueue: { submit: async () => outcomes.shift() ?? true },
+    progressQueue: {
+      submit: async () => outcomes.shift() ?? true,
+      retry: async () => true
+    },
     progressRuntime: { now: () => 1_000, setInterval: callback => { intervals.push(callback); return callback; }, clearInterval() {}, requestAnimationFrame: callback => callback() }
   });
   try {
@@ -1648,11 +1658,14 @@ test('reader progress alerts ignore stale out-of-order outcomes', async () => {
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
     },
     articleId: 'a1', navigate() {}, speech: createReaderSpeechFake().controller,
-    progressQueue: { submit: () => {
-      const request = deferred();
-      submissions.push(request);
-      return request.promise;
-    } },
+    progressQueue: {
+      submit: () => {
+        const request = deferred();
+        submissions.push(request);
+        return request.promise;
+      },
+      retry: async () => true
+    },
     progressRuntime: { setInterval: callback => { intervals.push(callback); return callback; }, clearInterval() {}, requestAnimationFrame: callback => callback() }
   });
   try {
@@ -2366,7 +2379,10 @@ test('reader restores position without completing, then queues reading, time, po
       throw new Error(`unexpected request ${path}`);
     },
     articleId: 'a1', navigate() {}, speech: speech.controller,
-    progressQueue: { submit: async item => { submitted.push(item); return true; } },
+    progressQueue: {
+      submit: async item => { submitted.push(item); return true; },
+      retry: async () => true
+    },
     progressRuntime: {
       now: () => now,
       randomUUID: (() => { let id = 0; return () => `event-${++id}`; })(),
@@ -2462,7 +2478,10 @@ test('reader skips unchanged position snapshots while preserving active-time eve
     articleId: 'a1',
     navigate() {},
     speech: speech.controller,
-    progressQueue: { submit: async item => { submitted.push(item); return true; } },
+    progressQueue: {
+      submit: async item => { submitted.push(item); return true; },
+      retry: async () => true
+    },
     progressRuntime: {
       now: () => now,
       setInterval: callback => { intervals.push(callback); return callback; },
@@ -2501,6 +2520,64 @@ test('reader skips unchanged position snapshots while preserving active-time eve
     cleanup();
     assert.equal(submitted.filter(item => item.kind === 'position').length, 3);
   } finally {
+    env.restore();
+  }
+});
+
+test('reader retries one persisted failed position when the next snapshot is unchanged', async () => {
+  const env = installDom();
+  let fail = true;
+  const attempts = [];
+  const intervals = [];
+  Object.defineProperty(env.window, 'innerHeight', { configurable: true, value: 1000 });
+  Object.defineProperty(env.window, 'scrollY', { configurable: true, value: 0 });
+  Object.defineProperty(env.window.document.documentElement, 'scrollHeight', {
+    configurable: true, value: 2000
+  });
+  const progressQueue = createProgressQueue({
+    storage: env.window.localStorage,
+    send: async item => {
+      attempts.push(item);
+      if (fail) throw new Error('offline');
+    }
+  });
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/articles/a1') {
+        return articleDetail({ progress: { last_position_ratio: 0 } });
+      }
+      throw new Error(`unexpected request ${path}`);
+    },
+    articleId: 'a1',
+    navigate() {},
+    speech: createReaderSpeechFake().controller,
+    progressQueue,
+    progressRuntime: {
+      setInterval: callback => { intervals.push(callback); return callback; },
+      clearInterval() {},
+      requestAnimationFrame: callback => callback()
+    }
+  });
+  try {
+    await flush();
+    intervals[0]();
+    await flush();
+    assert.equal(attempts.length, 1);
+    assert.equal(progressQueue.snapshot().length, 1);
+    assert.equal(progressQueue.snapshot()[0].kind, 'position');
+    assert.equal(JSON.parse(env.window.localStorage.getItem(PROGRESS_QUEUE_KEY)).length, 1);
+    assert.equal(env.root.querySelector('[data-role="reader-error"]').dataset.errorKind, 'progress');
+
+    fail = false;
+    intervals[0]();
+    await flush();
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(progressQueue.snapshot(), []);
+    assert.equal(env.window.localStorage.getItem(PROGRESS_QUEUE_KEY), null);
+    assert.equal(env.root.querySelector('[data-role="reader-error"]'), null);
+  } finally {
+    cleanup();
     env.restore();
   }
 });
