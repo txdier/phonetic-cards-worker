@@ -164,6 +164,8 @@ export function createReaderView({
   let speechToolbarObserver = null;
   let startSelectionMode = false;
   let timerPanelTrigger = null;
+  let timerBackgroundState = [];
+  let timerControlState = [];
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
@@ -193,6 +195,7 @@ export function createReaderView({
   };
   const timerKey = `pc-aloud-timer:${encodeURIComponent(username)}:${encodeURIComponent(articleId)}`;
   let initiallyExpiredTimer = false;
+  let initialTimerExpiryHandled = false;
   try {
     const storedTimer = JSON.parse(storage?.getItem?.(timerKey) || 'null');
     initiallyExpiredTimer = Number.isFinite(storedTimer?.deadline)
@@ -652,6 +655,7 @@ export function createReaderView({
   }
 
   function currentReplayIndex() {
+    if (tts?.getSnapshot?.()?.articleId && !ownsAudioControllerPlayback()) return null;
     if (validAloudIndex(activeAloudSentenceIndex)) return activeAloudSentenceIndex;
     return validAloudIndex(savedAloudSentenceIndex) ? savedAloudSentenceIndex : null;
   }
@@ -789,10 +793,48 @@ export function createReaderView({
     }
   }
 
+  function setTimerDialogState(open, panel = null) {
+    if (open) {
+      timerBackgroundState = [...root.children]
+        .filter(node => node !== panel)
+        .map(node => ({
+          node,
+          inert: node.hasAttribute('inert'),
+          ariaHidden: node.getAttribute('aria-hidden')
+        }));
+      for (const state of timerBackgroundState) {
+        state.node.inert = true;
+        state.node.setAttribute('inert', '');
+        state.node.setAttribute('aria-hidden', 'true');
+      }
+      timerControlState = [
+        ...root.querySelectorAll(
+          '[data-role="speech-toolbar"] button, [data-role="speech-toolbar"] input, [data-role="floating-speech"] button'
+        )
+      ].map(control => ({ control, disabled: control.disabled }));
+      for (const state of timerControlState) state.control.disabled = true;
+      root.classList.add('pc-reader-timer-open');
+      return;
+    }
+    for (const state of timerBackgroundState) {
+      state.node.inert = state.inert;
+      if (state.inert) state.node.setAttribute('inert', '');
+      else state.node.removeAttribute('inert');
+      if (state.ariaHidden == null) state.node.removeAttribute('aria-hidden');
+      else state.node.setAttribute('aria-hidden', state.ariaHidden);
+    }
+    for (const state of timerControlState) state.control.disabled = state.disabled;
+    timerBackgroundState = [];
+    timerControlState = [];
+    root.classList.remove('pc-reader-timer-open');
+  }
+
   function closeTimerPanel({ restoreFocus = true } = {}) {
     const panel = root.querySelector('[data-role="sleep-timer-panel"]');
     if (!panel) return;
     panel.remove();
+    setTimerDialogState(false);
+    syncSpeechControls();
     syncTimerControls();
     if (restoreFocus && timerPanelTrigger?.isConnected) timerPanelTrigger.focus();
     timerPanelTrigger = null;
@@ -804,6 +846,7 @@ export function createReaderView({
     const panel = element('section', 'pc-sleep-timer-panel');
     panel.dataset.role = 'sleep-timer-panel';
     panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
     panel.setAttribute('aria-label', '停止朗读定时器');
     const title = element('h2', 'pc-sleep-timer-title', '停止朗读定时器');
     const presets = element('div', 'pc-sleep-timer-presets');
@@ -838,6 +881,7 @@ export function createReaderView({
       panel.style.setProperty('--sleep-timer-top', `${rect.bottom + 8}px`);
     }
     root.append(panel);
+    setTimerDialogState(true, panel);
     syncTimerControls();
     custom.focus();
   }
@@ -879,6 +923,7 @@ export function createReaderView({
     if (initiallyExpiredTimer) {
       initiallyExpiredTimer = false;
       handleExpiredTimer();
+      initialTimerExpiryHandled = true;
       syncTimerControls({ active: false, deadline: null, remainingMs: 0, expired: true });
       return true;
     }
@@ -1047,6 +1092,7 @@ export function createReaderView({
     observeSpeechToolbar();
     syncSpeechControls();
     syncTimerControls();
+    if (initiallyExpiredTimer) checkSleepTimer();
   }
 
   async function load() {
@@ -1068,7 +1114,7 @@ export function createReaderView({
         activeAloudOffsetSeconds = resumeState.position.offsetSeconds;
       }
       render();
-      if (resumeState.snapshot) {
+      if (resumeState.snapshot && !initialTimerExpiryHandled) {
         applySpeechState(resumeState.snapshot, {
           checkTimer: false,
           forceCheckpoint: true

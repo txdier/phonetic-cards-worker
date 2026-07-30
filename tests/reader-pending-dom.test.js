@@ -611,6 +611,48 @@ test('reader maps Media Session actions and cleanup preserves a future timer', a
   }
 });
 
+test('foreign TTS playback disables saved-index replay controls', async () => {
+  const env = setupReader({
+    articleProgress: { last_position_ratio: 0, last_aloud_sentence_index: 1 },
+    liveSnapshot: {
+      state: 'speaking', mode: 'article', articleId: 'a2', currentIndex: 1, currentTime: 0
+    }
+  });
+  try {
+    await env.ready();
+    const controls = [
+      'speech-previous', 'speech-current',
+      'speech-floating-previous', 'speech-floating-current'
+    ].map(action => env.root.querySelector(`[data-action="${action}"]`));
+
+    assert.ok(controls.every(control => control.disabled));
+    for (const control of controls) click(env.window, control);
+    assert.deepEqual(env.tts.calls, []);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('restored expired timer renders one idle expiry status on mount', async () => {
+  const env = setupReader({ timerDeadline: 100, now: 200 });
+  try {
+    await env.ready();
+    const remaining = env.root.querySelector('[data-role="sleep-timer-remaining"]');
+    const status = env.root.querySelector('[data-role="speech-status"]');
+    assert.equal(remaining.textContent, '定时结束');
+    assert.equal(remaining.hidden, false);
+    assert.match(status.textContent, /定时结束/);
+
+    env.window.dispatchEvent(new env.window.Event('pageshow'));
+    assert.equal(remaining.textContent, '定时结束');
+    assert.equal(status.textContent, '定时结束，已暂停');
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('reader exposes direct replay and sleep timer controls for touch use', async () => {
   const env = setupReader();
   try {
@@ -662,6 +704,23 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     assert.equal(remaining.textContent, '20:00');
 
     click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="30"]'));
+    assert.equal(remaining.textContent, '30:00');
+
+    click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="60"]'));
+    assert.equal(remaining.textContent, '60:00');
+
+    click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    panel.querySelector('[data-role="sleep-timer-custom"]').value = '7';
+    click(env.window, panel.querySelector('.pc-sleep-timer-custom-label + [data-action="speech-timer-set"]'));
+    assert.equal(remaining.textContent, '7:00');
+    assert.equal(env.window.document.activeElement, timer);
+
+    click(env.window, timer);
     env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
       key: 'Escape', bubbles: true, cancelable: true
     }));
@@ -672,6 +731,12 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
     click(env.window, panel.querySelector('[data-action="speech-timer-cancel"]'));
     assert.equal(remaining.hidden, true);
+    assert.equal(env.window.document.activeElement, timer);
+
+    click(env.window, timer);
+    click(env.window, env.window.document.body);
+    assert.equal(env.root.querySelector('[data-role="sleep-timer-panel"]'), null);
+    assert.equal(env.window.document.activeElement, timer);
 
     click(env.window, timer);
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
@@ -680,6 +745,40 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     for (const interval of env.intervals) interval.callback();
     assert.equal(remaining.textContent, '定时结束');
     assert.match(env.root.querySelector('[data-role="speech-status"]').textContent, /定时结束/);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('sleep timer dialog makes reader controls inert and restores them on close', async () => {
+  const env = setupReader();
+  try {
+    await env.ready();
+    const timer = env.root.querySelector('[data-action="speech-timer"]');
+    const floatingToggle = env.root.querySelector('[data-action="speech-floating-toggle"]');
+    timer.focus();
+    click(env.window, timer);
+    const panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    const background = env.root.querySelector('.pc-reader-header');
+    const speechControls = [
+      ...env.root.querySelectorAll('[data-role="speech-toolbar"] button, [data-role="speech-toolbar"] input, [data-role="floating-speech"] button')
+    ];
+
+    assert.equal(panel.getAttribute('aria-modal'), 'true');
+    assert.equal(background.hasAttribute('inert'), true);
+    assert.ok(speechControls.every(control => control.disabled));
+    floatingToggle.focus();
+    assert.notEqual(env.window.document.activeElement, floatingToggle);
+
+    click(env.window, panel.querySelector('[data-action="speech-timer-cancel"]'));
+    assert.equal(background.hasAttribute('inert'), false);
+    assert.equal(env.window.document.activeElement, timer);
+
+    click(env.window, timer);
+    const unmountedPanel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    env.cleanup();
+    assert.equal(unmountedPanel.isConnected, false);
   } finally {
     env.cleanup();
     env.restore();

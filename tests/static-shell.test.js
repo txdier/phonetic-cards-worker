@@ -98,6 +98,7 @@ test('mobile replay capsule keeps four labelled touch actions within narrow scre
   assert.match(capsule, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*auto\)\)/);
   assert.match(capsule, /max-width:\s*calc\(100vw\s*-\s*24px\)/);
   assert.ok(action);
+  assert.match(action, /min-width:\s*44px/);
   assert.match(action, /min-height:\s*44px/);
   assert.match(action, /touch-action:\s*manipulation/);
   assert.match(action, /white-space:\s*nowrap/);
@@ -105,6 +106,13 @@ test('mobile replay capsule keeps four labelled touch actions within narrow scre
   assert.ok(narrow);
   assert.match(narrow, /\.pc-floating-speech-action\s*\{[^}]*padding-inline:\s*7px/);
   assert.match(narrow, /\.pc-floating-speech-action\s*\{[^}]*font-size:\s*13px/);
+  assert.doesNotMatch(narrow, /\.pc-floating-speech-action\s*\{[^}]*min-width:\s*0/);
+  const topSpeechActions = css.match(
+    /\.pc-reader-speech\s+\[data-action="speech-primary"\][\s\S]*?\{([^}]*)\}/
+  )?.[1];
+  assert.ok(topSpeechActions);
+  assert.match(topSpeechActions, /min-width:\s*44px/);
+  assert.match(topSpeechActions, /min-height:\s*44px/);
 });
 
 test('navigation and word filters follow the responsive content layout', async () => {

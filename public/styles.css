@@ -292,9 +292,11 @@
     border-radius: 4px;
   }
   .pc-reader-speech { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pc-reader-speech [data-action="speech-primary"],
   .pc-reader-speech [data-action="speech-previous"],
   .pc-reader-speech [data-action="speech-current"],
   .pc-reader-speech [data-action="speech-timer"] {
+    min-width: 44px;
     min-height: 44px;
     touch-action: manipulation;
   }
@@ -332,7 +334,7 @@
   }
   .pc-floating-speech[hidden] { display: none; }
   .pc-floating-speech-action {
-    appearance: none; min-width: 0; min-height: 44px; padding-inline: 10px;
+    appearance: none; min-width: 44px; min-height: 44px; padding-inline: 10px;
     border: 0; border-radius: 999px; background: transparent; color: inherit;
     font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap;
     touch-action: manipulation; transition: background-color .15s ease, color .15s ease;
