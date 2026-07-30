@@ -535,6 +535,7 @@
   .pc-tag-create .pc-btn-ghost { min-height: 44px; }
   .pc-tag-options { display: flex; flex-wrap: wrap; gap: 8px 14px; }
   .pc-tag-error { margin-top: 8px; color: var(--coral); font-size: 12px; }
+  .pc-tag-retry { margin-top: 8px; min-height: 44px; }
   .pc-word-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .pc-word-tags span, .pc-state-badge {
     padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px;

@@ -152,6 +152,9 @@ export function createWordsView({
         </div>
         <div class="pc-tag-options" data-role="word-tag-options">${tagChoices(word?.tags || [])}</div>
         <div class="pc-tag-error" data-role="word-tag-error" role="alert">${escapeHtml(tagLoadError)}</div>
+        ${tagLoadError
+          ? '<button type="button" class="pc-btn-ghost pc-tag-retry" data-action="retry-word-tags">重试加载标签</button>'
+          : ''}
       </fieldset>
       <div class="pc-form-actions"><button class="pc-btn-ghost" data-action="cancel-form">取消</button><button class="pc-btn-primary" data-action="submit-form">${word ? '保存修改' : '添加'}</button></div>
     </div>`;
@@ -667,6 +670,36 @@ export function createWordsView({
     }
   }
 
+  async function retryWordTags(button) {
+    const form = button.closest('#pc-word-form');
+    const options = form?.querySelector('[data-role="word-tag-options"]');
+    const error = form?.querySelector('[data-role="word-tag-error"]');
+    if (!form || !options || !error) return;
+    const generation = Number(form.dataset.generation);
+    const selected = new Set(
+      [...form.querySelectorAll('input[name="tagIds"]:checked')].map(item => item.value)
+    );
+    button.disabled = true;
+    error.textContent = '';
+    try {
+      const result = await api('/api/tags');
+      if (!mounted || !form.isConnected || generation !== wordFormGeneration) return;
+      tags = result?.tags || [];
+      tagLoadError = '';
+      options.innerHTML = tagChoices([...selected]);
+      button.remove();
+    } catch (caught) {
+      if (mounted && form.isConnected && generation === wordFormGeneration) {
+        tagLoadError = caught?.message || '标签加载失败';
+        error.textContent = tagLoadError;
+      }
+    } finally {
+      if (mounted && form.isConnected && generation === wordFormGeneration && button.isConnected) {
+        button.disabled = false;
+      }
+    }
+  }
+
   async function deleteWord(id) {
     const index = words.findIndex(word => String(word.id) === id);
     if (index < 0) return;
@@ -740,6 +773,7 @@ export function createWordsView({
     if (action === 'cancel-form') { editingId = null; render(); }
     if (action === 'submit-form') saveWord();
     if (action === 'create-word-tag') createWordTag(target);
+    if (action === 'retry-word-tags') retryWordTags(target);
     if (action === 'edit') { editingId = target.dataset.id; render(); }
     if (action === 'del') deleteWord(target.dataset.id);
     if (action === 'toggle-card-menu') openCardMenu(target, target.dataset.id);

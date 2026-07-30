@@ -384,6 +384,43 @@ test('word form reports tag failures and ignores a late tag response after clean
   }
 });
 
+test('word form retries a failed tag list without losing entered values', async () => {
+  const env = installDom();
+  let tagLoads = 0;
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async (path, init = {}) => {
+      if (path === '/api/words' && !init.method) return [];
+      if (path === '/api/tags' && !init.method) {
+        tagLoads += 1;
+        if (tagLoads === 1) throw new Error('标签加载失败');
+        return { tags: [{ id: 'tag-retried', name: '工作' }] };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="toggle-form"]'));
+    const form = env.root.querySelector('#pc-word-form');
+    form.querySelector('#f-en').value = 'deploy';
+    form.querySelector('#f-zh').value = '部署';
+    assert.equal(form.querySelector('[data-role="word-tag-error"]').textContent, '标签加载失败');
+
+    click(env.window, form.querySelector('[data-action="retry-word-tags"]'));
+    await flush();
+
+    assert.ok(form.querySelector('input[name="tagIds"][value="tag-retried"]'));
+    assert.equal(form.querySelector('[data-role="word-tag-error"]').textContent, '');
+    assert.equal(form.querySelector('#f-en').value, 'deploy');
+    assert.equal(form.querySelector('#f-zh').value, '部署');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('word cards reserve icon actions and wrap phrases without wrapping ordinary words', async () => {
   const env = installDom();
   const words = [
