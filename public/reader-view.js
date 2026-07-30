@@ -1,6 +1,8 @@
 import { findTermMatches, normalizeTerm, splitSentences, validateSelection } from './lib/text.js';
 import { mountConversionForm } from './pending-view.js';
 import { createReadingSession } from './lib/reading-session.js';
+import { createMediaSessionBridge } from './lib/media-session.js';
+import { createSleepTimer } from './lib/sleep-timer.js';
 import { renderInlineError, showToast } from './lib/dom.js';
 
 function element(tag, className, text) {
@@ -108,7 +110,18 @@ function assignDataset(node, values = {}) {
 }
 
 export function createReaderView({
-  root, api, articleId, navigate, speech, tts = null, progressQueue = null, progressRuntime = {}
+  root,
+  api,
+  articleId,
+  navigate,
+  speech,
+  tts = null,
+  progressQueue = null,
+  progressRuntime = {},
+  aloudCheckpointStore = null,
+  username = '',
+  storage = null,
+  mediaRuntime = {}
 }) {
   let mounted = true;
   let article = null;
@@ -130,8 +143,13 @@ export function createReaderView({
   let selectionTimer = null;
   let speechState = 'idle';
   let activeAloudSentenceIndex = null;
+  let activeAloudOffsetSeconds = 0;
+  let pointAloudSentenceIndex = null;
   let lastAutoFollowedSentenceIndex = null;
   let savedAloudSentenceIndex = null;
+  let savedAloudOffsetSeconds = 0;
+  let lastLocalCheckpointAt = 0;
+  let lastCheckpointSignature = null;
   let lastQueuedPosition = null;
   let speechToolbarOffscreen = false;
   let speechToolbarObserver = null;
@@ -156,11 +174,40 @@ export function createReaderView({
   const readingSession = createReadingSession({ now: runtime.now });
   readingSession.setVisible(document.visibilityState !== 'hidden');
   let progressTimer = null;
+  let unsubscribeTimer = null;
+  const audioController = tts || speech;
+  const timerRuntime = {
+    now: mediaRuntime.now || runtime.now,
+    setInterval: mediaRuntime.setInterval || runtime.setInterval,
+    clearInterval: mediaRuntime.clearInterval || runtime.clearInterval
+  };
+  const timerKey = `pc-aloud-timer:${encodeURIComponent(username)}:${encodeURIComponent(articleId)}`;
+  let initiallyExpiredTimer = false;
+  try {
+    const storedTimer = JSON.parse(storage?.getItem?.(timerKey) || 'null');
+    initiallyExpiredTimer = Number.isFinite(storedTimer?.deadline)
+      && storedTimer.deadline <= timerRuntime.now();
+  } catch {
+    initiallyExpiredTimer = false;
+  }
+  const sleepTimer = createSleepTimer({
+    storage,
+    key: timerKey,
+    now: timerRuntime.now,
+    setInterval: timerRuntime.setInterval,
+    clearInterval: timerRuntime.clearInterval
+  });
+  const mediaBridge = createMediaSessionBridge({
+    mediaSession: mediaRuntime.mediaSession,
+    MediaMetadata: mediaRuntime.MediaMetadata
+  });
 
   function speakSentence(sentenceNode) {
     const index = Number(sentenceNode?.dataset.sentenceIndex);
     if (!Number.isInteger(index)) return;
+    if (checkSleepTimer()) return;
     if (tts?.speakArticleSentence) {
+      pointAloudSentenceIndex = index;
       tts.speakArticleSentence(articleId, index, sentenceNode.textContent, {
         rate: (tts || speech).getRate?.() || 1,
         nextIndex: index + 1 < sentences.length ? index + 1 : null
@@ -170,14 +217,16 @@ export function createReaderView({
     }
   }
 
-  function startFullReading(index) {
+  function startFullReading(index, offsetSeconds = 0) {
+    if (checkSleepTimer()) return;
     setStartSelectionMode(false);
+    pointAloudSentenceIndex = null;
     if (tts?.startArticle) {
       tts.startArticle(
         articleId,
         sentences.map(sentence => sentence.text),
         index,
-        { onState: applySpeechState }
+        { offsetSeconds }
       );
     } else {
       speech.startAt(index);
@@ -228,7 +277,7 @@ export function createReaderView({
     trackProgressResult(progressQueue.retry());
   }
 
-  function saveProgress() {
+  function saveProgress({ force = false } = {}) {
     if (!article || !progressQueue) return;
     let activeMs = readingSession.flushActiveMs();
     while (activeMs > 0) {
@@ -239,24 +288,34 @@ export function createReaderView({
     const currentAloudIndex = fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
       ? activeAloudSentenceIndex
       : savedAloudSentenceIndex;
+    const currentAloudOffset = currentAloudIndex === null
+      ? 0
+      : fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
+        ? activeAloudOffsetSeconds
+        : savedAloudOffsetSeconds;
     const position = {
       kind: 'position',
       articleId,
       lastPositionRatio: currentPositionRatio(),
-      lastAloudSentenceIndex: currentAloudIndex
+      lastAloudSentenceIndex: currentAloudIndex,
+      lastAloudOffsetSeconds: Number.isFinite(currentAloudOffset)
+        ? Math.max(0, currentAloudOffset)
+        : 0
     };
     const unchanged = lastQueuedPosition
       && lastQueuedPosition.articleId === position.articleId
       && lastQueuedPosition.lastPositionRatio === position.lastPositionRatio
-      && lastQueuedPosition.lastAloudSentenceIndex === position.lastAloudSentenceIndex;
-    if (unchanged) {
+      && lastQueuedPosition.lastAloudSentenceIndex === position.lastAloudSentenceIndex
+      && lastQueuedPosition.lastAloudOffsetSeconds === position.lastAloudOffsetSeconds;
+    if (unchanged && !force) {
       retryProgress();
       return;
     }
     lastQueuedPosition = {
       articleId: position.articleId,
       lastPositionRatio: position.lastPositionRatio,
-      lastAloudSentenceIndex: position.lastAloudSentenceIndex
+      lastAloudSentenceIndex: position.lastAloudSentenceIndex,
+      lastAloudOffsetSeconds: position.lastAloudOffsetSeconds
     };
     submitProgress(position);
   }
@@ -377,6 +436,15 @@ export function createReaderView({
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
     toolbar.append(status);
+    const fallbackWarning = element(
+      'div',
+      'pc-speech-fallback-warning',
+      '锁屏后台播放可能受限'
+    );
+    fallbackWarning.dataset.role = 'speech-fallback-warning';
+    fallbackWarning.setAttribute('role', 'status');
+    fallbackWarning.hidden = true;
+    toolbar.append(fallbackWarning);
     if (!speechAvailable) {
       const unavailable = element('div', 'pc-speech-unavailable', '当前浏览器不支持语音朗读，文章阅读和标记仍可正常使用。');
       unavailable.dataset.role = 'speech-unavailable';
@@ -511,11 +579,65 @@ export function createReaderView({
     }
   }
 
-  function setSavedAloudIndex(index) {
-    savedAloudSentenceIndex = Number.isInteger(index) && index >= 0 && index < sentences.length
+  function validAloudIndex(index) {
+    return Number.isInteger(index) && index >= 0 && index < sentences.length;
+  }
+
+  function aloudOffset(value) {
+    const offset = Number(value);
+    return Number.isFinite(offset) && offset >= 0 ? offset : 0;
+  }
+
+  function resolveResumeState() {
+    const live = tts?.getSnapshot?.();
+    if (live?.articleId === articleId && validAloudIndex(live.currentIndex)) {
+      return {
+        source: 'live',
+        position: {
+          sentenceIndex: live.currentIndex,
+          offsetSeconds: aloudOffset(live.currentTime)
+        },
+        snapshot: live
+      };
+    }
+    const local = aloudCheckpointStore?.load?.({ articleId, body: article.body });
+    if (local && validAloudIndex(local.sentenceIndex)) {
+      return {
+        source: 'local',
+        position: {
+          sentenceIndex: local.sentenceIndex,
+          offsetSeconds: aloudOffset(local.offsetSeconds)
+        }
+      };
+    }
+    const serverIndex = article.progress?.last_aloud_sentence_index;
+    const serverOffset = Number(article.progress?.last_aloud_offset_seconds || 0);
+    if (validAloudIndex(serverIndex)) {
+      return {
+        source: 'server',
+        position: {
+          sentenceIndex: serverIndex,
+          offsetSeconds: aloudOffset(serverOffset)
+        }
+      };
+    }
+    return {
+      source: 'none',
+      position: { sentenceIndex: null, offsetSeconds: 0 }
+    };
+  }
+
+  function setSavedAloudPosition(index, offsetSeconds = 0) {
+    const previousIndex = savedAloudSentenceIndex;
+    savedAloudSentenceIndex = validAloudIndex(index)
       ? index
       : null;
+    savedAloudOffsetSeconds = savedAloudSentenceIndex === null
+      ? 0
+      : aloudOffset(offsetSeconds);
     if (article?.progress) article.progress.last_aloud_sentence_index = savedAloudSentenceIndex;
+    if (article?.progress) article.progress.last_aloud_offset_seconds = savedAloudOffsetSeconds;
+    if (previousIndex === savedAloudSentenceIndex) return;
     const previousEntry = root.querySelector('[data-role="aloud-resume-entry"]');
     if (previousEntry) previousEntry.replaceWith(resumeEntry());
     root.querySelector('[data-role="aloud-resume-marker"]')?.remove();
@@ -528,6 +650,75 @@ export function createReaderView({
         sentence.before(marker);
       }
     }
+  }
+
+  function saveAloudCheckpoint({ immediate = false, state = speechState } = {}) {
+    const index = validAloudIndex(activeAloudSentenceIndex)
+      ? activeAloudSentenceIndex
+      : savedAloudSentenceIndex;
+    if (!validAloudIndex(index) || !article) return false;
+    const offsetSeconds = index === activeAloudSentenceIndex
+      ? aloudOffset(activeAloudOffsetSeconds)
+      : aloudOffset(savedAloudOffsetSeconds);
+    const checkpointState = state === 'speaking' ? 'speaking' : 'paused';
+    const signature = `${index}:${offsetSeconds}:${checkpointState}`;
+    const currentTime = timerRuntime.now();
+    if (signature === lastCheckpointSignature) return false;
+    if (!immediate && currentTime - lastLocalCheckpointAt < 2_000) return false;
+
+    setSavedAloudPosition(index, offsetSeconds);
+    aloudCheckpointStore?.save?.({
+      articleId,
+      body: article.body,
+      sentenceIndex: index,
+      offsetSeconds,
+      state: checkpointState
+    });
+    lastLocalCheckpointAt = currentTime;
+    lastCheckpointSignature = signature;
+    saveProgress({ force: immediate });
+    return true;
+  }
+
+  function clearAloudCheckpoint() {
+    aloudCheckpointStore?.clear?.(articleId);
+    activeAloudSentenceIndex = null;
+    activeAloudOffsetSeconds = 0;
+    setSavedAloudPosition(null, 0);
+    lastCheckpointSignature = null;
+    saveProgress();
+  }
+
+  function announceSpeechStatus(message) {
+    const status = root.querySelector('[data-role="speech-status"]');
+    if (status && status.textContent !== message) status.textContent = message;
+  }
+
+  function syncTimerControls() {
+    // Timer controls are introduced by the next UI task; lifecycle behavior lives here.
+  }
+
+  function ownsAudioControllerPlayback() {
+    if (!tts) return true;
+    const live = tts.getSnapshot?.();
+    if (live?.articleId === articleId) return true;
+    return Number.isInteger(pointAloudSentenceIndex) && live?.articleId == null;
+  }
+
+  function handleExpiredTimer() {
+    if (ownsAudioControllerPlayback()) audioController.pause?.();
+    saveAloudCheckpoint({ immediate: true, state: 'paused' });
+    announceSpeechStatus('定时结束，已暂停');
+  }
+
+  function checkSleepTimer() {
+    if (initiallyExpiredTimer) {
+      initiallyExpiredTimer = false;
+      handleExpiredTimer();
+      syncTimerControls({ active: false, deadline: null, remainingMs: 0, expired: true });
+      return true;
+    }
+    return sleepTimer.check().expired;
   }
 
   function locateSentence(index) {
@@ -560,28 +751,45 @@ export function createReaderView({
     });
   }
 
-  function applySpeechState(next) {
+  function applySpeechState(next, {
+    checkTimer = true,
+    forceCheckpoint = false
+  } = {}) {
+    const ownsFullArticle = !tts || next?.articleId === articleId;
+    const ownsPointPlayback = Boolean(
+      tts &&
+      Number.isInteger(pointAloudSentenceIndex) &&
+      next?.articleId == null &&
+      (
+        next?.mode === 'once' ||
+        next?.state === 'once' ||
+        next?.state === 'idle'
+      )
+    );
+    if (tts && !ownsFullArticle && !ownsPointPlayback) return;
     for (const sentence of root.querySelectorAll('[data-sentence-index]')) {
-      const speaking = next?.state === 'speaking'
+      const speaking = ownsFullArticle && next?.state === 'speaking'
         && Number(sentence.dataset.sentenceIndex) === next.currentIndex;
       sentence.classList.toggle('pc-sentence-speaking', speaking);
     }
     const nextState = next?.state || 'idle';
+    const priorState = speechState;
+    const priorIndex = activeAloudSentenceIndex;
     speechState = nextState;
-    if (
+    const validPlayerPosition =
       (nextState === 'speaking' || nextState === 'paused') &&
-      Number.isInteger(next?.currentIndex)
-    ) {
+      validAloudIndex(next?.currentIndex) &&
+      ownsFullArticle;
+    if (validPlayerPosition) {
       activeAloudSentenceIndex = next.currentIndex;
+      activeAloudOffsetSeconds = aloudOffset(next.currentTime);
+      saveAloudCheckpoint({
+        immediate: forceCheckpoint || priorState !== nextState || priorIndex !== next.currentIndex,
+        state: nextState
+      });
     }
-    if (nextState === 'paused') {
-      fullSpeechActive = true;
-      setSavedAloudIndex(activeAloudSentenceIndex);
-      saveProgress();
-    } else if (nextState === 'idle' && next?.completion?.reachedEnd) {
-      setSavedAloudIndex(null);
-      activeAloudSentenceIndex = null;
-      saveProgress();
+    if (nextState === 'idle' && next?.completion?.reachedEnd) {
+      clearAloudCheckpoint();
     }
     const status = root.querySelector('[data-role="speech-status"]');
     if (previousSpeechState == null) {
@@ -606,6 +814,7 @@ export function createReaderView({
       if (announcement && status.textContent !== announcement) status.textContent = announcement;
       previousSpeechState = nextState;
     }
+    if (validPlayerPosition) fullSpeechActive = true;
     if (next?.completionEvent?.counted) {
       if (readingSession.markReadAloudComplete().readAloudCompleted) queueEvent('read_aloud_complete');
     }
@@ -614,12 +823,30 @@ export function createReaderView({
     } else if (nextState !== 'speaking') {
       lastAutoFollowedSentenceIndex = null;
     }
+    const warning = root.querySelector('[data-role="speech-fallback-warning"]');
+    if (warning) warning.hidden = !next?.fallbackActive;
+    const audibleIndex = validAloudIndex(activeAloudSentenceIndex)
+      ? activeAloudSentenceIndex
+      : savedAloudSentenceIndex;
+    const mediaIndex = ownsPointPlayback ? null : audibleIndex;
+    const mediaSentence = ownsPointPlayback
+      ? sentences[pointAloudSentenceIndex]?.text.trim() || ''
+      : validAloudIndex(audibleIndex) ? sentences[audibleIndex]?.text.trim() || '' : '';
+    mediaBridge.update({
+      state: ownsPointPlayback && nextState === 'once' ? 'speaking' : nextState,
+      currentIndex: mediaIndex,
+      sentenceCount: ownsPointPlayback ? 0 : sentences.length,
+      title: article?.title || '',
+      author: article?.author || '',
+      sentence: mediaSentence
+    });
     syncSpeechControls();
+    if (checkTimer && article) checkSleepTimer();
   }
 
   function render() {
     if (fullSpeechActive) {
-      setSavedAloudIndex(activeAloudSentenceIndex);
+      setSavedAloudPosition(activeAloudSentenceIndex, activeAloudOffsetSeconds);
       saveProgress();
     }
     clearTransient();
@@ -651,8 +878,7 @@ export function createReaderView({
     const popoverHost = element('div', 'pc-popover-host');
     popoverHost.dataset.role = 'popover-host';
     root.append(header, content, selectionHost, popoverHost, floatingSpeechControls());
-    (tts || speech).stop?.();
-    speech.load(sentences.map(sentence => sentence.text));
+    if (!tts) speech.load(sentences.map(sentence => sentence.text));
     restorePosition();
     observeSpeechToolbar();
     syncSpeechControls();
@@ -667,13 +893,22 @@ export function createReaderView({
       if (!isCurrent(version)) return;
       article = next;
       sentences = splitSentences(article.body);
-      const loadedAloudIndex = article.progress?.last_aloud_sentence_index;
-      setSavedAloudIndex(
-        Number.isInteger(loadedAloudIndex) && loadedAloudIndex < sentences.length
-          ? loadedAloudIndex
-          : null
+      const resumeState = resolveResumeState();
+      setSavedAloudPosition(
+        resumeState.position.sentenceIndex,
+        resumeState.position.offsetSeconds
       );
+      if (resumeState.source === 'live') {
+        activeAloudSentenceIndex = resumeState.position.sentenceIndex;
+        activeAloudOffsetSeconds = resumeState.position.offsetSeconds;
+      }
       render();
+      if (resumeState.snapshot) {
+        applySpeechState(resumeState.snapshot, {
+          checkTimer: false,
+          forceCheckpoint: true
+        });
+      }
     } catch (error) {
       if (!isCurrent(version)) return;
       root.replaceChildren(element('div', 'pc-page-error', error.message || '文章加载失败'));
@@ -1040,6 +1275,7 @@ export function createReaderView({
     if (startSelectionMode && chosenSentence && root.contains(chosenSentence)) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (checkSleepTimer()) return;
       const index = Number(chosenSentence.dataset.sentenceIndex);
       setStartSelectionMode(false);
       if (Number.isInteger(index)) startFullReading(index);
@@ -1057,39 +1293,45 @@ export function createReaderView({
     const action = target.dataset.action;
     if (action === 'back-library') navigate({ module: 'articles', page: 'library' });
     if (action === 'term') handleTerm(target);
-    if (action === 'pronounce') speech.speakOnce(target.dataset.text);
+    if (action === 'pronounce') {
+      if (checkSleepTimer()) return;
+      speech.speakOnce(target.dataset.text);
+    }
     if (action === 'pronounce-selection') {
+      if (checkSleepTimer()) return;
       speech.speakOnce(target.closest('[data-role="selection-action"]')?.dataset.selectedText || '');
     }
     if (action === 'speech-primary') {
+      if (checkSleepTimer()) return;
       if (speechState === 'speaking') {
-        (tts || speech).pause();
+        audioController.pause();
       } else if (speechState === 'paused') {
-        (tts || speech).resume();
+        audioController.resume();
       } else if (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex)) {
         locateSentence(savedAloudSentenceIndex);
-        startFullReading(savedAloudSentenceIndex);
+        startFullReading(savedAloudSentenceIndex, savedAloudOffsetSeconds);
       } else {
         startFullReading(0);
       }
     }
     if (action === 'speech-restart') {
+      if (checkSleepTimer()) return;
       fullSpeechActive = false;
-      activeAloudSentenceIndex = null;
-      setSavedAloudIndex(null);
-      saveProgress();
+      clearAloudCheckpoint();
       startFullReading(0);
     }
     if (action === 'speech-jump-resume' && Number.isInteger(savedAloudSentenceIndex)) {
       locateSentence(savedAloudSentenceIndex);
     }
     if (action === 'speech-start-selection') {
+      if (checkSleepTimer()) return;
       const panel = target.closest('[data-role="selection-action"]');
       const sentenceIndex = Number(panel?.dataset.sentenceIndex);
       closeSelection();
       if (Number.isInteger(sentenceIndex)) startFullReading(sentenceIndex);
     }
     if (action === 'speech-start-popover') {
+      if (checkSleepTimer()) return;
       const panel = target.closest('[data-role="selection-action"], [data-role="term-popover"]');
       const sentenceIndex = Number(panel?.dataset.sentenceIndex);
       if (panel?.dataset.role === 'selection-action') closeSelection();
@@ -1097,20 +1339,22 @@ export function createReaderView({
       if (Number.isInteger(sentenceIndex)) startFullReading(sentenceIndex);
     }
     if (action === 'speech-floating-toggle') {
+      if (checkSleepTimer()) return;
       if (speechState === 'speaking') {
-        (tts || speech).pause();
+        audioController.pause();
       } else if (speechState === 'paused') {
-        (tts || speech).resume();
+        audioController.resume();
       } else if (
         speechState === 'idle' &&
         Number.isInteger(savedAloudSentenceIndex)
       ) {
-        startFullReading(savedAloudSentenceIndex);
+        startFullReading(savedAloudSentenceIndex, savedAloudOffsetSeconds);
       } else {
         setStartSelectionMode(!startSelectionMode);
       }
     }
     if (action === 'speech-rate-cycle') {
+      if (checkSleepTimer()) return;
       const current = Number((tts || speech).getRate?.() || 1);
       const nextRate = current < 1 ? 1 : current < 1.5 ? 1.5 : 0.5;
       (tts || speech).setRate(nextRate);
@@ -1152,6 +1396,7 @@ export function createReaderView({
   function onInput(event) {
     if (event.target.matches('[data-action="speech-rate"]')) {
       readingSession.interact();
+      if (checkSleepTimer()) return;
       const appliedRate = (tts || speech).setRate(event.target.value);
       const displayedRate = Number.isFinite(Number(appliedRate)) ? Number(appliedRate) : Number(event.target.value);
       runtime.requestAnimationFrame(syncSpeechControls);
@@ -1205,9 +1450,19 @@ export function createReaderView({
   function onVisibilityChange() {
     readingSession.setVisible(document.visibilityState !== 'hidden');
     if (document.visibilityState === 'hidden' && fullSpeechActive) {
-      setSavedAloudIndex(activeAloudSentenceIndex);
+      saveAloudCheckpoint({ immediate: true, state: 'paused' });
     }
     saveProgress();
+    checkSleepTimer();
+  }
+
+  function onPageHide() {
+    saveAloudCheckpoint({ immediate: true, state: 'paused' });
+    saveProgress();
+  }
+
+  function onPageShow() {
+    checkSleepTimer();
   }
 
   function onKeyDown(event) {
@@ -1217,6 +1472,7 @@ export function createReaderView({
       (event.key === 'Enter' || event.key === ' ')
     ) {
       event.preventDefault();
+      if (checkSleepTimer()) return;
       const index = Number(sentence.dataset.sentenceIndex);
       setStartSelectionMode(false);
       if (Number.isInteger(index)) startFullReading(index);
@@ -1270,14 +1526,57 @@ export function createReaderView({
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('selectionchange', onSelectionChange);
   window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('pagehide', onPageHide);
+  window.addEventListener('pageshow', onPageShow);
   document.addEventListener('visibilitychange', onVisibilityChange);
-  unsubscribeSpeech = speech.subscribe?.(applySpeechState) || null;
+  mediaBridge.bind({
+    play: () => {
+      if (!checkSleepTimer() && ownsAudioControllerPlayback()) audioController.resume();
+    },
+    pause: () => {
+      if (ownsAudioControllerPlayback()) audioController.pause();
+    },
+    previous: () => {
+      if (!checkSleepTimer() && ownsAudioControllerPlayback()) tts?.previousSentence?.();
+    },
+    current: () => {
+      if (checkSleepTimer()) return;
+      if (!ownsAudioControllerPlayback()) return;
+      if (tts && validAloudIndex(pointAloudSentenceIndex)) {
+        const index = pointAloudSentenceIndex;
+        tts.speakArticleSentence(
+          articleId,
+          index,
+          sentences[index].text.trim(),
+          {
+            rate: audioController.getRate?.() || 1,
+            nextIndex: index + 1 < sentences.length ? index + 1 : null
+          }
+        );
+        return;
+      }
+      tts?.replayCurrentSentence?.();
+    },
+    next: () => {
+      if (!checkSleepTimer() && ownsAudioControllerPlayback()) tts?.nextSentence?.();
+    }
+  });
+  unsubscribeTimer = sleepTimer.subscribe(timerState => {
+    if (!timerState.expired) {
+      syncTimerControls(timerState);
+      return;
+    }
+    handleExpiredTimer();
+    syncTimerControls(timerState);
+  });
+  unsubscribeSpeech = audioController.subscribe?.(applySpeechState) || null;
   progressTimer = runtime.setInterval(saveProgress, 15_000);
   root.replaceChildren(element('div', 'pc-empty', '加载中…'));
   load();
 
   return () => {
-    if (fullSpeechActive) setSavedAloudIndex(activeAloudSentenceIndex);
+    if (!mounted) return;
+    saveAloudCheckpoint({ immediate: true, state: 'paused' });
     saveProgress();
     mounted = false;
     document.removeEventListener('selectionchange', onSelectionChange);
@@ -1289,9 +1588,13 @@ export function createReaderView({
     clearTransient();
     unsubscribeSpeech?.();
     unsubscribeSpeech = null;
+    unsubscribeTimer?.();
+    unsubscribeTimer = null;
+    sleepTimer.cleanup();
+    mediaBridge.cleanup();
     speechToolbarObserver?.disconnect?.();
     speechToolbarObserver = null;
-    (tts || speech).stop?.();
+    audioController.stop?.();
     for (const sentence of root.querySelectorAll('.pc-sentence-speaking')) sentence.classList.remove('pc-sentence-speaking');
     root.removeEventListener('click', onClick);
     root.removeEventListener('click', onSentenceClick);
@@ -1300,6 +1603,8 @@ export function createReaderView({
     document.removeEventListener('click', onDocumentClick);
     document.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('scroll', onScroll);
+    window.removeEventListener('pagehide', onPageHide);
+    window.removeEventListener('pageshow', onPageShow);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     runtime.clearInterval(progressTimer);
     progressTimer = null;

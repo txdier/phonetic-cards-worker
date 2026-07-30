@@ -46,10 +46,11 @@ export function updateArticlesAfterSave(articles, { saved, editingId = null, res
   });
 }
 
-export function createArticlesView({ root, api, navigate, route }) {
+export function createArticlesView({ root, api, navigate, route, aloudCheckpointStore = null }) {
   let articles = [];
   let mounted = true;
   let editingId = null;
+  let editingBody = '';
   let pageError = '';
   let editRequestVersion = 0;
 
@@ -142,6 +143,7 @@ export function createArticlesView({ root, api, navigate, route }) {
   function renderForm(article = {}) {
     invalidateEditRequests();
     editingId = article.id || null;
+    editingBody = article.body || '';
     root.replaceChildren();
     renderHeader(editingId ? '编辑文章' : '新建文章', editingId ? '修改文章内容后选择是否重置阅读进度。' : '标题和正文为必填项。');
     const form = element('form', 'pc-form pc-article-form');
@@ -194,14 +196,21 @@ export function createArticlesView({ root, api, navigate, route }) {
       if (!mounted || !form.isConnected) return;
     }
     try {
-      const saved = await api(editingId ? `/api/articles/${encodeURIComponent(editingId)}` : '/api/articles', {
-        method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(data)
+      const savedArticleId = editingId;
+      const shouldClearAloudCheckpoint = Boolean(
+        savedArticleId &&
+        (data.resetProgress === true || data.body !== editingBody)
+      );
+      const saved = await api(savedArticleId ? `/api/articles/${encodeURIComponent(savedArticleId)}` : '/api/articles', {
+        method: savedArticleId ? 'PATCH' : 'POST', body: JSON.stringify(data)
       });
+      if (shouldClearAloudCheckpoint) aloudCheckpointStore?.clear?.(savedArticleId);
       if (!mounted || !form.isConnected) return;
       articles = updateArticlesAfterSave(articles, {
-        saved, editingId, resetProgress: data.resetProgress === true
+        saved, editingId: savedArticleId, resetProgress: data.resetProgress === true
       });
       editingId = null;
+      editingBody = '';
       renderLibrary();
     } catch (error) {
       if (!mounted || !form.isConnected) return;

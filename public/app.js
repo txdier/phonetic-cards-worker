@@ -5,6 +5,7 @@ import { createReaderView } from './reader-view.js';
 import { hashForRoute, parseHashRoute } from './routes.js';
 import { createSpeechController } from './lib/speech.js';
 import { createTtsPlayer } from './lib/tts-player.js';
+import { createAloudCheckpointStore } from './lib/aloud-checkpoint.js';
 import { createProgressQueue, progressQueueKey, sendProgressItem } from './lib/reading-session.js';
 import { createWordsView } from './words-view.js';
 import { createStatsView } from './stats-view.js';
@@ -13,6 +14,7 @@ const root = document.getElementById('pc-root');
 let currentUsername = null;
 let unmountView = null;
 let progressQueue = null;
+let aloudCheckpointStore = null;
 let lightMode = false;
 try { lightMode = localStorage.getItem('pc-theme') === 'light'; } catch { /* storage may be disabled */ }
 root.classList.toggle('pc-light', lightMode);
@@ -74,6 +76,7 @@ function renderLogin(message = '') {
 function disconnectProgressAndRenderLogin(message = '') {
   const previousQueue = progressQueue;
   progressQueue = null;
+  aloudCheckpointStore = null;
   renderLogin(message);
   previousQueue?.retry();
 }
@@ -112,6 +115,7 @@ function mountRoute() {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* local logout still proceeds */ }
     currentUsername = null;
     progressQueue = null;
+    aloudCheckpointStore = null;
     renderLogin();
   });
   account.append(username, theme, logout); top.append(modules, account); shell.append(top);
@@ -144,13 +148,30 @@ function mountRoute() {
   if (route.module === 'words') {
     unmountView = createWordsView({ root: viewRoot, api, speech, tts, page: route.page });
   } else if (route.page === 'reader') {
-    unmountView = createReaderView({ root: viewRoot, api, navigate, speech, tts, progressQueue, articleId: route.id });
+    unmountView = createReaderView({
+      root: viewRoot,
+      api,
+      navigate,
+      speech,
+      tts,
+      progressQueue,
+      articleId: route.id,
+      aloudCheckpointStore,
+      username: currentUsername,
+      storage: progressStorage,
+      mediaRuntime: {
+        mediaSession: navigator.mediaSession,
+        MediaMetadata: globalThis.MediaMetadata
+      }
+    });
   } else if (route.page === 'pending') {
     unmountView = createPendingView({ root: viewRoot, api });
   } else if (route.page === 'stats') {
     unmountView = createStatsView({ root: viewRoot, api });
   } else {
-    unmountView = createArticlesView({ root: viewRoot, api, navigate, route });
+    unmountView = createArticlesView({
+      root: viewRoot, api, navigate, route, aloudCheckpointStore
+    });
   }
 }
 
@@ -164,11 +185,16 @@ async function boot() {
       key: progressQueueKey(currentUsername),
       send: item => sendProgressItem(api, item)
     });
+    aloudCheckpointStore = createAloudCheckpointStore({
+      storage: progressStorage,
+      username: currentUsername
+    });
     progressQueue.retry();
     if (!location.hash) history.replaceState(null, '', '#/words');
     mountRoute();
   } catch {
     currentUsername = null;
+    aloudCheckpointStore = null;
     disconnectProgressAndRenderLogin();
   }
 }
@@ -176,6 +202,7 @@ async function boot() {
 window.addEventListener('hashchange', mountRoute);
 setUnauthorizedHandler(() => {
   currentUsername = null;
+  aloudCheckpointStore = null;
   disconnectProgressAndRenderLogin();
 });
 boot();

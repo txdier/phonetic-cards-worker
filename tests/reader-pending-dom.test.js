@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
+import { createAloudCheckpointStore } from '../public/lib/aloud-checkpoint.js';
 import { createProgressQueue, PROGRESS_QUEUE_KEY } from '../public/lib/reading-session.js';
 import { createPendingView } from '../public/pending-view.js';
 import { createReaderView } from '../public/reader-view.js';
@@ -153,6 +154,717 @@ function createReaderSpeechFake(isSupported = true) {
     get unsubscribed() { return unsubscribed; }
   };
 }
+
+function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {}) {
+  const starts = [];
+  const calls = [];
+  let listener = null;
+  let snapshot = {
+    state: 'idle',
+    mode: 'idle',
+    articleId: null,
+    currentIndex: null,
+    currentTime: 0,
+    completion: { reachedEnd: false, coverage: 0, counted: false },
+    fallbackActive: false,
+    ...initialSnapshot
+  };
+  const publish = next => {
+    snapshot = {
+      ...snapshot,
+      ...next,
+      completion: next.completion || snapshot.completion
+    };
+    listener?.({ ...snapshot });
+  };
+  return {
+    starts,
+    calls,
+    get pauseCalls() { return calls.filter(call => call === 'pause').length; },
+    controller: {
+      isSupported: true,
+      getRate: () => 1,
+      setRate(value) {
+        calls.push(['rate', Number(value)]);
+        return Number(value);
+      },
+      getSnapshot: () => ({ ...snapshot }),
+      subscribe(next) {
+        listener = next;
+        next({ ...snapshot });
+        return () => { listener = null; };
+      },
+      startArticle(nextArticleId, sentences, startIndex, options = {}) {
+        starts.push({
+          articleId: nextArticleId,
+          startIndex,
+          offsetSeconds: Number(options.offsetSeconds || 0)
+        });
+        if (!publishStart) return;
+        publish({
+          state: 'speaking',
+          mode: 'article',
+          articleId: nextArticleId,
+          currentIndex: startIndex,
+          currentTime: Number(options.offsetSeconds || 0),
+          completion: { reachedEnd: false, coverage: 0, counted: false }
+        });
+      },
+      pause() {
+        calls.push('pause');
+        if (snapshot.state === 'speaking') publish({ state: 'paused' });
+      },
+      resume() {
+        calls.push('resume');
+        if (snapshot.state === 'paused') publish({ state: 'speaking' });
+      },
+      previousSentence() { calls.push('previous'); },
+      replayCurrentSentence() { calls.push('current'); },
+      nextSentence() { calls.push('next'); },
+      speakArticleSentence(nextArticleId, index, text) {
+        calls.push(['point', nextArticleId, index, text]);
+        publish({
+          state: 'once',
+          mode: 'once',
+          articleId: null,
+          currentIndex: null,
+          currentTime: 0
+        });
+      },
+      stop() {
+        calls.push('stop');
+        publish({
+          state: 'idle',
+          mode: 'idle',
+          articleId: null,
+          currentIndex: null,
+          currentTime: 0
+        });
+      }
+    },
+    emit: publish
+  };
+}
+
+function setupReader({
+  articleProgress = {
+    last_position_ratio: 0,
+    last_aloud_sentence_index: 0,
+    last_aloud_offset_seconds: 1
+  },
+  body = 'First sentence. Second sentence. Third sentence.',
+  checkpoint = null,
+  checkpointBody = body,
+  liveSnapshot = {},
+  publishStart = true,
+  timerDeadline = null,
+  now: initialNow = 0
+} = {}) {
+  const env = installDom();
+  let currentNow = initialNow;
+  const timerKey = 'pc-aloud-timer:alice:a1';
+  if (timerDeadline != null) {
+    env.window.localStorage.setItem(timerKey, JSON.stringify({ deadline: timerDeadline }));
+  }
+  const baseCheckpointStore = createAloudCheckpointStore({
+    storage: env.window.localStorage,
+    username: 'alice',
+    now: () => currentNow
+  });
+  if (checkpoint) {
+    baseCheckpointStore.save({
+      articleId: 'a1',
+      body: checkpointBody,
+      sentenceIndex: checkpoint.sentenceIndex,
+      offsetSeconds: checkpoint.offsetSeconds,
+      state: checkpoint.state
+    });
+  }
+  const checkpointSaves = [];
+  let clearedArticleId = null;
+  const checkpointStore = {
+    load: options => baseCheckpointStore.load(options),
+    save(options) {
+      checkpointSaves.push({
+        sentenceIndex: options.sentenceIndex,
+        offsetSeconds: options.offsetSeconds,
+        state: options.state
+      });
+      return baseCheckpointStore.save(options);
+    },
+    clear(nextArticleId) {
+      clearedArticleId = nextArticleId;
+      return baseCheckpointStore.clear(nextArticleId);
+    },
+    get lastSaved() { return checkpointSaves.at(-1) || null; },
+    get clearedArticleId() { return clearedArticleId; }
+  };
+  const progressItems = [];
+  const progressQueue = {
+    submit(item) {
+      progressItems.push({ ...item });
+      return Promise.resolve(true);
+    },
+    retry: () => Promise.resolve(true),
+    snapshot: () => progressItems.map(item => ({ ...item }))
+  };
+  const speech = createReaderSpeechFake();
+  const tts = createReaderTtsFake(liveSnapshot, { publishStart });
+  const handlers = new Map();
+  const mediaSession = {
+    metadata: null,
+    playbackState: 'none',
+    handlers,
+    setActionHandler(name, handler) {
+      if (handler) handlers.set(name, handler);
+      else handlers.delete(name);
+    }
+  };
+  class MediaMetadata {
+    constructor(value) { Object.assign(this, value); }
+  }
+  const intervals = [];
+  const cleanup = createReaderView({
+    root: env.root,
+    api: async () => articleDetail({
+      body,
+      progress: articleProgress
+    }),
+    articleId: 'a1',
+    navigate() {},
+    speech: speech.controller,
+    tts: tts.controller,
+    progressQueue,
+    aloudCheckpointStore: checkpointStore,
+    username: 'alice',
+    storage: env.window.localStorage,
+    progressRuntime: {
+      now: () => currentNow,
+      setInterval(callback, delay) {
+        intervals.push({ callback, delay });
+        return intervals.length;
+      },
+      clearInterval() {},
+      requestAnimationFrame: callback => callback()
+    },
+    mediaRuntime: {
+      mediaSession,
+      MediaMetadata,
+      now: () => currentNow,
+      setInterval(callback, delay) {
+        intervals.push({ callback, delay });
+        return intervals.length;
+      },
+      clearInterval() {}
+    }
+  });
+  return {
+    ...env,
+    cleanup,
+    speech,
+    tts,
+    checkpointStore,
+    checkpointSaves,
+    progressQueue,
+    mediaSession,
+    timerKey,
+    intervals,
+    ready: flush,
+    setNow(value) { currentNow = value; }
+  };
+}
+
+test('reader prefers a matching local offset and resumes it on user action', async () => {
+  const env = setupReader({
+    articleProgress: {
+      last_position_ratio: 0,
+      last_aloud_sentence_index: 0,
+      last_aloud_offset_seconds: 1
+    },
+    checkpoint: {
+      sentenceIndex: 1,
+      offsetSeconds: 2.5,
+      state: 'paused'
+    }
+  });
+  try {
+    await env.ready();
+    assert.match(
+      env.root.querySelector('[data-role="aloud-resume-entry"]').textContent,
+      /第 2 句/
+    );
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    assert.deepEqual(env.tts.starts.at(-1), {
+      articleId: 'a1', startIndex: 1, offsetSeconds: 2.5
+    });
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader keeps a matching live player position ahead of local and server progress', async () => {
+  const env = setupReader({
+    articleProgress: {
+      last_position_ratio: 0,
+      last_aloud_sentence_index: 0,
+      last_aloud_offset_seconds: 0.25
+    },
+    checkpoint: {
+      sentenceIndex: 1,
+      offsetSeconds: 0.75,
+      state: 'paused'
+    },
+    liveSnapshot: {
+      state: 'paused',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 2,
+      currentTime: 1.5
+    }
+  });
+  try {
+    await env.ready();
+    const resumeState = {
+      source: env.tts.controller.getSnapshot().articleId === 'a1' ? 'live' : 'other',
+      position: {
+        sentenceIndex: env.tts.controller.getSnapshot().currentIndex,
+        offsetSeconds: env.tts.controller.getSnapshot().currentTime
+      }
+    };
+    assert.equal(resumeState.source, 'live');
+    assert.deepEqual(resumeState.position, { sentenceIndex: 2, offsetSeconds: 1.5 });
+
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    assert.equal(env.tts.calls.at(-1), 'resume');
+    assert.equal(env.tts.starts.length, 0);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader rejects a mismatched body checkpoint and resumes server position', async () => {
+  const env = setupReader({
+    body: 'Changed first. Changed second. Changed third.',
+    checkpointBody: 'Old first. Old second. Old third.',
+    articleProgress: {
+      last_position_ratio: 0,
+      last_aloud_sentence_index: 1,
+      last_aloud_offset_seconds: 0.75
+    },
+    checkpoint: {
+      sentenceIndex: 2,
+      offsetSeconds: 3.5,
+      state: 'paused'
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    const started = env.tts.starts.at(-1);
+    const fingerprintMismatchResume = {
+      source: started.startIndex === 1 ? 'server' : 'local',
+      position: {
+        sentenceIndex: started.startIndex,
+        offsetSeconds: started.offsetSeconds
+      }
+    };
+    assert.equal(fingerprintMismatchResume.source, 'server');
+    assert.deepEqual(fingerprintMismatchResume.position, {
+      sentenceIndex: 1, offsetSeconds: 0.75
+    });
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader checkpoints state changes immediately and throttles time updates', async () => {
+  const env = setupReader({
+    articleProgress: { last_position_ratio: 0 }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    const checkpointSavesAfterStart = env.checkpointSaves.length;
+    env.setNow(1_500);
+    env.tts.emit({ state: 'speaking', currentIndex: 0, currentTime: 1.5 });
+    const checkpointSavesWithinTwoSeconds = env.checkpointSaves.length;
+    env.tts.controller.pause();
+    const checkpointSavesAfterPause = env.checkpointSaves.length;
+
+    assert.equal(checkpointSavesAfterStart, 1);
+    assert.equal(checkpointSavesWithinTwoSeconds, 1);
+    assert.equal(checkpointSavesAfterPause, 2);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('pagehide atomically checkpoints the last actually audible sentence and offset', async () => {
+  const env = setupReader({
+    articleProgress: { last_position_ratio: 0 }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    env.tts.emit({ state: 'speaking', currentIndex: 2, currentTime: 4.25 });
+
+    env.window.dispatchEvent(new env.window.Event('pagehide'));
+    assert.deepEqual(env.checkpointStore.lastSaved, {
+      sentenceIndex: 2, offsetSeconds: 4.25, state: 'paused'
+    });
+    assert.deepEqual(env.progressQueue.snapshot().at(-1), {
+      kind: 'position',
+      articleId: 'a1',
+      lastPositionRatio: 0,
+      lastAloudSentenceIndex: 2,
+      lastAloudOffsetSeconds: 4.25
+    });
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader restart clears local and queued read-aloud positions', async () => {
+  const env = setupReader({
+    checkpoint: { sentenceIndex: 1, offsetSeconds: 2, state: 'paused' },
+    articleProgress: { last_position_ratio: 0 },
+    publishStart: false
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="speech-restart"]'));
+
+    assert.equal(env.checkpointStore.clearedArticleId, 'a1');
+    assert.deepEqual(env.progressQueue.snapshot().at(-1), {
+      kind: 'position',
+      articleId: 'a1',
+      lastPositionRatio: 0,
+      lastAloudSentenceIndex: null,
+      lastAloudOffsetSeconds: 0
+    });
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('expired timer pauses and checkpoints on pageshow', async () => {
+  const env = setupReader({
+    timerDeadline: 100,
+    now: 200,
+    liveSnapshot: {
+      state: 'speaking',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 1,
+      currentTime: 2
+    }
+  });
+  try {
+    await env.ready();
+    env.window.dispatchEvent(new env.window.Event('pageshow'));
+    assert.equal(env.tts.pauseCalls, 1);
+    assert.match(
+      env.root.querySelector('[data-role="speech-status"]').textContent,
+      /定时结束/
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader maps Media Session actions and cleanup preserves a future timer', async () => {
+  const env = setupReader({
+    timerDeadline: 60_000,
+    liveSnapshot: {
+      state: 'paused',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 1,
+      currentTime: 2.5
+    }
+  });
+  try {
+    await env.ready();
+    env.mediaSession.handlers.get('play')();
+    env.mediaSession.handlers.get('pause')();
+    env.mediaSession.handlers.get('previoustrack')();
+    env.mediaSession.handlers.get('seekbackward')();
+    env.mediaSession.handlers.get('nexttrack')();
+    assert.deepEqual(
+      env.tts.calls.filter(call => ['resume', 'pause', 'previous', 'current', 'next'].includes(call)),
+      ['resume', 'pause', 'previous', 'current', 'next']
+    );
+
+    env.cleanup();
+    assert.equal(env.mediaSession.handlers.size, 0);
+    assert.notEqual(env.window.localStorage.getItem(env.timerKey), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader warns when the player falls back to lock-screen-limited speech', async () => {
+  const env = setupReader({
+    liveSnapshot: {
+      state: 'paused',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 0,
+      currentTime: 1,
+      fallbackActive: true
+    }
+  });
+  try {
+    await env.ready();
+    assert.match(
+      env.root.querySelector('[data-role="speech-fallback-warning"]').textContent,
+      /锁屏后台播放可能受限/
+    );
+    assert.equal(
+      env.speech.calls.some(call => call[0] === 'load'),
+      false,
+      'rendering a live TTS fallback must not cancel and reload browser speech'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader ignores another article TTS snapshot across UI metadata and timer expiry', async () => {
+  const env = setupReader({
+    timerDeadline: 100,
+    now: 0,
+    articleProgress: {
+      last_position_ratio: 0,
+      last_aloud_sentence_index: 1,
+      last_aloud_offset_seconds: 0.75
+    },
+    liveSnapshot: {
+      state: 'speaking',
+      mode: 'article',
+      articleId: 'a2',
+      currentIndex: 2,
+      currentTime: 4
+    }
+  });
+  try {
+    await env.ready();
+    assert.equal(
+      env.root.querySelector('[data-action="speech-primary"]').textContent,
+      '继续'
+    );
+    assert.equal(env.root.querySelector('.pc-sentence-speaking'), null);
+    assert.equal(env.mediaSession.metadata, null);
+
+    env.setNow(200);
+    env.window.dispatchEvent(new env.window.Event('pageshow'));
+    assert.equal(env.tts.pauseCalls, 0);
+
+    for (const action of ['play', 'pause', 'previoustrack', 'seekbackward', 'nexttrack']) {
+      env.mediaSession.handlers.get(action)?.();
+    }
+    assert.deepEqual(
+      env.tts.calls.filter(call =>
+        ['resume', 'pause', 'previous', 'current', 'next'].includes(call)
+      ),
+      []
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('expired timer blocks every direct sentence and Media Session playback entry', async () => {
+  const directEntries = [
+    {
+      name: 'ordinary click',
+      prepare() {},
+      perform(env) {
+        click(env.window, env.root.querySelector('[data-sentence-index="0"]'));
+      },
+      attempted(env) {
+        return env.tts.calls.some(call => Array.isArray(call) && call[0] === 'point');
+      }
+    },
+    {
+      name: 'ordinary keyboard',
+      prepare() {},
+      perform(env) {
+        env.root.querySelector('[data-sentence-index="0"]').dispatchEvent(
+          new env.window.KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true
+          })
+        );
+      },
+      attempted(env) {
+        return env.tts.calls.some(call => Array.isArray(call) && call[0] === 'point');
+      }
+    },
+    {
+      name: 'selected start click',
+      prepare(env) {
+        click(env.window, env.root.querySelector('[data-role="floating-speech-toggle"]'));
+      },
+      perform(env) {
+        click(env.window, env.root.querySelector('[data-sentence-index="1"]'));
+      },
+      attempted(env) { return env.tts.starts.length > 0; }
+    },
+    {
+      name: 'selected start keyboard',
+      prepare(env) {
+        click(env.window, env.root.querySelector('[data-role="floating-speech-toggle"]'));
+      },
+      perform(env) {
+        env.root.querySelector('[data-sentence-index="1"]').dispatchEvent(
+          new env.window.KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true
+          })
+        );
+      },
+      attempted(env) { return env.tts.starts.length > 0; }
+    },
+    {
+      name: 'term pronunciation',
+      options: { body: 'Deploy safely. Second sentence. Third sentence.' },
+      prepare(env) {
+        click(env.window, env.root.querySelector('.pc-term'));
+      },
+      perform(env) {
+        click(env.window, env.root.querySelector('[data-action="pronounce"]'));
+      },
+      attempted(env) {
+        return env.speech.calls.some(call => call[0] === 'speakOnce');
+      }
+    },
+    {
+      name: 'selection pronunciation',
+      prepare(env) {
+        const sentence = env.root.querySelector('[data-sentence-index="0"]');
+        env.window.getSelection = () => validSelection(sentence, { text: 'First' });
+        sentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
+      },
+      perform(env) {
+        click(env.window, env.root.querySelector('[data-action="pronounce-selection"]'));
+      },
+      attempted(env) {
+        return env.speech.calls.some(call => call[0] === 'speakOnce');
+      }
+    },
+    {
+      name: 'floating rate cycle',
+      prepare() {},
+      perform(env) {
+        click(env.window, env.root.querySelector('[data-action="speech-rate-cycle"]'));
+      },
+      attempted(env) {
+        return env.tts.calls.some(call => Array.isArray(call) && call[0] === 'rate');
+      }
+    },
+    {
+      name: 'toolbar rate input',
+      prepare() {},
+      perform(env) {
+        const rate = env.root.querySelector('[data-action="speech-rate"]');
+        rate.value = '1.5';
+        rate.dispatchEvent(new env.window.Event('input', { bubbles: true }));
+      },
+      attempted(env) {
+        return env.tts.calls.some(call => Array.isArray(call) && call[0] === 'rate');
+      }
+    }
+  ];
+  for (const entry of directEntries) {
+    const env = setupReader({
+      timerDeadline: 100,
+      now: 0,
+      articleProgress: { last_position_ratio: 0 },
+      ...entry.options
+    });
+    try {
+      await env.ready();
+      entry.prepare(env);
+      env.setNow(200);
+      entry.perform(env);
+      assert.equal(entry.attempted(env), false, entry.name);
+      assert.match(
+        env.root.querySelector('[data-role="speech-status"]').textContent,
+        /定时结束/,
+        entry.name
+      );
+    } finally {
+      env.cleanup();
+      env.restore();
+    }
+  }
+
+  for (const [action, attemptedCall] of [
+    ['previoustrack', 'previous'],
+    ['seekbackward', 'current'],
+    ['nexttrack', 'next']
+  ]) {
+    const env = setupReader({
+      timerDeadline: 100,
+      now: 0,
+      liveSnapshot: {
+        state: 'paused',
+        mode: 'article',
+        articleId: 'a1',
+        currentIndex: 1,
+        currentTime: 1
+      }
+    });
+    try {
+      await env.ready();
+      env.setNow(200);
+      env.mediaSession.handlers.get(action)();
+      assert.equal(env.tts.calls.includes(attemptedCall), false, action);
+      assert.equal(env.tts.pauseCalls, 1, action);
+    } finally {
+      env.cleanup();
+      env.restore();
+    }
+  }
+});
+
+test('one-off sentence playback publishes its own metadata and coherent Media Session actions', async () => {
+  const env = setupReader({
+    liveSnapshot: {
+      state: 'paused',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 2,
+      currentTime: 1
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-sentence-index="0"]'));
+
+    assert.equal(env.mediaSession.metadata.album, 'First sentence.');
+    assert.equal(env.mediaSession.playbackState, 'playing');
+    assert.equal(env.mediaSession.handlers.has('previoustrack'), false);
+    assert.equal(env.mediaSession.handlers.has('nexttrack'), false);
+    env.mediaSession.handlers.get('seekbackward')();
+    assert.deepEqual(
+      env.tts.calls.filter(call => Array.isArray(call) && call[0] === 'point').at(-1),
+      ['point', 'a1', 0, 'First sentence.']
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
 
 function assertSharedReaderPopover(panel, word) {
   assert.ok(panel, `expected a popover for ${word}`);
