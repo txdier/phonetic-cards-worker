@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTtsPlayer } from '../public/lib/tts-player.js';
+import { createSpeechController } from '../public/lib/speech.js';
 
 class ControlledAudio {
   constructor() {
@@ -84,6 +85,29 @@ function fakeFallback(overrides = {}) {
 
 function cloudResponse() {
   return new Response(new Uint8Array([1]), { status: 200 });
+}
+
+function actualSpeechFallback() {
+  const utterances = [];
+  const speechSynthesis = {
+    paused: false,
+    getVoices: () => [],
+    addEventListener() {},
+    removeEventListener() {},
+    cancel() {},
+    pause() { this.paused = true; },
+    resume() { this.paused = false; },
+    speak(utterance) { utterances.push(utterance); }
+  };
+  class Utterance {
+    constructor(text) {
+      this.text = text;
+    }
+  }
+  return {
+    fallback: createSpeechController({ speechSynthesis, Utterance }),
+    utterances
+  };
 }
 
 test('article playback reuses one audio and changes current only on play', async () => {
@@ -387,6 +411,68 @@ test('article completion remains counted after a mid-sequence browser fallback',
 
   assert.equal(states.at(-1).completionEvent.counted, true);
   assert.equal(states.at(-1).fallbackActive, true);
+});
+
+test('mixed cloud and real speech fallback preserve full counted coverage', async () => {
+  const audio = new ControlledAudio();
+  const { fallback, utterances } = actualSpeechFallback();
+  const states = [];
+  const player = createTtsPlayer({
+    fetch: async path => path.endsWith('/sentences/0')
+      ? cloudResponse()
+      : new Response('', { status: 503 }),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback
+  });
+  player.subscribe(next => states.push(next));
+
+  const playback = player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.begin();
+  await audio.finish();
+  await playback;
+  utterances.at(-1).onstart?.();
+  utterances.at(-1).onend?.();
+  await Promise.resolve();
+
+  assert.equal(states.at(-1).completion.reachedEnd, true);
+  assert.equal(states.at(-1).completion.coverage, 1);
+  assert.equal(states.at(-1).completion.counted, true);
+  assert.deepEqual(states.at(-1).completionEvent, {
+    reachedEnd: true,
+    coverage: 1,
+    counted: true
+  });
+});
+
+test('mixed fallback coverage from a later start remains uncounted', async () => {
+  const audio = new ControlledAudio();
+  const { fallback, utterances } = actualSpeechFallback();
+  const states = [];
+  const player = createTtsPlayer({
+    fetch: async path => path.endsWith('/sentences/1')
+      ? cloudResponse()
+      : new Response('', { status: 503 }),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback
+  });
+  player.subscribe(next => states.push(next));
+
+  const playback = player.startArticle('a1', ['Zero.', 'One.', 'Two.'], 1);
+  await audio.waitForSource();
+  await audio.begin();
+  await audio.finish();
+  await playback;
+  utterances.at(-1).onstart?.();
+  utterances.at(-1).onend?.();
+  await Promise.resolve();
+
+  assert.equal(states.at(-1).completion.reachedEnd, true);
+  assert.equal(states.at(-1).completion.coverage, 2 / 3);
+  assert.equal(states.at(-1).completion.counted, false);
+  assert.equal(states.at(-1).completionEvent, null);
 });
 
 test('article onState remains subscribed through asynchronous fallback completion', async () => {

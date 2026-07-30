@@ -235,9 +235,20 @@ export function createTtsPlayer({
       state = next?.state || 'idle';
       if (Number.isInteger(next?.currentIndex)) currentIndex = next.currentIndex;
       const nextCompletion = next?.completion || emptyCompletion();
+      const total = session.texts.length;
+      const fallbackCoverage = Number.isFinite(nextCompletion.coverage)
+        ? nextCompletion.coverage
+        : 0;
+      const fallbackCompleted = Math.min(
+        total - index,
+        Math.max(0, Math.round(fallbackCoverage * total))
+      );
+      for (let offset = 0; offset < fallbackCompleted; offset += 1) {
+        session.completed.add(index + offset);
+      }
       completion = {
         reachedEnd: Boolean(nextCompletion.reachedEnd),
-        coverage: Number.isFinite(nextCompletion.coverage) ? nextCompletion.coverage : 0,
+        coverage: total ? session.completed.size / total : 0,
         counted: Boolean(nextCompletion.reachedEnd && session.startIndex === 0)
       };
       const completedNow = completion.reachedEnd && !reachedEndBefore;
