@@ -87,6 +87,26 @@ test('long-reading capsule is fixed, safe-area aware, compact, and accessible', 
   assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry \.pc-btn-ghost\s*\{[^}]*white-space:\s*nowrap/);
 });
 
+test('mobile replay capsule keeps four labelled touch actions within narrow screens', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const capsule = css.match(/\.pc-floating-speech\s*\{([^}]*)\}/)?.[1];
+  const action = css.match(/\.pc-floating-speech-action\s*\{([^}]*)\}/)?.[1];
+  const narrow = css.match(/@media\s*\(max-width:\s*380px\)\s*\{([\s\S]*?)\n\s*\}/)?.[1];
+
+  assert.ok(capsule);
+  assert.match(capsule, /display:\s*grid/);
+  assert.match(capsule, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*auto\)\)/);
+  assert.match(capsule, /max-width:\s*calc\(100vw\s*-\s*24px\)/);
+  assert.ok(action);
+  assert.match(action, /min-height:\s*44px/);
+  assert.match(action, /touch-action:\s*manipulation/);
+  assert.match(action, /white-space:\s*nowrap/);
+  assert.match(css, /\.pc-floating-speech-action:disabled\s*\{[^}]*opacity:\s*\.45/);
+  assert.ok(narrow);
+  assert.match(narrow, /\.pc-floating-speech-action\s*\{[^}]*padding-inline:\s*7px/);
+  assert.match(narrow, /\.pc-floating-speech-action\s*\{[^}]*font-size:\s*13px/);
+});
+
 test('navigation and word filters follow the responsive content layout', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const filters = css.match(/\.pc-library-filters\s*\{([^}]*)\}/)?.[1];

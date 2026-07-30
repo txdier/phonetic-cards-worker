@@ -19,6 +19,13 @@ function actionButton(action, text, className = 'pc-btn-ghost') {
   return node;
 }
 
+function formatRemaining(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 function wordCandidates(words) {
   const candidates = [];
   for (const word of words || []) {
@@ -156,6 +163,7 @@ export function createReaderView({
   let speechToolbarOffscreen = false;
   let speechToolbarObserver = null;
   let startSelectionMode = false;
+  let timerPanelTrigger = null;
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
@@ -434,12 +442,25 @@ export function createReaderView({
     primary.dataset.role = 'speech-primary';
     primary.dataset.speechControl = '';
     primary.disabled = !speechAvailable;
+    const previous = actionButton('speech-previous', '上一句');
+    previous.dataset.speechControl = '';
+    previous.setAttribute('aria-label', '重播上一句');
+    previous.disabled = !speechAvailable;
+    const current = actionButton('speech-current', '本句');
+    current.dataset.speechControl = '';
+    current.setAttribute('aria-label', '重播本句');
+    current.disabled = !speechAvailable;
+    const timer = actionButton('speech-timer', '定时');
+    timer.dataset.speechControl = '';
+    timer.setAttribute('aria-label', '设置停止朗读定时器');
+    timer.setAttribute('aria-expanded', 'false');
+    timer.disabled = !speechAvailable;
     const restart = actionButton('speech-restart', '从头开始');
     restart.dataset.role = 'speech-restart';
     restart.dataset.speechControl = '';
     restart.disabled = !speechAvailable;
     restart.hidden = true;
-    toolbar.append(primary, restart);
+    toolbar.append(primary, previous, current, timer, restart);
     const rateLabel = element('label', 'pc-speech-field');
     rateLabel.append(document.createTextNode('语速'));
     const rate = element('input');
@@ -456,6 +477,11 @@ export function createReaderView({
     rateValue.dataset.role = 'speech-rate-value';
     rateLabel.append(rate, rateValue);
     toolbar.append(rateLabel);
+    const timerRemaining = element('output', 'pc-sleep-timer-remaining');
+    timerRemaining.dataset.role = 'sleep-timer-remaining';
+    timerRemaining.setAttribute('aria-live', 'polite');
+    timerRemaining.hidden = true;
+    toolbar.append(timerRemaining);
     const status = element('div', 'pc-speech-status');
     status.dataset.role = 'speech-status';
     status.setAttribute('role', 'status');
@@ -500,20 +526,30 @@ export function createReaderView({
     capsule.setAttribute('role', 'group');
     capsule.setAttribute('aria-label', '悬浮朗读控制');
     capsule.hidden = true;
+    const previous = actionButton('speech-floating-previous', '上一句', 'pc-floating-speech-action');
+    previous.dataset.speechControl = '';
+    previous.setAttribute('aria-label', '重播上一句');
+    const current = actionButton('speech-floating-current', '本句', 'pc-floating-speech-action');
+    current.dataset.speechControl = '';
+    current.setAttribute('aria-label', '重播本句');
     const action = speechAction(true);
     const toggle = actionButton('speech-floating-toggle', action.label, 'pc-floating-speech-action');
     toggle.dataset.role = 'floating-speech-toggle';
     toggle.setAttribute('aria-label', action.ariaLabel);
-    const rate = actionButton('speech-rate-cycle', '1×', 'pc-floating-speech-action');
-    rate.dataset.role = 'floating-speech-rate';
-    rate.setAttribute('aria-label', '切换朗读语速，当前 1 倍');
-    capsule.append(toggle, element('span', 'pc-floating-speech-divider'), rate);
+    toggle.disabled = !Boolean((tts || speech)?.isSupported);
+    const timer = actionButton('speech-floating-timer', '定时', 'pc-floating-speech-action');
+    timer.dataset.speechControl = '';
+    timer.setAttribute('aria-label', '设置停止朗读定时器');
+    timer.setAttribute('aria-expanded', 'false');
+    timer.disabled = !Boolean((tts || speech)?.isSupported);
+    const divider = () => element('span', 'pc-floating-speech-divider');
+    capsule.append(previous, divider(), current, divider(), toggle, divider(), timer);
     return capsule;
   }
 
   function bottomPanelOpen() {
     return Boolean(root.querySelector(
-      '[data-role="selection-action"], [data-role="term-popover"], [data-role="conversion-panel"]'
+      '[data-role="selection-action"], [data-role="term-popover"], [data-role="conversion-panel"], [data-role="sleep-timer-panel"]'
     ));
   }
 
@@ -549,11 +585,6 @@ export function createReaderView({
     const topOutput = root.querySelector('[data-role="speech-rate-value"]');
     if (topRate) topRate.value = String(rate);
     if (topOutput) topOutput.textContent = `${rate}×`;
-    const floatingRate = root.querySelector('[data-role="floating-speech-rate"]');
-    if (floatingRate) {
-      floatingRate.textContent = `${rate}×`;
-      floatingRate.setAttribute('aria-label', `切换朗读语速，当前 ${rate} 倍`);
-    }
     const toggle = root.querySelector('[data-role="floating-speech-toggle"]');
     if (toggle) {
       const action = speechAction(true);
@@ -572,6 +603,18 @@ export function createReaderView({
         speechState === 'paused' ||
         (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex))
       );
+    }
+    const replayIndex = currentReplayIndex();
+    const speechAvailable = Boolean(audioController?.isSupported);
+    for (const previous of root.querySelectorAll(
+      '[data-action="speech-previous"], [data-action="speech-floating-previous"]'
+    )) {
+      previous.disabled = !speechAvailable || replayIndex < 1;
+    }
+    for (const current of root.querySelectorAll(
+      '[data-action="speech-current"], [data-action="speech-floating-current"]'
+    )) {
+      current.disabled = !speechAvailable || !validAloudIndex(replayIndex);
     }
     const floating = root.querySelector('[data-role="floating-speech"]');
     if (floating) {
@@ -606,6 +649,11 @@ export function createReaderView({
 
   function validAloudIndex(index) {
     return Number.isInteger(index) && index >= 0 && index < sentences.length;
+  }
+
+  function currentReplayIndex() {
+    if (validAloudIndex(activeAloudSentenceIndex)) return activeAloudSentenceIndex;
+    return validAloudIndex(savedAloudSentenceIndex) ? savedAloudSentenceIndex : null;
   }
 
   function aloudOffset(value) {
@@ -719,8 +767,96 @@ export function createReaderView({
     if (status && status.textContent !== message) status.textContent = message;
   }
 
-  function syncTimerControls() {
-    // Timer controls are introduced by the next UI task; lifecycle behavior lives here.
+  function syncTimerControls(timerState = sleepTimer.snapshot()) {
+    const remaining = root.querySelector('[data-role="sleep-timer-remaining"]');
+    if (remaining) {
+      if (timerState.expired) {
+        remaining.textContent = '定时结束';
+        remaining.hidden = false;
+      } else if (timerState.active) {
+        remaining.textContent = formatRemaining(timerState.remainingMs);
+        remaining.hidden = false;
+      } else {
+        remaining.textContent = '';
+        remaining.hidden = true;
+      }
+    }
+    const expanded = Boolean(root.querySelector('[data-role="sleep-timer-panel"]'));
+    for (const trigger of root.querySelectorAll(
+      '[data-action="speech-timer"], [data-action="speech-floating-timer"]'
+    )) {
+      trigger.setAttribute('aria-expanded', String(expanded));
+    }
+  }
+
+  function closeTimerPanel({ restoreFocus = true } = {}) {
+    const panel = root.querySelector('[data-role="sleep-timer-panel"]');
+    if (!panel) return;
+    panel.remove();
+    syncTimerControls();
+    if (restoreFocus && timerPanelTrigger?.isConnected) timerPanelTrigger.focus();
+    timerPanelTrigger = null;
+  }
+
+  function openTimerPanel(trigger) {
+    closeTimerPanel({ restoreFocus: false });
+    timerPanelTrigger = trigger;
+    const panel = element('section', 'pc-sleep-timer-panel');
+    panel.dataset.role = 'sleep-timer-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '停止朗读定时器');
+    const title = element('h2', 'pc-sleep-timer-title', '停止朗读定时器');
+    const presets = element('div', 'pc-sleep-timer-presets');
+    presets.setAttribute('role', 'group');
+    presets.setAttribute('aria-label', '预设时长');
+    for (const minutes of [10, 20, 30, 60]) {
+      const preset = actionButton('speech-timer-set', `${minutes} 分钟`);
+      preset.dataset.minutes = String(minutes);
+      presets.append(preset);
+    }
+    const customLabel = element('label', 'pc-sleep-timer-custom-label', '自定义分钟数');
+    const custom = element('input', 'pc-sleep-timer-custom');
+    custom.dataset.role = 'sleep-timer-custom';
+    custom.name = 'minutes';
+    custom.type = 'number';
+    custom.min = '1';
+    custom.step = '1';
+    custom.inputMode = 'numeric';
+    custom.setAttribute('aria-describedby', 'pc-sleep-timer-error');
+    customLabel.append(custom);
+    const customSet = actionButton('speech-timer-set', '设置');
+    const error = element('div', 'pc-sleep-timer-error');
+    error.id = 'pc-sleep-timer-error';
+    error.dataset.role = 'sleep-timer-error';
+    error.setAttribute('role', 'alert');
+    error.setAttribute('aria-live', 'polite');
+    const cancel = actionButton('speech-timer-cancel', '取消定时');
+    panel.append(title, presets, customLabel, customSet, error, cancel);
+    const rect = trigger.getBoundingClientRect?.();
+    if (rect) {
+      panel.style.setProperty('--sleep-timer-left', `${rect.left}px`);
+      panel.style.setProperty('--sleep-timer-top', `${rect.bottom + 8}px`);
+    }
+    root.append(panel);
+    syncTimerControls();
+    custom.focus();
+  }
+
+  function setSleepTimer(target) {
+    const panel = target.closest('[data-role="sleep-timer-panel"]');
+    const input = panel?.querySelector('[data-role="sleep-timer-custom"]');
+    const error = panel?.querySelector('[data-role="sleep-timer-error"]');
+    const minutes = target.dataset.minutes == null ? Number(input?.value) : Number(target.dataset.minutes);
+    if (!Number.isInteger(minutes) || minutes <= 0) {
+      if (error) error.textContent = '请输入大于 0 的正整数分钟数';
+      input?.focus();
+      return;
+    }
+    if (!sleepTimer.setMinutes(minutes)) {
+      if (error) error.textContent = '无法设置定时器，请重试';
+      return;
+    }
+    closeTimerPanel();
   }
 
   function ownsAudioControllerPlayback() {
@@ -910,6 +1046,7 @@ export function createReaderView({
     restorePosition();
     observeSpeechToolbar();
     syncSpeechControls();
+    syncTimerControls();
   }
 
   async function load() {
@@ -1342,6 +1479,32 @@ export function createReaderView({
         startFullReading(0);
       }
     }
+    if (action === 'speech-previous' || action === 'speech-floating-previous') {
+      if (checkSleepTimer()) return;
+      const previousIndex = currentReplayIndex() - 1;
+      if (previousIndex >= 0 && ownsAudioControllerPlayback()) {
+        if (tts) tts.previousSentence?.();
+        else speakDirect(sentences[previousIndex].text);
+      }
+    }
+    if (action === 'speech-current' || action === 'speech-floating-current') {
+      if (checkSleepTimer()) return;
+      const replayIndex = currentReplayIndex();
+      if (validAloudIndex(replayIndex) && ownsAudioControllerPlayback()) {
+        if (tts) tts.replayCurrentSentence?.();
+        else speakDirect(sentences[replayIndex].text);
+      }
+    }
+    if (action === 'speech-timer' || action === 'speech-floating-timer') {
+      openTimerPanel(target);
+    }
+    if (action === 'speech-timer-set') {
+      setSleepTimer(target);
+    }
+    if (action === 'speech-timer-cancel') {
+      sleepTimer.cancel();
+      closeTimerPanel();
+    }
     if (action === 'speech-restart') {
       if (checkSleepTimer()) return;
       fullSpeechActive = false;
@@ -1518,6 +1681,11 @@ export function createReaderView({
       return;
     }
     if (event.key !== 'Escape') return;
+    if (root.querySelector('[data-role="sleep-timer-panel"]')) {
+      event.preventDefault();
+      closeTimerPanel();
+      return;
+    }
     if (root.querySelector('[data-role="selection-action"]')) {
       event.preventDefault();
       closeSelection();
@@ -1533,6 +1701,14 @@ export function createReaderView({
   }
 
   function onDocumentClick(event) {
+    const timerPanel = root.querySelector('[data-role="sleep-timer-panel"]');
+    if (
+      timerPanel && !timerPanel.contains(event.target)
+      && !timerPanelTrigger?.contains?.(event.target)
+    ) {
+      closeTimerPanel();
+      return;
+    }
     const panel = root.querySelector('[data-role="selection-action"], [data-role="term-popover"], [data-role="conversion-panel"]');
     if (
       !panel || panel.contains(event.target) || popoverTrigger?.contains?.(event.target)
@@ -1607,6 +1783,7 @@ export function createReaderView({
     saveAloudCheckpoint({ immediate: true, state: 'paused' });
     saveProgress();
     mounted = false;
+    closeTimerPanel({ restoreFocus: false });
     document.removeEventListener('selectionchange', onSelectionChange);
     if (selectionTimer !== null) runtime.clearTimeout(selectionTimer);
     selectionTimer = null;

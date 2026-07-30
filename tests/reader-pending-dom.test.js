@@ -611,6 +611,81 @@ test('reader maps Media Session actions and cleanup preserves a future timer', a
   }
 });
 
+test('reader exposes direct replay and sleep timer controls for touch use', async () => {
+  const env = setupReader();
+  try {
+    await env.ready();
+    const previous = env.root.querySelector('[data-action="speech-previous"]');
+    const current = env.root.querySelector('[data-action="speech-current"]');
+    const timer = env.root.querySelector('[data-action="speech-timer"]');
+    const remaining = env.root.querySelector('[data-role="sleep-timer-remaining"]');
+
+    assert.equal(previous.disabled, true);
+    assert.equal(current.disabled, false);
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="floating-speech"] [data-action]')]
+        .map(node => node.dataset.action),
+      [
+        'speech-floating-previous',
+        'speech-floating-current',
+        'speech-floating-toggle',
+        'speech-floating-timer'
+      ]
+    );
+
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1', currentIndex: 1,
+      currentTime: 0, completion: { reachedEnd: false, coverage: 0, counted: false }
+    });
+    assert.equal(previous.disabled, false);
+    click(env.window, previous);
+    click(env.window, current);
+    assert.deepEqual(env.tts.calls.slice(-2), ['previous', 'current']);
+
+    timer.focus();
+    click(env.window, timer);
+    let panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    assert.ok(panel);
+    const custom = panel.querySelector('[data-role="sleep-timer-custom"]');
+    assert.deepEqual([custom.type, custom.min, custom.step], ['number', '1', '1']);
+    custom.value = '0';
+    click(env.window, panel.querySelector('.pc-sleep-timer-custom-label + [data-action="speech-timer-set"]'));
+    assert.match(panel.querySelector('[data-role="sleep-timer-error"]').textContent, /正整数/);
+
+    click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="10"]'));
+    assert.equal(env.root.querySelector('[data-role="sleep-timer-panel"]'), null);
+    assert.equal(remaining.textContent, '10:00');
+
+    click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="20"]'));
+    assert.equal(remaining.textContent, '20:00');
+
+    click(env.window, timer);
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.querySelector('[data-role="sleep-timer-panel"]'), null);
+    assert.equal(env.window.document.activeElement, timer);
+
+    click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    click(env.window, panel.querySelector('[data-action="speech-timer-cancel"]'));
+    assert.equal(remaining.hidden, true);
+
+    click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="10"]'));
+    env.setNow(600_001);
+    for (const interval of env.intervals) interval.callback();
+    assert.equal(remaining.textContent, '定时结束');
+    assert.match(env.root.querySelector('[data-role="speech-status"]').textContent, /定时结束/);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('reader warns when the player falls back to lock-screen-limited speech', async () => {
   const env = setupReader({
     liveSnapshot: {
@@ -794,13 +869,16 @@ test('expired timer blocks every direct sentence and Media Session playback entr
       }
     },
     {
-      name: 'floating rate cycle',
+      name: 'floating current replay',
+      options: {
+        articleProgress: { last_position_ratio: 0, last_aloud_sentence_index: 0 }
+      },
       prepare() {},
       perform(env) {
-        click(env.window, env.root.querySelector('[data-action="speech-rate-cycle"]'));
+        click(env.window, env.root.querySelector('[data-action="speech-floating-current"]'));
       },
       attempted(env) {
-        return env.tts.calls.some(call => Array.isArray(call) && call[0] === 'rate');
+        return env.tts.calls.includes('current');
       }
     },
     {
@@ -988,9 +1066,11 @@ test('long reading exposes offscreen floating controls and a cross-device resume
     observerCallback([{ isIntersecting: false }]);
     const floating = env.root.querySelector('[data-role="floating-speech"]');
     assert.equal(floating.hidden, false);
-    click(env.window, env.root.querySelector('[data-action="speech-rate-cycle"]'));
-    assert.deepEqual(speech.calls.at(-1), ['setRate', 1.5]);
-    assert.equal(env.root.querySelector('[data-role="floating-speech-rate"]').textContent, '1.5×');
+    click(env.window, env.root.querySelector('[data-action="speech-floating-current"]'));
+    assert.deepEqual(speech.calls.at(-1), [
+      'speakOnce',
+      env.root.querySelector('[data-sentence-index="1"]').textContent
+    ]);
 
     speech.emit({ state: 'paused', currentIndex: 1, completion: { reachedEnd: false } });
     assert.equal(env.root.querySelector('[data-role="floating-speech-toggle"]').textContent, '继续');
@@ -2516,8 +2596,9 @@ test('reader disables speech controls and explains unsupported browsers', async 
   try {
     await flush();
     const controls = [...env.root.querySelectorAll('[data-speech-control]')];
-    assert.equal(controls.length, 3);
+    assert.equal(controls.length, 9);
     assert.ok(controls.every(control => control.disabled));
+    assert.equal(env.root.querySelector('[data-action="speech-floating-toggle"]').disabled, true);
     assert.match(env.root.querySelector('[data-role="speech-unavailable"]').textContent, /浏览器.*语音/);
     click(env.window, env.root.querySelector('.pc-term-word'));
     assert.equal(env.root.querySelector('[data-action="pronounce"]').disabled, true);
