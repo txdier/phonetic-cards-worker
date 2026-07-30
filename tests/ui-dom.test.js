@@ -467,6 +467,40 @@ test('edit form tag retry preserves assigned tags and submits them', async () =>
   }
 });
 
+test('edit form preserves assigned tags when saving before a failed tag list is retried', async () => {
+  const env = installDom();
+  const calls = [];
+  const word = {
+    id: 'w1', lemma: 'deploy', en: 'deploy', zh: '部署', forms: [],
+    tags: [{ id: 'tag-existing', name: '工作' }]
+  };
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async (path, init = {}) => {
+      calls.push({ path, init });
+      if (path === '/api/words' && !init.method) return [word];
+      if (path === '/api/tags' && !init.method) throw new Error('标签加载失败');
+      if (path === '/api/words/w1' && init.method === 'PATCH') return word;
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-id="w1"] [data-action="edit"]'));
+    const form = env.root.querySelector('#pc-word-form');
+    form.querySelector('#f-zh').value = '部署；发布';
+    click(env.window, form.querySelector('[data-action="submit-form"]'));
+    await flush();
+
+    const saveCall = calls.find(call => call.path === '/api/words/w1' && call.init.method === 'PATCH');
+    assert.deepEqual(JSON.parse(saveCall.init.body).tagIds, ['tag-existing']);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('word cards reserve icon actions and wrap phrases without wrapping ordinary words', async () => {
   const env = installDom();
   const words = [

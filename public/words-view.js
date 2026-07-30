@@ -606,13 +606,14 @@ export function createWordsView({
   }
 
   function formData() {
+    const form = root.querySelector('#pc-word-form');
     return {
       lemma: root.querySelector('#f-en')?.value || '',
       en: root.querySelector('#f-en')?.value || '',
       zh: root.querySelector('#f-zh')?.value || '',
       stress: root.querySelector('#f-stress')?.value || '',
       example: root.querySelector('#f-example')?.value || '',
-      tagIds: [...root.querySelectorAll('input[name="tagIds"]:checked')].map(input => input.value)
+      tagIds: form ? [...selectedWordFormTagIds(form)] : []
     };
   }
 
