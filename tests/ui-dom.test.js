@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 
 import { createArticlesView } from '../public/articles-view.js';
 import { renderInlineError, requestConfirmation, showToast } from '../public/lib/dom.js';
+import { createProgressQueue } from '../public/lib/reading-session.js';
 import { createWordsView } from '../public/words-view.js';
 
 function installDom(url = 'http://local.test/#/words') {
@@ -766,9 +767,11 @@ test('articles view wires create, failed value retention, edit reset, delete suc
     clear(articleId) { this.clearedArticleId = articleId; }
   };
   const replacedPositions = [];
+  const replacementOptions = [];
   const progressQueue = {
-    replacePosition(item) {
+    replacePosition(item, options) {
       replacedPositions.push(item);
+      replacementOptions.push(options);
       return Promise.resolve(true);
     }
   };
@@ -839,6 +842,7 @@ test('articles view wires create, failed value retention, edit reset, delete suc
       lastAloudSentenceIndex: null,
       lastAloudOffsetSeconds: 0
     }]);
+    assert.deepEqual(replacementOptions, [{ preserveLatestPositionRatio: false }]);
     const editedCard = env.root.querySelector('[data-id="a1"]');
     assert.equal(editedCard.querySelector('.pc-article-title').textContent, 'Edited');
     assert.match(editedCard.textContent, /未开始/);
@@ -869,7 +873,17 @@ test('article body edit clears its aloud checkpoint after a successful save with
     clear(articleId) { this.clearedArticleId = articleId; }
   };
   let patchBody = null;
-  const replacedPositions = [];
+  const progressQueue = createProgressQueue({
+    storage: null,
+    send: async () => { throw new Error('offline'); }
+  });
+  await progressQueue.submit({
+    kind: 'position',
+    articleId: 'a1',
+    lastPositionRatio: 0.8,
+    lastAloudSentenceIndex: 3,
+    lastAloudOffsetSeconds: 2
+  });
   const existing = {
     id: 'a1',
     title: 'Existing',
@@ -885,12 +899,7 @@ test('article body edit clears its aloud checkpoint after a successful save with
     route: { module: 'articles', page: 'library' },
     navigate() {},
     aloudCheckpointStore: checkpointStore,
-    progressQueue: {
-      replacePosition(item) {
-        replacedPositions.push(item);
-        return Promise.resolve(true);
-      }
-    },
+    progressQueue,
     api: async (path, init = {}) => {
       if (path === '/api/articles' && !init.method) return [existing];
       if (path === '/api/articles/a1' && !init.method) return existing;
@@ -916,13 +925,13 @@ test('article body edit clears its aloud checkpoint after a successful save with
 
     assert.equal(patchBody.resetProgress, false);
     assert.equal(checkpointStore.clearedArticleId, 'a1');
-    assert.deepEqual(replacedPositions, [{
+    assert.deepEqual(progressQueue.snapshot()[0], {
       kind: 'position',
       articleId: 'a1',
-      lastPositionRatio: 0.4,
+      lastPositionRatio: 0.8,
       lastAloudSentenceIndex: null,
       lastAloudOffsetSeconds: 0
-    }]);
+    });
   } finally {
     cleanup();
     env.restore();

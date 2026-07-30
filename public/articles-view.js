@@ -229,6 +229,8 @@ export function createArticlesView({
           lastPositionRatio: data.resetProgress === true ? 0 : editingPositionRatio,
           lastAloudSentenceIndex: null,
           lastAloudOffsetSeconds: 0
+        }, {
+          preserveLatestPositionRatio: data.resetProgress !== true
         });
       }
       if (!mounted || !form.isConnected) return;

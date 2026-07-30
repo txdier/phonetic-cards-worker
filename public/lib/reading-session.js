@@ -112,6 +112,7 @@ function normalizeProgressItem(item) {
 export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY }) {
   let items = compactStoredPositions(readStored(storage, key)).map(normalizeProgressItem);
   let activeRetry = null;
+  let inFlightItem = null;
 
   function persist() {
     try {
@@ -125,17 +126,23 @@ export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY })
     activeRetry = (async () => {
       while (items.length) {
         const item = items[0];
+        inFlightItem = item;
         try {
           await send(item);
         } catch {
           return false;
+        } finally {
+          if (inFlightItem === item) inFlightItem = null;
         }
         const acknowledgedIndex = items.indexOf(item);
         if (acknowledgedIndex >= 0) items.splice(acknowledgedIndex, 1);
         persist();
       }
       return true;
-    })().finally(() => { activeRetry = null; });
+    })().finally(() => {
+      inFlightItem = null;
+      activeRetry = null;
+    });
     return activeRetry;
   }
 
@@ -145,15 +152,28 @@ export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY })
       persist();
       return retry();
     },
-    replacePosition(item) {
-      const position = normalizeProgressItem(item);
+    replacePosition(item, { preserveLatestPositionRatio = false } = {}) {
+      let position = normalizeProgressItem(item);
       if (position?.kind !== 'position' || typeof position.articleId !== 'string') {
         return Promise.reject(new Error('replacement must be an article position'));
       }
-      items = items.filter(queued =>
+      if (preserveLatestPositionRatio) {
+        for (let index = items.length - 1; index >= 0; index -= 1) {
+          const queued = items[index];
+          if (queued?.kind !== 'position' || queued.articleId !== position.articleId) continue;
+          position = {
+            ...position,
+            lastPositionRatio: clampRatio(queued.lastPositionRatio)
+          };
+          break;
+        }
+      }
+      const retained = items.filter(queued =>
         queued?.kind !== 'position' || queued.articleId !== position.articleId
       );
-      items.push(position);
+      const capturedIndex = inFlightItem ? retained.indexOf(inFlightItem) : -1;
+      retained.splice(capturedIndex + 1, 0, position);
+      items = retained;
       persist();
       return retry();
     },

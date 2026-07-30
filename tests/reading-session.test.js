@@ -134,13 +134,95 @@ test('replacing a position neutralizes an in-flight stale snapshot without dropp
   queue.submit(otherArticle);
   const replacementRetry = queue.replacePosition(neutral);
 
-  assert.deepEqual(queue.snapshot(), [event, otherArticle, neutral]);
+  assert.deepEqual(queue.snapshot(), [neutral, event, otherArticle]);
   releaseStale();
   assert.equal(await activeRetry, true);
   assert.equal(await replacementRetry, true);
-  assert.deepEqual(sent, [stale, event, otherArticle, neutral]);
+  assert.deepEqual(sent, [stale, neutral, event, otherArticle]);
   assert.deepEqual(queue.snapshot(), []);
   assert.equal(storage.read('pc-progress-queue'), null);
+});
+
+test('a retained failure cannot delay a neutralizer behind an acknowledged stale position', async () => {
+  const storage = memoryStorage();
+  let releaseStale;
+  const stalePending = new Promise(resolve => { releaseStale = resolve; });
+  const sent = [];
+  const stale = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.8,
+    lastAloudSentenceIndex: 4, lastAloudOffsetSeconds: 3
+  };
+  const neutral = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.8,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  };
+  const retainedEvent = {
+    kind: 'event', articleId: 'a1',
+    event: { id: 'e1', type: 'active_ms', amount: 10 }
+  };
+  const unrelatedPosition = {
+    kind: 'position', articleId: 'a2', lastPositionRatio: 0.6,
+    lastAloudSentenceIndex: 2, lastAloudOffsetSeconds: 1
+  };
+  const queue = createProgressQueue({
+    storage,
+    send: async item => {
+      sent.push({ ...item });
+      if (
+        item.kind === 'position' &&
+        item.articleId === 'a1' &&
+        item.lastAloudSentenceIndex === 4
+      ) await stalePending;
+      if (item === retainedEvent) throw new Error('retained event offline');
+    }
+  });
+
+  const activeRetry = queue.submit(stale);
+  queue.submit(retainedEvent);
+  queue.submit(unrelatedPosition);
+  const replacementRetry = queue.replacePosition(neutral);
+  releaseStale();
+
+  assert.equal(await activeRetry, false);
+  assert.equal(await replacementRetry, false);
+  assert.deepEqual(sent, [stale, neutral, retainedEvent]);
+  assert.deepEqual(queue.snapshot(), [retainedEvent, unrelatedPosition]);
+  assert.deepEqual(JSON.parse(storage.read('pc-progress-queue')), [
+    retainedEvent, unrelatedPosition
+  ]);
+});
+
+test('position replacement can preserve the freshest queued scroll ratio or force reset zero', async () => {
+  const queue = createProgressQueue({
+    storage: memoryStorage(),
+    send: async () => { throw new Error('offline'); }
+  });
+  await queue.submit({
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.8,
+    lastAloudSentenceIndex: 4, lastAloudOffsetSeconds: 3
+  });
+  await queue.submit({
+    kind: 'event', articleId: 'a1',
+    event: { id: 'e1', type: 'active_ms', amount: 10 }
+  });
+
+  await queue.replacePosition({
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.4,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  }, { preserveLatestPositionRatio: true });
+  assert.deepEqual(queue.snapshot()[0], {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.8,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  });
+
+  await queue.replacePosition({
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  }, { preserveLatestPositionRatio: false });
+  assert.deepEqual(queue.snapshot()[0], {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  });
 });
 
 test('progress queue compacts positions to the latest atomic scroll and aloud snapshot per article', async () => {
