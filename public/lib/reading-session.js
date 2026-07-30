@@ -135,6 +135,9 @@ export function sendProgressItem(api, item) {
     const body = { lastPositionRatio: item.lastPositionRatio };
     if (Object.prototype.hasOwnProperty.call(item, 'lastAloudSentenceIndex')) {
       body.lastAloudSentenceIndex = item.lastAloudSentenceIndex;
+      body.lastAloudOffsetSeconds = item.lastAloudSentenceIndex === null
+        ? 0
+        : Math.max(0, Number(item.lastAloudOffsetSeconds || 0));
     }
     return api(`/api/articles/${articleId}/progress`, {
       method: 'PATCH', body: JSON.stringify(body)

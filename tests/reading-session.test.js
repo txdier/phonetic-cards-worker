@@ -96,13 +96,22 @@ test('progress queue loads stored work and serializes simultaneous retries', asy
   assert.equal(calls, 1);
 });
 
-test('progress queue compacts legacy stored positions to the latest snapshot per article', async () => {
+test('progress queue compacts positions to the latest atomic scroll and aloud snapshot per article', async () => {
   const stored = [
     { kind: 'event', articleId: 'a1', event: { id: 'e1', type: 'active_ms', amount: 10 } },
-    { kind: 'position', articleId: 'a1', lastPositionRatio: 0.1, lastAloudSentenceIndex: null },
+    {
+      kind: 'position', articleId: 'a1', lastPositionRatio: 0.1,
+      lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+    },
     { kind: 'event', articleId: 'a1', event: { id: 'e2', type: 'read_complete', amount: 1 } },
-    { kind: 'position', articleId: 'a2', lastPositionRatio: 0.4, lastAloudSentenceIndex: 2 },
-    { kind: 'position', articleId: 'a1', lastPositionRatio: 0.9, lastAloudSentenceIndex: 5 }
+    {
+      kind: 'position', articleId: 'a2', lastPositionRatio: 0.4,
+      lastAloudSentenceIndex: 2, lastAloudOffsetSeconds: 1.2
+    },
+    {
+      kind: 'position', articleId: 'a1', lastPositionRatio: 0.9,
+      lastAloudSentenceIndex: 5, lastAloudOffsetSeconds: 6.7
+    }
   ];
   const storage = memoryStorage({ 'pc-progress-queue': JSON.stringify(stored) });
   const sent = [];
@@ -128,7 +137,7 @@ test('progress sender maps queued events and positions to the API contract', asy
   await sendProgressItem(api, { kind: 'position', articleId: 'a/1', lastPositionRatio: 0.4 });
   await sendProgressItem(api, {
     kind: 'position', articleId: 'a/1', lastPositionRatio: 0.5,
-    lastAloudSentenceIndex: null
+    lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 2.5
   });
   assert.deepEqual(calls, [{
     path: '/api/articles/a%2F1/progress/events',
@@ -142,7 +151,8 @@ test('progress sender maps queued events and positions to the API contract', asy
       method: 'PATCH',
       body: JSON.stringify({
         lastPositionRatio: 0.5,
-        lastAloudSentenceIndex: null
+        lastAloudSentenceIndex: 3,
+        lastAloudOffsetSeconds: 2.5
       })
     }
   }]);
