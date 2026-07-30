@@ -332,26 +332,13 @@ export function createReaderView({
       queueEvent('active_ms', amount);
       activeMs -= amount;
     }
-    const currentAloudIndex = fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
-      ? activeAloudSentenceIndex
-      : requestedAloudPending && validAloudIndex(requestedAloudSentenceIndex)
-        ? requestedAloudSentenceIndex
-        : savedAloudSentenceIndex;
-    const currentAloudOffset = currentAloudIndex === null
-      ? 0
-      : fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
-        ? activeAloudOffsetSeconds
-        : requestedAloudPending && currentAloudIndex === requestedAloudSentenceIndex
-          ? requestedAloudOffsetSeconds
-          : savedAloudOffsetSeconds;
+    const aloudPosition = durableAloudPosition();
     const position = {
       kind: 'position',
       articleId,
       lastPositionRatio: currentPositionRatio(),
-      lastAloudSentenceIndex: currentAloudIndex,
-      lastAloudOffsetSeconds: Number.isFinite(currentAloudOffset)
-        ? Math.max(0, currentAloudOffset)
-        : 0
+      lastAloudSentenceIndex: aloudPosition?.sentenceIndex ?? null,
+      lastAloudOffsetSeconds: aloudPosition?.offsetSeconds ?? 0
     };
     const unchanged = lastQueuedPosition
       && lastQueuedPosition.articleId === position.articleId
@@ -690,6 +677,31 @@ export function createReaderView({
     return Number.isFinite(offset) && offset >= 0 ? offset : 0;
   }
 
+  function durableAloudPosition() {
+    if (requestedAloudPending && validAloudIndex(requestedAloudSentenceIndex)) {
+      return {
+        sentenceIndex: requestedAloudSentenceIndex,
+        offsetSeconds: aloudOffset(requestedAloudOffsetSeconds),
+        pending: true
+      };
+    }
+    if (validAloudIndex(activeAloudSentenceIndex)) {
+      return {
+        sentenceIndex: activeAloudSentenceIndex,
+        offsetSeconds: aloudOffset(activeAloudOffsetSeconds),
+        pending: false
+      };
+    }
+    if (validAloudIndex(savedAloudSentenceIndex)) {
+      return {
+        sentenceIndex: savedAloudSentenceIndex,
+        offsetSeconds: aloudOffset(savedAloudOffsetSeconds),
+        pending: false
+      };
+    }
+    return null;
+  }
+
   function resolveResumeState() {
     const live = tts?.getSnapshot?.();
     if (live?.articleId === articleId && validAloudIndex(live.currentIndex)) {
@@ -755,20 +767,16 @@ export function createReaderView({
   }
 
   function saveAloudCheckpoint({ immediate = false, state = speechState } = {}) {
-    const index = validAloudIndex(activeAloudSentenceIndex)
-      ? activeAloudSentenceIndex
-      : savedAloudSentenceIndex;
-    if (!validAloudIndex(index) || !article) return false;
-    const offsetSeconds = index === activeAloudSentenceIndex
-      ? aloudOffset(activeAloudOffsetSeconds)
-      : aloudOffset(savedAloudOffsetSeconds);
+    const position = durableAloudPosition();
+    if (!position || !article) return false;
+    const { sentenceIndex: index, offsetSeconds } = position;
     const checkpointState = state === 'speaking' ? 'speaking' : 'paused';
     const signature = `${index}:${offsetSeconds}:${checkpointState}`;
     const currentTime = timerRuntime.now();
     if (signature === lastCheckpointSignature) return false;
     if (!immediate && currentTime - lastLocalCheckpointAt < 2_000) return false;
 
-    setSavedAloudPosition(index, offsetSeconds);
+    if (!position.pending) setSavedAloudPosition(index, offsetSeconds);
     aloudCheckpointStore?.save?.({
       articleId,
       body: article.body,
@@ -783,8 +791,13 @@ export function createReaderView({
   }
 
   function saveRequestedAloudCheckpoint(index, offsetSeconds = 0) {
-    if (!validAloudIndex(index) || !article) return false;
-    const offset = aloudOffset(offsetSeconds);
+    const position = durableAloudPosition();
+    if (
+      !position?.pending ||
+      position.sentenceIndex !== index ||
+      !article
+    ) return false;
+    const offset = position.offsetSeconds;
     aloudCheckpointStore?.save?.({
       articleId,
       body: article.body,

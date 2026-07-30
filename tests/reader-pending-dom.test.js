@@ -529,6 +529,56 @@ test('full-reading start synchronously checkpoints the requested target without 
   }
 });
 
+test('pagehide preserves a different pending full-reading target over the old audible checkpoint', async () => {
+  const env = setupReader({
+    checkpoint: {
+      sentenceIndex: 0,
+      offsetSeconds: 7,
+      state: 'paused'
+    },
+    liveSnapshot: {
+      state: 'paused',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 0,
+      currentTime: 7
+    },
+    publishStart: false
+  });
+  try {
+    await env.ready();
+    const sentence = env.root.querySelector('[data-sentence-index="2"]');
+    env.window.getSelection = () => validSelection(sentence, {
+      text: 'Third sentence.'
+    });
+    sentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
+    click(
+      env.window,
+      env.root.querySelector('[data-action="speech-start-selection"]')
+    );
+    assert.deepEqual(env.tts.starts.at(-1), {
+      articleId: 'a1', startIndex: 2, offsetSeconds: 0
+    });
+    assert.equal(env.tts.controller.getSnapshot().currentIndex, 0);
+
+    env.window.dispatchEvent(new env.window.Event('pagehide'));
+
+    assert.deepEqual(env.checkpointStore.lastSaved, {
+      sentenceIndex: 2, offsetSeconds: 0, state: 'paused'
+    });
+    assert.deepEqual(env.progressQueue.snapshot().at(-1), {
+      kind: 'position',
+      articleId: 'a1',
+      lastPositionRatio: 0,
+      lastAloudSentenceIndex: 2,
+      lastAloudOffsetSeconds: 0
+    });
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('pagehide atomically checkpoints the last actually audible sentence and offset', async () => {
   const env = setupReader({
     articleProgress: { last_position_ratio: 0 }
