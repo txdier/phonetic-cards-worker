@@ -291,6 +291,99 @@ test('word cards expose an accessible edit form and retain FSRS metadata after s
   }
 });
 
+test('word form creates and selects tags without losing entered values', async () => {
+  const env = installDom();
+  const calls = [];
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async (path, init = {}) => {
+      calls.push({ path, init });
+      if (path === '/api/words' && !init.method) return [];
+      if (path === '/api/tags' && !init.method) {
+        return { tags: [{ id: 'tag-existing', name: '工作' }] };
+      }
+      if (path === '/api/tags' && init.method === 'POST') {
+        return { tag: { id: 'tag-new', name: '云平台' } };
+      }
+      if (path === '/api/words' && init.method === 'POST') {
+        const input = JSON.parse(init.body);
+        return { id: 'w-new', ...input, tags: [] };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="toggle-form"]'));
+    const form = env.root.querySelector('#pc-word-form');
+    const existing = form.querySelector('input[name="tagIds"][value="tag-existing"]');
+    assert.ok(existing);
+    existing.checked = true;
+    form.querySelector('#f-en').value = 'deploy';
+    form.querySelector('#f-zh').value = '部署';
+    form.querySelector('[data-role="new-tag-input"]').value = '云平台';
+
+    click(env.window, form.querySelector('[data-action="create-word-tag"]'));
+    await flush();
+
+    const created = form.querySelector('input[name="tagIds"][value="tag-new"]');
+    assert.ok(created);
+    assert.equal(created.checked, true);
+    assert.equal(form.querySelector('#f-en').value, 'deploy');
+    assert.equal(form.querySelector('#f-zh').value, '部署');
+
+    click(env.window, form.querySelector('[data-action="submit-form"]'));
+    await flush();
+    const saveCall = calls.find(call => call.path === '/api/words' && call.init.method === 'POST');
+    assert.deepEqual(JSON.parse(saveCall.init.body).tagIds.sort(), ['tag-existing', 'tag-new']);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word form reports tag failures and ignores a late tag response after cleanup', async () => {
+  const env = installDom();
+  const lateTag = deferred();
+  let attempts = 0;
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async (path, init = {}) => {
+      if (path === '/api/words' && !init.method) return [];
+      if (path === '/api/tags' && !init.method) return { tags: [] };
+      if (path === '/api/tags' && init.method === 'POST') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('标签服务暂不可用');
+        return lateTag.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="toggle-form"]'));
+    const form = env.root.querySelector('#pc-word-form');
+    const input = form.querySelector('[data-role="new-tag-input"]');
+    input.value = '云平台';
+    click(env.window, form.querySelector('[data-action="create-word-tag"]'));
+    await flush();
+    assert.equal(form.querySelector('[data-role="word-tag-error"]').textContent, '标签服务暂不可用');
+    assert.equal(input.value, '云平台');
+
+    click(env.window, form.querySelector('[data-action="create-word-tag"]'));
+    await flush();
+    cleanup();
+    lateTag.resolve({ tag: { id: 'tag-late', name: '稍后' } });
+    await flush();
+    assert.equal(form.querySelector('input[value="tag-late"]'), null);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('word cards reserve icon actions and wrap phrases without wrapping ordinary words', async () => {
   const env = installDom();
   const words = [

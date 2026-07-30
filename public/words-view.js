@@ -49,6 +49,8 @@ export function createWordsView({
   let relationDialogCleanup = null;
   let usage = null;
   let stats = null;
+  let tagLoadError = '';
+  let wordFormGeneration = 0;
   const reviewAttempts = new Map();
   let filters = { keyword: '', tag: '', state: '', due: false };
   const player = tts || {
@@ -129,7 +131,7 @@ export function createWordsView({
 
   function tagChoices(selected = []) {
     const ids = new Set(selected.map(tag => tag.id || tag));
-    if (!tags.length) return '<span class="pc-muted">可先在筛选栏旁新建标签</span>';
+    if (!tags.length) return '<span class="pc-muted">暂无标签，可在上方新建</span>';
     return tags.map(tag => `<label class="pc-tag-choice">
       <input type="checkbox" name="tagIds" value="${escapeHtml(tag.id)}" ${ids.has(tag.id) ? 'checked' : ''}>
       ${escapeHtml(tag.name)}
@@ -137,13 +139,20 @@ export function createWordsView({
   }
 
   function wordForm(word = null) {
-    return `<div class="pc-form${word ? ' open' : ''}" id="pc-word-form">
+    return `<div class="pc-form${word ? ' open' : ''}" id="pc-word-form" data-generation="${wordFormGeneration}">
       <div class="pc-full pc-conversion-title" data-role="word-form-title">${word ? '编辑单词' : '添加新词'}</div>
       <div><label for="f-en">单词（原形）</label><input id="f-en" value="${escapeHtml(word ? primaryWord(word) : '')}" placeholder="confirm"></div>
       <div><label for="f-zh">中文含义</label><input id="f-zh" value="${escapeHtml(word?.zh || '')}" placeholder="确认"></div>
       <div class="pc-full"><label for="f-stress">重音标注</label><input id="f-stress" value="${escapeHtml(word?.stress || '')}" placeholder="con-FIRM"></div>
       <div class="pc-full"><label for="f-example">例句</label><textarea id="f-example" rows="2">${escapeHtml(word?.example || '')}</textarea></div>
-      <fieldset class="pc-full pc-tag-field"><legend>标签</legend>${tagChoices(word?.tags || [])}</fieldset>
+      <fieldset class="pc-full pc-tag-field"><legend>标签</legend>
+        <div class="pc-tag-create">
+          <label>新标签<input data-role="new-tag-input" maxlength="50"></label>
+          <button type="button" class="pc-btn-ghost" data-action="create-word-tag">新建</button>
+        </div>
+        <div class="pc-tag-options" data-role="word-tag-options">${tagChoices(word?.tags || [])}</div>
+        <div class="pc-tag-error" data-role="word-tag-error" role="alert">${escapeHtml(tagLoadError)}</div>
+      </fieldset>
       <div class="pc-form-actions"><button class="pc-btn-ghost" data-action="cancel-form">取消</button><button class="pc-btn-primary" data-action="submit-form">${word ? '保存修改' : '添加'}</button></div>
     </div>`;
   }
@@ -505,6 +514,7 @@ export function createWordsView({
   function render() {
     if (!mounted) return;
     closeCardMenu(false);
+    wordFormGeneration += 1;
     root.innerHTML = page === 'review'
       ? reviewBody()
       : page === 'settings'
@@ -532,7 +542,9 @@ export function createWordsView({
     try {
       const [wordResult, tagResult] = await Promise.all([
         api(query.size ? `/api/words?${query}` : '/api/words'),
-        Promise.resolve(api('/api/tags')).catch(() => ({ tags: [] }))
+        Promise.resolve()
+          .then(() => api('/api/tags'))
+          .catch(error => ({ tags: [], error }))
       ]);
       if (!mounted) return;
       const normalized = Array.isArray(wordResult)
@@ -543,6 +555,7 @@ export function createWordsView({
       currentPage = Number(normalized.page || 1);
       pageSize = Number(normalized.pageSize || 24);
       tags = tagResult?.tags || [];
+      tagLoadError = tagResult?.error?.message || '';
       render();
     } catch (error) {
       if (mounted) renderInlineError(root, error.message || '词库加载失败');
@@ -610,6 +623,47 @@ export function createWordsView({
       render();
     } catch (error) {
       if (mounted) renderInlineError(form, error.message || '保存失败');
+    }
+  }
+
+  async function createWordTag(button) {
+    const form = button.closest('#pc-word-form');
+    const input = form?.querySelector('[data-role="new-tag-input"]');
+    const error = form?.querySelector('[data-role="word-tag-error"]');
+    const name = String(input?.value || '').trim();
+    if (!form || !input || !error) return;
+    if (!name) {
+      error.textContent = '请输入标签名称';
+      input.focus();
+      return;
+    }
+    const generation = Number(form.dataset.generation);
+    button.disabled = true;
+    error.textContent = '';
+    try {
+      const result = await api('/api/tags', {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      });
+      if (!mounted || !form.isConnected || generation !== wordFormGeneration) return;
+      const tag = result?.tag;
+      if (!tag?.id) throw new Error('标签创建失败');
+      if (!tags.some(item => String(item.id) === String(tag.id))) tags.push(tag);
+      const selected = new Set(
+        [...form.querySelectorAll('input[name="tagIds"]:checked')].map(item => item.value)
+      );
+      selected.add(String(tag.id));
+      const options = form.querySelector('[data-role="word-tag-options"]');
+      if (options) options.innerHTML = tagChoices([...selected]);
+      input.value = '';
+    } catch (caught) {
+      if (mounted && form.isConnected && generation === wordFormGeneration) {
+        error.textContent = caught?.message || '标签创建失败';
+      }
+    } finally {
+      if (mounted && form.isConnected && generation === wordFormGeneration) {
+        button.disabled = false;
+      }
     }
   }
 
@@ -685,6 +739,7 @@ export function createWordsView({
     }
     if (action === 'cancel-form') { editingId = null; render(); }
     if (action === 'submit-form') saveWord();
+    if (action === 'create-word-tag') createWordTag(target);
     if (action === 'edit') { editingId = target.dataset.id; render(); }
     if (action === 'del') deleteWord(target.dataset.id);
     if (action === 'toggle-card-menu') openCardMenu(target, target.dataset.id);

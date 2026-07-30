@@ -522,7 +522,7 @@
     min-width: 0; min-height: 44px; padding: 9px 10px; border: 1px solid var(--line);
     border-radius: 8px; background: var(--bg-panel); color: var(--ink); font: inherit;
   }
-  .pc-tag-field { display: flex; flex-wrap: wrap; gap: 8px 14px; border: 0; padding: 0; }
+  .pc-tag-field { display: block; border: 0; padding: 0; }
   .pc-tag-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-dim); }
   .pc-conversion-form .pc-tag-field { display: block; }
   .pc-tag-create {
@@ -644,6 +644,7 @@
     .pc-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .pc-toast-region { left: 14px; right: 14px; bottom: 14px; width: auto; }
     .pc-library-filters { grid-template-columns: 1fr; }
+    .pc-tag-create { grid-template-columns: 1fr; align-items: stretch; }
     .pc-relation-search-field, .pc-relation-pair { grid-template-columns: 1fr; }
     .pc-relation-search-button,
     .pc-relation-form-actions .pc-btn-primary { width: 100%; }
