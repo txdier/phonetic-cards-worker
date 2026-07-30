@@ -17,31 +17,50 @@ export async function handleProgressApi(request, env, path, userId) {
     const body = await parseObjectBody(request);
     const hasAloudIndex = body &&
       Object.prototype.hasOwnProperty.call(body, 'lastAloudSentenceIndex');
+    const hasAloudOffset = body &&
+      Object.prototype.hasOwnProperty.call(body, 'lastAloudOffsetSeconds');
+    const validOffset = !hasAloudOffset || (
+      typeof body.lastAloudOffsetSeconds === 'number' &&
+      Number.isFinite(body.lastAloudOffsetSeconds) &&
+      body.lastAloudOffsetSeconds >= 0
+    );
     if (
       !body || !isFiniteNumber(body.lastPositionRatio) ||
-      (hasAloudIndex && !isValidAloudIndex(body.lastAloudSentenceIndex))
+      (hasAloudIndex && !isValidAloudIndex(body.lastAloudSentenceIndex)) ||
+      (hasAloudOffset && !hasAloudIndex) ||
+      !validOffset ||
+      (hasAloudIndex && body.lastAloudSentenceIndex === null &&
+        hasAloudOffset && body.lastAloudOffsetSeconds !== 0)
     ) {
       return invalidProgressBody();
     }
     const ratio = Math.max(0, Math.min(1, body.lastPositionRatio));
+    const aloudOffset = hasAloudIndex && body.lastAloudSentenceIndex !== null
+      ? (hasAloudOffset ? body.lastAloudOffsetSeconds : 0)
+      : 0;
     const updatedAt = Date.now();
     await env.DB.prepare(`
       INSERT INTO article_progress
         (article_id, user_id, last_position_ratio, completed, read_count,
-         active_read_ms, full_read_aloud_count, last_aloud_sentence_index, updated_at)
-      VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
+         active_read_ms, full_read_aloud_count, last_aloud_sentence_index,
+         last_aloud_offset_seconds, updated_at)
+      VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
       ON CONFLICT(article_id) DO UPDATE SET
         last_position_ratio = excluded.last_position_ratio,
         last_aloud_sentence_index = CASE
           WHEN ? = 1 THEN excluded.last_aloud_sentence_index
           ELSE article_progress.last_aloud_sentence_index
         END,
+        last_aloud_offset_seconds = CASE
+          WHEN ? = 1 THEN excluded.last_aloud_offset_seconds
+          ELSE article_progress.last_aloud_offset_seconds
+        END,
         updated_at = excluded.updated_at
       WHERE article_progress.user_id = excluded.user_id
     `).bind(
       articleId, userId, ratio,
       hasAloudIndex ? body.lastAloudSentenceIndex : null,
-      updatedAt, hasAloudIndex ? 1 : 0
+      aloudOffset, updatedAt, hasAloudIndex ? 1 : 0, hasAloudIndex ? 1 : 0
     ).run();
     return jsonResponse({ ok: true, last_position_ratio: ratio, updated_at: updatedAt });
   }

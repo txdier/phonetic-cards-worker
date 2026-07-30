@@ -14,7 +14,9 @@ test('PATCH removes absent sources while preserving a pending term shared by ano
   insertMarking(DB, 'm-shared-a1', 'a1', 'shared', 't-shared');
   insertMarking(DB, 'm-shared-a2', 'a2', 'shared', 't-shared');
   DB.prepare(`
-    UPDATE article_progress SET last_aloud_sentence_index = 2 WHERE article_id = 'a1'
+    UPDATE article_progress
+    SET last_aloud_sentence_index = 2, last_aloud_offset_seconds = 2.75
+    WHERE article_id = 'a1'
   `).run();
 
   const response = await handleArticlesApi(jsonRequest('PATCH', {
@@ -31,10 +33,13 @@ test('PATCH removes absent sources while preserving a pending term shared by ano
   assert.deepEqual(DB.all(
     'SELECT id FROM article_markings WHERE marked_term_id = ?', 't-shared'
   ).map(row => row.id), ['m-shared-a2']);
-  assert.equal(DB.get(`
-    SELECT last_aloud_sentence_index AS value
+  assert.deepEqual(DB.get(`
+    SELECT last_aloud_sentence_index, last_aloud_offset_seconds
     FROM article_progress WHERE article_id = 'a1'
-  `).value, null);
+  `), {
+    last_aloud_sentence_index: null,
+    last_aloud_offset_seconds: 0
+  });
 });
 
 test('DELETE removes an orphan pending term but preserves a shared pending term', async t => {
@@ -71,9 +76,10 @@ test('resetProgress zeroes every aggregate and removes progress events', async t
   DB.prepare(`
     UPDATE article_progress
     SET last_position_ratio = ?, completed = ?, read_count = ?, active_read_ms = ?,
-        full_read_aloud_count = ?, last_aloud_sentence_index = ?
+        full_read_aloud_count = ?, last_aloud_sentence_index = ?,
+        last_aloud_offset_seconds = ?
     WHERE article_id = ?
-  `).bind(0.75, 1, 4, 5000, 3, 2, 'a1').run();
+  `).bind(0.75, 1, 4, 5000, 3, 2, 2.75, 'a1').run();
   DB.prepare(`
     INSERT INTO article_progress_events
       (id, article_id, user_id, event_type, amount, created_at)
@@ -87,7 +93,7 @@ test('resetProgress zeroes every aggregate and removes progress events', async t
   assert.equal(response.status, 200);
   assert.deepEqual(DB.get(`
     SELECT last_position_ratio, completed, read_count, active_read_ms,
-           full_read_aloud_count, last_aloud_sentence_index
+           full_read_aloud_count, last_aloud_sentence_index, last_aloud_offset_seconds
     FROM article_progress WHERE article_id = ?
   `, 'a1'), {
     last_position_ratio: 0,
@@ -95,7 +101,8 @@ test('resetProgress zeroes every aggregate and removes progress events', async t
     read_count: 0,
     active_read_ms: 0,
     full_read_aloud_count: 0,
-    last_aloud_sentence_index: null
+    last_aloud_sentence_index: null,
+    last_aloud_offset_seconds: 0
   });
   assert.equal(DB.get(
     'SELECT count(*) AS count FROM article_progress_events WHERE article_id = ?', 'a1'

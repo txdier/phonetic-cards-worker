@@ -119,6 +119,51 @@ test('PATCH writes, preserves, and clears the aloud sentence independently', asy
   `).value, null);
 });
 
+test('PATCH stores aloud sentence and offset as one snapshot', async t => {
+  const DB = createSeededDb();
+  t.after(() => DB.close());
+  insertArticle(DB, 'a1', 'u1', 10, true);
+  const response = await handleProgressApi(
+    jsonRequest('PATCH', {
+      lastPositionRatio: 0.2,
+      lastAloudSentenceIndex: 4,
+      lastAloudOffsetSeconds: 3.25
+    }),
+    { DB }, '/api/articles/a1/progress', 'u1'
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(DB.get(`
+    SELECT last_aloud_sentence_index, last_aloud_offset_seconds
+    FROM article_progress WHERE article_id = 'a1'
+  `), {
+    last_aloud_sentence_index: 4,
+    last_aloud_offset_seconds: 3.25
+  });
+});
+
+test('PATCH rejects an offset without a sentence and clears offset with the sentence', async t => {
+  const DB = createSeededDb();
+  t.after(() => DB.close());
+  insertArticle(DB, 'a1', 'u1', 10, true);
+  const invalid = await handleProgressApi(
+    jsonRequest('PATCH', {
+      lastPositionRatio: 0.2,
+      lastAloudOffsetSeconds: 2
+    }),
+    { DB }, '/api/articles/a1/progress', 'u1'
+  );
+  assert.equal(invalid.status, 400);
+  const cleared = await handleProgressApi(
+    jsonRequest('PATCH', {
+      lastPositionRatio: 0.2,
+      lastAloudSentenceIndex: null,
+      lastAloudOffsetSeconds: 0
+    }),
+    { DB }, '/api/articles/a1/progress', 'u1'
+  );
+  assert.equal(cleared.status, 200);
+});
+
 test('events update real aggregates and preserve the last saved position', async t => {
   const DB = createSeededDb();
   t.after(() => DB.close());

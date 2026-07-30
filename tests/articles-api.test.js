@@ -53,7 +53,7 @@ test('article list omits body and returns a stable progress summary', async () =
     id: 'a1', title: 'Title', body: 'must not leak', author: 'Author', source: '', notes: '',
     created_at: 10, updated_at: 20, last_position_ratio: 0.4, completed: 1,
     read_count: 2, active_read_ms: 3000, full_read_aloud_count: 1,
-    last_aloud_sentence_index: 3,
+    last_aloud_sentence_index: 3, last_aloud_offset_seconds: 2.75,
     progress_updated_at: 19
   }] }] });
   const response = await handleArticlesApi(
@@ -66,7 +66,7 @@ test('article list omits body and returns a stable progress summary', async () =
     progress: {
       last_position_ratio: 0.4, completed: 1, read_count: 2,
       active_read_ms: 3000, full_read_aloud_count: 1,
-      last_aloud_sentence_index: 3, updated_at: 19
+      last_aloud_sentence_index: 3, last_aloud_offset_seconds: 2.75, updated_at: 19
     }
   }]);
 });
@@ -93,7 +93,7 @@ test('creation normalizes fields and atomically creates zeroed progress', async 
   assert.deepEqual(result.progress, {
     last_position_ratio: 0, completed: 0, read_count: 0,
     active_read_ms: 0, full_read_aloud_count: 0,
-    last_aloud_sentence_index: null, updated_at: result.updated_at
+    last_aloud_sentence_index: null, last_aloud_offset_seconds: 0, updated_at: result.updated_at
   });
   assert.equal(DB.batches.length, 1);
   assert.equal(DB.batches[0].length, 2);
@@ -110,7 +110,7 @@ test('article detail returns reader data with every query scoped to the user', a
       id: 'a1', title: 'Title', body: 'Read deploy.', author: '', source: '', notes: '',
       created_at: 10, updated_at: 20, last_position_ratio: 0.25, completed: 0,
       read_count: 1, active_read_ms: 400, full_read_aloud_count: 0,
-      last_aloud_sentence_index: 2,
+      last_aloud_sentence_index: 2, last_aloud_offset_seconds: 2.75,
       progress_updated_at: 21
     }],
     all: [
@@ -137,7 +137,7 @@ test('article detail returns reader data with every query scoped to the user', a
   assert.deepEqual(result.progress, {
     last_position_ratio: 0.25, completed: 0, read_count: 1,
     active_read_ms: 400, full_read_aloud_count: 0,
-    last_aloud_sentence_index: 2, updated_at: 21
+    last_aloud_sentence_index: 2, last_aloud_offset_seconds: 2.75, updated_at: 21
   });
   assert.equal(result.markings[0].marked_term_id, 't1');
   assert.equal(result.pending_terms[0].normalized_text, 'deploy');
@@ -185,6 +185,7 @@ test('editing removes missing explicit sources and only orphan pending terms', a
   assert.equal(DB.calls.filter(call => /DELETE FROM marked_terms/.test(call.sql)).length, 1);
   const progressCall = DB.calls.find(call => /UPDATE article_progress/.test(call.sql));
   assert.match(progressCall.sql, /last_aloud_sentence_index = NULL/);
+  assert.match(progressCall.sql, /last_aloud_offset_seconds = 0/);
   assert.ok(DB.calls.every(call => call.bindings.includes('u1')));
 });
 
@@ -208,6 +209,7 @@ test('editing with resetProgress zeroes the aggregate and deletes its events', a
   const progressCall = DB.calls.find(call => /UPDATE article_progress/.test(call.sql));
   assert.match(progressCall.sql, /last_position_ratio = 0/);
   assert.match(progressCall.sql, /last_aloud_sentence_index = NULL/);
+  assert.match(progressCall.sql, /last_aloud_offset_seconds = 0/);
   assert.deepEqual(progressCall.bindings.slice(1), ['a1', 'u1']);
   const eventsCall = DB.calls.find(call => /DELETE FROM article_progress_events/.test(call.sql));
   assert.deepEqual(eventsCall.bindings, ['a1', 'u1']);
