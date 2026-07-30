@@ -138,8 +138,21 @@ export function createWordsView({
     </label>`).join('');
   }
 
+  function serializeTagIds(ids) {
+    return [...ids].map(id => encodeURIComponent(String(id))).join(',');
+  }
+
+  function deserializeTagIds(value) {
+    if (!value) return [];
+    return String(value).split(',').map(id => decodeURIComponent(id));
+  }
+
   function wordForm(word = null) {
-    return `<div class="pc-form${word ? ' open' : ''}" id="pc-word-form" data-generation="${wordFormGeneration}">
+    const assignedTagIds = (word?.tags || []).map(tag => String(tag.id || tag));
+    return `<div class="pc-form${word ? ' open' : ''}" id="pc-word-form"
+      data-generation="${wordFormGeneration}"
+      data-selected-tag-ids="${serializeTagIds(assignedTagIds)}"
+      data-tag-options-loaded="${tagLoadError ? 'false' : 'true'}">
       <div class="pc-full pc-conversion-title" data-role="word-form-title">${word ? '编辑单词' : '添加新词'}</div>
       <div><label for="f-en">单词（原形）</label><input id="f-en" value="${escapeHtml(word ? primaryWord(word) : '')}" placeholder="confirm"></div>
       <div><label for="f-zh">中文含义</label><input id="f-zh" value="${escapeHtml(word?.zh || '')}" placeholder="确认"></div>
@@ -629,6 +642,16 @@ export function createWordsView({
     }
   }
 
+  function selectedWordFormTagIds(form) {
+    const selected = new Set(
+      [...form.querySelectorAll('input[name="tagIds"]:checked')].map(item => item.value)
+    );
+    if (form.dataset.tagOptionsLoaded !== 'true') {
+      for (const id of deserializeTagIds(form.dataset.selectedTagIds)) selected.add(id);
+    }
+    return selected;
+  }
+
   async function createWordTag(button) {
     const form = button.closest('#pc-word-form');
     const input = form?.querySelector('[data-role="new-tag-input"]');
@@ -652,10 +675,9 @@ export function createWordsView({
       const tag = result?.tag;
       if (!tag?.id) throw new Error('标签创建失败');
       if (!tags.some(item => String(item.id) === String(tag.id))) tags.push(tag);
-      const selected = new Set(
-        [...form.querySelectorAll('input[name="tagIds"]:checked')].map(item => item.value)
-      );
+      const selected = selectedWordFormTagIds(form);
       selected.add(String(tag.id));
+      form.dataset.selectedTagIds = serializeTagIds(selected);
       const options = form.querySelector('[data-role="word-tag-options"]');
       if (options) options.innerHTML = tagChoices([...selected]);
       input.value = '';
@@ -676,16 +698,18 @@ export function createWordsView({
     const error = form?.querySelector('[data-role="word-tag-error"]');
     if (!form || !options || !error) return;
     const generation = Number(form.dataset.generation);
-    const selected = new Set(
-      [...form.querySelectorAll('input[name="tagIds"]:checked')].map(item => item.value)
-    );
     button.disabled = true;
     error.textContent = '';
     try {
       const result = await api('/api/tags');
       if (!mounted || !form.isConnected || generation !== wordFormGeneration) return;
-      tags = result?.tags || [];
+      const selected = selectedWordFormTagIds(form);
+      const mergedTags = new Map(tags.map(tag => [String(tag.id), tag]));
+      for (const tag of result?.tags || []) mergedTags.set(String(tag.id), tag);
+      tags = [...mergedTags.values()];
       tagLoadError = '';
+      form.dataset.selectedTagIds = serializeTagIds(selected);
+      form.dataset.tagOptionsLoaded = 'true';
       options.innerHTML = tagChoices([...selected]);
       button.remove();
     } catch (caught) {
