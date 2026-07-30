@@ -583,6 +583,7 @@ export function createReaderView({
   }
 
   function syncSpeechControls() {
+    const timerDialogOpen = Boolean(root.querySelector('[data-role="sleep-timer-panel"]'));
     const rate = Number((tts || speech).getRate?.() || speech.getRate?.() || 1);
     const topRate = root.querySelector('[data-action="speech-rate"]');
     const topOutput = root.querySelector('[data-role="speech-rate-value"]');
@@ -630,6 +631,14 @@ export function createReaderView({
         hasAvailableAction &&
         !bottomPanelOpen()
       );
+    }
+    if (timerDialogOpen) {
+      for (const control of root.querySelectorAll(
+        '[data-role="speech-toolbar"] button, [data-role="speech-toolbar"] input, [data-role="floating-speech"] button'
+      )) {
+        control.disabled = true;
+      }
+      if (floating) floating.hidden = true;
     }
   }
 
@@ -882,6 +891,7 @@ export function createReaderView({
     }
     root.append(panel);
     setTimerDialogState(true, panel);
+    syncSpeechControls();
     syncTimerControls();
     custom.focus();
   }

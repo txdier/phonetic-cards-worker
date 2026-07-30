@@ -785,6 +785,54 @@ test('sleep timer dialog makes reader controls inert and restores them on close'
   }
 });
 
+test('sleep timer immediately hides floating controls and keeps them disabled through TTS updates', async () => {
+  const env = setupReader({
+    articleProgress: { last_position_ratio: 0, last_aloud_sentence_index: 1 }
+  });
+  try {
+    await env.ready();
+    const toolbar = env.root.querySelector('[data-role="speech-toolbar"]');
+    toolbar.getBoundingClientRect = () => ({ bottom: -1 });
+    env.window.dispatchEvent(new env.window.Event('scroll'));
+    const floating = env.root.querySelector('[data-role="floating-speech"]');
+    const timer = env.root.querySelector('[data-action="speech-timer"]');
+    const controls = () => [...env.root.querySelectorAll(
+      '[data-role="speech-toolbar"] button, [data-role="speech-toolbar"] input, [data-role="floating-speech"] button'
+    )];
+    assert.equal(floating.hidden, false);
+
+    click(env.window, timer);
+    assert.equal(floating.hidden, true);
+    assert.ok(controls().every(control => control.disabled));
+
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1', currentIndex: 1, currentTime: 0,
+      completion: { reachedEnd: false, coverage: 0, counted: false }
+    });
+    assert.equal(floating.hidden, true);
+    assert.ok(controls().every(control => control.disabled));
+
+    click(env.window, env.root.querySelector('[data-action="speech-timer-cancel"]'));
+    assert.equal(floating.hidden, false);
+    assert.equal(env.root.querySelector('[data-action="speech-primary"]').disabled, false);
+    assert.equal(env.root.querySelector('[data-action="speech-floating-toggle"]').disabled, false);
+
+    click(env.window, timer);
+    env.tts.emit({
+      state: 'paused', mode: 'article', articleId: 'a1', currentIndex: 1, currentTime: 0,
+      completion: { reachedEnd: false, coverage: 0, counted: false }
+    });
+    assert.equal(floating.hidden, true);
+    assert.ok(controls().every(control => control.disabled));
+    click(env.window, env.root.querySelector('[data-action="speech-timer-cancel"]'));
+    assert.equal(floating.hidden, false);
+    assert.equal(env.root.querySelector('[data-action="speech-primary"]').disabled, false);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('reader warns when the player falls back to lock-screen-limited speech', async () => {
   const env = setupReader({
     liveSnapshot: {
