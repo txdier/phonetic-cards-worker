@@ -157,6 +157,7 @@ export function createReaderView({
   let lastAutoFollowedSentenceIndex = null;
   let savedAloudSentenceIndex = null;
   let savedAloudOffsetSeconds = 0;
+  let pausedAloudSentenceIndex = null;
   let requestedAloudPending = false;
   let requestedAloudSentenceIndex = null;
   let requestedAloudOffsetSeconds = 0;
@@ -425,7 +426,7 @@ export function createReaderView({
     body.dataset.role = 'reader-text';
     const candidates = highlightCandidates(article);
     for (const sentence of sentences) {
-      if (sentence.index === savedAloudSentenceIndex) {
+      if (sentence.index === pausedAloudSentenceIndex) {
         const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
         marker.dataset.role = 'aloud-resume-marker';
         marker.setAttribute('aria-hidden', 'true');
@@ -754,9 +755,15 @@ export function createReaderView({
     if (previousIndex === savedAloudSentenceIndex) return;
     const previousEntry = root.querySelector('[data-role="aloud-resume-entry"]');
     if (previousEntry) previousEntry.replaceWith(resumeEntry());
+  }
+
+  function setPausedAloudPosition(index) {
+    const nextIndex = validAloudIndex(index) ? index : null;
+    if (pausedAloudSentenceIndex === nextIndex) return;
+    pausedAloudSentenceIndex = nextIndex;
     root.querySelector('[data-role="aloud-resume-marker"]')?.remove();
-    if (Number.isInteger(savedAloudSentenceIndex)) {
-      const sentence = root.querySelector(`[data-sentence-index="${savedAloudSentenceIndex}"]`);
+    if (Number.isInteger(pausedAloudSentenceIndex)) {
+      const sentence = root.querySelector(`[data-sentence-index="${pausedAloudSentenceIndex}"]`);
       if (sentence) {
         const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
         marker.dataset.role = 'aloud-resume-marker';
@@ -819,6 +826,7 @@ export function createReaderView({
     requestedAloudSentenceIndex = null;
     requestedAloudOffsetSeconds = 0;
     setSavedAloudPosition(null, 0);
+    setPausedAloudPosition(null);
     lastCheckpointSignature = null;
     saveProgress();
   }
@@ -1069,6 +1077,8 @@ export function createReaderView({
         immediate: forceCheckpoint || priorState !== nextState || priorIndex !== next.currentIndex,
         state: nextState
       });
+      if (nextState === 'paused') setPausedAloudPosition(next.currentIndex);
+      else if (nextState === 'speaking') setPausedAloudPosition(null);
     }
     if (nextState === 'idle' && next?.completion?.reachedEnd) {
       clearAloudCheckpoint();
@@ -1185,6 +1195,11 @@ export function createReaderView({
       setSavedAloudPosition(
         resumeState.position.sentenceIndex,
         resumeState.position.offsetSeconds
+      );
+      setPausedAloudPosition(
+        resumeState.source !== 'live' || resumeState.snapshot?.state === 'paused'
+          ? resumeState.position.sentenceIndex
+          : null
       );
       if (resumeState.source === 'live') {
         activeAloudSentenceIndex = resumeState.position.sentenceIndex;

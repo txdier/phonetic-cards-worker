@@ -503,6 +503,49 @@ test('reader checkpoints state changes immediately and throttles time updates', 
   }
 });
 
+test('pause marker appears only after an actual pause and not during sentence changes', async () => {
+  const env = setupReader({
+    articleProgress: {
+      last_position_ratio: 0,
+      last_aloud_sentence_index: null,
+      last_aloud_offset_seconds: 0
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1',
+      currentIndex: 0, currentTime: 1, completion: { reachedEnd: false }
+    });
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]'), null);
+
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1',
+      currentIndex: 1, currentTime: 0, completion: { reachedEnd: false }
+    });
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]'), null);
+
+    env.tts.emit({
+      state: 'paused', mode: 'article', articleId: 'a1',
+      currentIndex: 1, currentTime: 2, completion: { reachedEnd: false }
+    });
+    assert.equal(
+      env.root.querySelector('[data-role="aloud-resume-marker"]').nextElementSibling.dataset.sentenceIndex,
+      '1'
+    );
+
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1',
+      currentIndex: 1, currentTime: 2, completion: { reachedEnd: false }
+    });
+    assert.equal(env.root.querySelector('[data-role="aloud-resume-marker"]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('full-reading start synchronously checkpoints the requested target without making it audible', async () => {
   const env = setupReader({
     articleProgress: { last_position_ratio: 0 },
