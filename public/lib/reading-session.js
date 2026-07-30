@@ -85,8 +85,27 @@ function compactStoredPositions(items) {
   return compacted.reverse();
 }
 
+function normalizeAloudOffsetSeconds(value) {
+  const offsetSeconds = Number(value);
+  if (!Number.isFinite(offsetSeconds)) return 0;
+  return Math.max(0, offsetSeconds);
+}
+
+function normalizeProgressItem(item) {
+  if (
+    item?.kind !== 'position' ||
+    !Object.prototype.hasOwnProperty.call(item, 'lastAloudSentenceIndex')
+  ) return item;
+  return {
+    ...item,
+    lastAloudOffsetSeconds: item.lastAloudSentenceIndex === null
+      ? 0
+      : normalizeAloudOffsetSeconds(item.lastAloudOffsetSeconds)
+  };
+}
+
 export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY }) {
-  let items = compactStoredPositions(readStored(storage, key));
+  let items = compactStoredPositions(readStored(storage, key)).map(normalizeProgressItem);
   let activeRetry = null;
 
   function persist() {
@@ -115,7 +134,7 @@ export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY })
 
   return {
     async submit(item) {
-      items.push(item);
+      items.push(normalizeProgressItem(item));
       persist();
       return retry();
     },
@@ -137,7 +156,7 @@ export function sendProgressItem(api, item) {
       body.lastAloudSentenceIndex = item.lastAloudSentenceIndex;
       body.lastAloudOffsetSeconds = item.lastAloudSentenceIndex === null
         ? 0
-        : Math.max(0, Number(item.lastAloudOffsetSeconds || 0));
+        : normalizeAloudOffsetSeconds(item.lastAloudOffsetSeconds);
     }
     return api(`/api/articles/${articleId}/progress`, {
       method: 'PATCH', body: JSON.stringify(body)

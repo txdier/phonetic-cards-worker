@@ -26,7 +26,8 @@ export function createAloudCheckpointStore({
           !Number.isInteger(value.sentenceIndex) ||
           value.sentenceIndex < 0 ||
           !Number.isFinite(value.offsetSeconds) ||
-          value.offsetSeconds < 0
+          value.offsetSeconds < 0 ||
+          (value.state !== 'speaking' && value.state !== 'paused')
         ) return null;
         return { ...value };
       } catch {
@@ -41,8 +42,9 @@ export function createAloudCheckpointStore({
         !Number.isFinite(offsetSeconds) ||
         offsetSeconds < 0
       ) return false;
+      if (typeof storage?.setItem !== 'function') return false;
       try {
-        storage?.setItem(keyFor(articleId), JSON.stringify({
+        storage.setItem(keyFor(articleId), JSON.stringify({
           articleId: String(articleId),
           bodyFingerprint: bodyFingerprint(body),
           sentenceIndex,
@@ -56,8 +58,9 @@ export function createAloudCheckpointStore({
       }
     },
     clear(articleId) {
+      if (typeof storage?.removeItem !== 'function') return false;
       try {
-        storage?.removeItem(keyFor(articleId));
+        storage.removeItem(keyFor(articleId));
         return true;
       } catch {
         return false;

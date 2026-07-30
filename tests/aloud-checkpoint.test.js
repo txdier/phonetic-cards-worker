@@ -50,3 +50,28 @@ test('checkpoint rejects invalid data and tolerates disabled storage', () => {
   assert.equal(store.load({ articleId: 'a1', body: 'Body.' }), null);
   assert.equal(store.clear('a1'), false);
 });
+
+test('checkpoint rejects a persisted state outside the supported states', () => {
+  const storage = memoryStorage();
+  storage.setItem('pc-aloud-checkpoint:alice:a1', JSON.stringify({
+    articleId: 'a1',
+    bodyFingerprint: bodyFingerprint('Body.'),
+    sentenceIndex: 0,
+    offsetSeconds: 1,
+    state: 'finished',
+    savedAt: 99
+  }));
+  const store = createAloudCheckpointStore({ storage, username: 'alice' });
+
+  assert.equal(store.load({ articleId: 'a1', body: 'Body.' }), null);
+});
+
+test('checkpoint reports unavailable storage as an unsuccessful save or clear', () => {
+  const store = createAloudCheckpointStore({ username: 'alice' });
+
+  assert.equal(store.save({
+    articleId: 'a1', body: 'Body.', sentenceIndex: 0,
+    offsetSeconds: 0, state: 'speaking'
+  }), false);
+  assert.equal(store.clear('a1'), false);
+});

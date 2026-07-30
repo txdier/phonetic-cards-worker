@@ -110,7 +110,7 @@ test('progress queue compacts positions to the latest atomic scroll and aloud sn
     },
     {
       kind: 'position', articleId: 'a1', lastPositionRatio: 0.9,
-      lastAloudSentenceIndex: 5, lastAloudOffsetSeconds: 6.7
+      lastAloudSentenceIndex: 5, lastAloudOffsetSeconds: -6.7
     }
   ];
   const storage = memoryStorage({ 'pc-progress-queue': JSON.stringify(stored) });
@@ -120,7 +120,9 @@ test('progress queue compacts positions to the latest atomic scroll and aloud sn
     send: async item => { sent.push(item); }
   });
 
-  const expected = [stored[0], stored[2], stored[3], stored[4]];
+  const expected = [stored[0], stored[2], stored[3], {
+    ...stored[4], lastAloudOffsetSeconds: 0
+  }];
   assert.deepEqual(queue.snapshot(), expected);
   assert.equal(await queue.retry(), true);
   assert.deepEqual(sent, expected);
@@ -155,6 +157,59 @@ test('progress sender maps queued events and positions to the API contract', asy
         lastAloudOffsetSeconds: 2.5
       })
     }
+  }]);
+});
+
+test('progress sender normalizes invalid aloud offsets to a finite zero', async () => {
+  const calls = [];
+  const api = async (path, init) => { calls.push({ path, init }); return { ok: true }; };
+
+  for (const offset of [Infinity, NaN, -2]) {
+    await sendProgressItem(api, {
+      kind: 'position', articleId: 'a1', lastPositionRatio: 0.5,
+      lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: offset
+    });
+  }
+
+  assert.deepEqual(calls.map(({ init }) => JSON.parse(init.body)), [
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0 },
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0 },
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0 }
+  ]);
+});
+
+test('queue retries an invalid aloud offset as a finite atomic snapshot', async () => {
+  const storage = memoryStorage();
+  const sent = [];
+  let offline = true;
+  const queue = createProgressQueue({
+    storage,
+    send: item => sendProgressItem(async (path, init) => {
+      const body = JSON.parse(init.body);
+      sent.push({ path, body });
+      if (offline) throw new Error('offline');
+      if (!Number.isFinite(body.lastAloudOffsetSeconds)) throw new Error('invalid offset');
+      return { ok: true };
+    }, item)
+  });
+
+  assert.equal(await queue.submit({
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.5,
+    lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: Infinity
+  }), false);
+  assert.deepEqual(queue.snapshot(), [{
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.5,
+    lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0
+  }]);
+
+  offline = false;
+  assert.equal(await queue.retry(), true);
+  assert.deepEqual(sent, [{
+    path: '/api/articles/a1/progress',
+    body: { lastPositionRatio: 0.5, lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0 }
+  }, {
+    path: '/api/articles/a1/progress',
+    body: { lastPositionRatio: 0.5, lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0 }
   }]);
 });
 
