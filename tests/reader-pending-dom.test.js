@@ -678,6 +678,38 @@ test('reader ignores another article TTS snapshot across UI metadata and timer e
       ),
       []
     );
+    env.cleanup();
+    assert.equal(
+      env.tts.calls.includes('stop'),
+      false,
+      'unmounting this article must not stop another article playback'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('timer expiry immediately stops an active direct pronunciation while TTS exists', async () => {
+  const env = setupReader({
+    timerDeadline: 100,
+    now: 0,
+    body: 'Deploy safely. Second sentence. Third sentence.'
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('.pc-term'));
+    click(env.window, env.root.querySelector('[data-action="pronounce"]'));
+    assert.deepEqual(env.speech.calls.at(-1), ['speakOnce', 'Deploy']);
+
+    env.setNow(200);
+    env.intervals.find(item => item.delay === 1_000).callback();
+
+    assert.deepEqual(env.speech.calls.at(-1), ['stop']);
+    assert.match(
+      env.root.querySelector('[data-role="speech-status"]').textContent,
+      /定时结束/
+    );
   } finally {
     env.cleanup();
     env.restore();

@@ -765,6 +765,13 @@ test('articles view wires create, failed value retention, edit reset, delete suc
     clearedArticleId: null,
     clear(articleId) { this.clearedArticleId = articleId; }
   };
+  const replacedPositions = [];
+  const progressQueue = {
+    replacePosition(item) {
+      replacedPositions.push(item);
+      return Promise.resolve(true);
+    }
+  };
   const existing = {
     id: 'a1', title: 'Existing', author: '', source: '', notes: '', created_at: 1,
     progress: { last_position_ratio: 0.7, completed: true, read_count: 3, active_read_ms: 40, full_read_aloud_count: 1, updated_at: 1 }
@@ -792,7 +799,8 @@ test('articles view wires create, failed value retention, edit reset, delete suc
   };
   const cleanup = createArticlesView({
     root: env.root, api, route: { module: 'articles', page: 'library' }, navigate() {},
-    aloudCheckpointStore: checkpointStore
+    aloudCheckpointStore: checkpointStore,
+    progressQueue
   });
   try {
     await flush();
@@ -824,6 +832,13 @@ test('articles view wires create, failed value retention, edit reset, delete suc
     const patchCall = calls.find(call => call.path === '/api/articles/a1' && call.init.method === 'PATCH');
     assert.equal(JSON.parse(patchCall.init.body).resetProgress, true);
     assert.equal(checkpointStore.clearedArticleId, 'a1');
+    assert.deepEqual(replacedPositions, [{
+      kind: 'position',
+      articleId: 'a1',
+      lastPositionRatio: 0,
+      lastAloudSentenceIndex: null,
+      lastAloudOffsetSeconds: 0
+    }]);
     const editedCard = env.root.querySelector('[data-id="a1"]');
     assert.equal(editedCard.querySelector('.pc-article-title').textContent, 'Edited');
     assert.match(editedCard.textContent, /未开始/);
@@ -854,6 +869,7 @@ test('article body edit clears its aloud checkpoint after a successful save with
     clear(articleId) { this.clearedArticleId = articleId; }
   };
   let patchBody = null;
+  const replacedPositions = [];
   const existing = {
     id: 'a1',
     title: 'Existing',
@@ -869,6 +885,12 @@ test('article body edit clears its aloud checkpoint after a successful save with
     route: { module: 'articles', page: 'library' },
     navigate() {},
     aloudCheckpointStore: checkpointStore,
+    progressQueue: {
+      replacePosition(item) {
+        replacedPositions.push(item);
+        return Promise.resolve(true);
+      }
+    },
     api: async (path, init = {}) => {
       if (path === '/api/articles' && !init.method) return [existing];
       if (path === '/api/articles/a1' && !init.method) return existing;
@@ -894,6 +916,68 @@ test('article body edit clears its aloud checkpoint after a successful save with
 
     assert.equal(patchBody.resetProgress, false);
     assert.equal(checkpointStore.clearedArticleId, 'a1');
+    assert.deepEqual(replacedPositions, [{
+      kind: 'position',
+      articleId: 'a1',
+      lastPositionRatio: 0.4,
+      lastAloudSentenceIndex: null,
+      lastAloudOffsetSeconds: 0
+    }]);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('article body save preserves aloud progress for canonical whitespace and line endings', async () => {
+  const env = installDom('http://local.test/#/articles/library');
+  const cleared = [];
+  const replacedPositions = [];
+  const existing = {
+    id: 'a1',
+    title: 'Existing',
+    body: 'Line one\nLine two',
+    author: '',
+    source: '',
+    notes: '',
+    created_at: 1,
+    progress: { last_position_ratio: 0.4 }
+  };
+  const cleanup = createArticlesView({
+    root: env.root,
+    route: { module: 'articles', page: 'library' },
+    navigate() {},
+    aloudCheckpointStore: { clear: articleId => cleared.push(articleId) },
+    progressQueue: {
+      replacePosition(item) {
+        replacedPositions.push(item);
+        return Promise.resolve(true);
+      }
+    },
+    api: async (path, init = {}) => {
+      if (path === '/api/articles' && !init.method) return [existing];
+      if (path === '/api/articles/a1' && !init.method) return existing;
+      if (path === '/api/articles/a1' && init.method === 'PATCH') {
+        return { ...existing, ...JSON.parse(init.body), updated_at: 2 };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-id="a1"] [data-action="edit"]'));
+    await flush();
+    const form = env.root.querySelector('[data-role="article-form"]');
+    form.elements.body.value = '  Line one\r\nLine two  ';
+    submit(env.window, form);
+    click(
+      env.window,
+      env.window.document.querySelector('[data-action="confirm-dialog-cancel"]')
+    );
+    await flush();
+
+    assert.deepEqual(cleared, []);
+    assert.deepEqual(replacedPositions, []);
   } finally {
     cleanup();
     env.restore();

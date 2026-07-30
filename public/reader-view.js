@@ -145,6 +145,8 @@ export function createReaderView({
   let activeAloudSentenceIndex = null;
   let activeAloudOffsetSeconds = 0;
   let pointAloudSentenceIndex = null;
+  let directSpeechGeneration = 0;
+  let directSpeechActive = false;
   let lastAutoFollowedSentenceIndex = null;
   let savedAloudSentenceIndex = null;
   let savedAloudOffsetSeconds = 0;
@@ -202,6 +204,29 @@ export function createReaderView({
     MediaMetadata: mediaRuntime.MediaMetadata
   });
 
+  function speakDirect(text) {
+    const generation = ++directSpeechGeneration;
+    directSpeechActive = true;
+    try {
+      speech.speakOnce(text, {
+        onEnd() {
+          if (generation === directSpeechGeneration) directSpeechActive = false;
+        }
+      });
+    } catch (error) {
+      if (generation === directSpeechGeneration) directSpeechActive = false;
+      throw error;
+    }
+  }
+
+  function stopDirectSpeech() {
+    if (!directSpeechActive) return false;
+    directSpeechActive = false;
+    directSpeechGeneration += 1;
+    speech.stop?.();
+    return true;
+  }
+
   function speakSentence(sentenceNode) {
     const index = Number(sentenceNode?.dataset.sentenceIndex);
     if (!Number.isInteger(index)) return;
@@ -213,7 +238,7 @@ export function createReaderView({
         nextIndex: index + 1 < sentences.length ? index + 1 : null
       });
     } else {
-      speech.speakOnce(sentenceNode.textContent);
+      speakDirect(sentenceNode.textContent);
     }
   }
 
@@ -706,7 +731,10 @@ export function createReaderView({
   }
 
   function handleExpiredTimer() {
-    if (ownsAudioControllerPlayback()) audioController.pause?.();
+    const stoppedDirectSpeech = stopDirectSpeech();
+    if (ownsAudioControllerPlayback() && (tts || !stoppedDirectSpeech)) {
+      audioController.pause?.();
+    }
     saveAloudCheckpoint({ immediate: true, state: 'paused' });
     announceSpeechStatus('定时结束，已暂停');
   }
@@ -1295,11 +1323,11 @@ export function createReaderView({
     if (action === 'term') handleTerm(target);
     if (action === 'pronounce') {
       if (checkSleepTimer()) return;
-      speech.speakOnce(target.dataset.text);
+      speakDirect(target.dataset.text);
     }
     if (action === 'pronounce-selection') {
       if (checkSleepTimer()) return;
-      speech.speakOnce(target.closest('[data-role="selection-action"]')?.dataset.selectedText || '');
+      speakDirect(target.closest('[data-role="selection-action"]')?.dataset.selectedText || '');
     }
     if (action === 'speech-primary') {
       if (checkSleepTimer()) return;
@@ -1594,7 +1622,10 @@ export function createReaderView({
     mediaBridge.cleanup();
     speechToolbarObserver?.disconnect?.();
     speechToolbarObserver = null;
-    audioController.stop?.();
+    const stoppedDirectSpeech = stopDirectSpeech();
+    if (ownsAudioControllerPlayback() && (tts || !stoppedDirectSpeech)) {
+      audioController.stop?.();
+    }
     for (const sentence of root.querySelectorAll('.pc-sentence-speaking')) sentence.classList.remove('pc-sentence-speaking');
     root.removeEventListener('click', onClick);
     root.removeEventListener('click', onSentenceClick);

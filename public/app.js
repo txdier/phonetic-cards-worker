@@ -170,7 +170,7 @@ function mountRoute() {
     unmountView = createStatsView({ root: viewRoot, api });
   } else {
     unmountView = createArticlesView({
-      root: viewRoot, api, navigate, route, aloudCheckpointStore
+      root: viewRoot, api, navigate, route, aloudCheckpointStore, progressQueue
     });
   }
 }

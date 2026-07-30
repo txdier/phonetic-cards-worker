@@ -124,12 +124,14 @@ export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY })
     if (activeRetry) return activeRetry;
     activeRetry = (async () => {
       while (items.length) {
+        const item = items[0];
         try {
-          await send(items[0]);
+          await send(item);
         } catch {
           return false;
         }
-        items.shift();
+        const acknowledgedIndex = items.indexOf(item);
+        if (acknowledgedIndex >= 0) items.splice(acknowledgedIndex, 1);
         persist();
       }
       return true;
@@ -140,6 +142,18 @@ export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY })
   return {
     async submit(item) {
       items.push(normalizeProgressItem(item));
+      persist();
+      return retry();
+    },
+    replacePosition(item) {
+      const position = normalizeProgressItem(item);
+      if (position?.kind !== 'position' || typeof position.articleId !== 'string') {
+        return Promise.reject(new Error('replacement must be an article position'));
+      }
+      items = items.filter(queued =>
+        queued?.kind !== 'position' || queued.articleId !== position.articleId
+      );
+      items.push(position);
       persist();
       return retry();
     },

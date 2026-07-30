@@ -96,6 +96,53 @@ test('progress queue loads stored work and serializes simultaneous retries', asy
   assert.equal(calls, 1);
 });
 
+test('replacing a position neutralizes an in-flight stale snapshot without dropping other work', async () => {
+  const storage = memoryStorage();
+  let releaseStale;
+  const stalePending = new Promise(resolve => { releaseStale = resolve; });
+  const sent = [];
+  const stale = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.8,
+    lastAloudSentenceIndex: 4, lastAloudOffsetSeconds: 3
+  };
+  const event = {
+    kind: 'event', articleId: 'a1',
+    event: { id: 'e1', type: 'active_ms', amount: 10 }
+  };
+  const otherArticle = {
+    kind: 'position', articleId: 'a2', lastPositionRatio: 0.6,
+    lastAloudSentenceIndex: 2, lastAloudOffsetSeconds: 1
+  };
+  const neutral = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.4,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  };
+  const queue = createProgressQueue({
+    storage,
+    send: async item => {
+      sent.push({ ...item });
+      if (
+        item.kind === 'position' &&
+        item.articleId === 'a1' &&
+        item.lastAloudSentenceIndex === 4
+      ) await stalePending;
+    }
+  });
+
+  const activeRetry = queue.submit(stale);
+  queue.submit(event);
+  queue.submit(otherArticle);
+  const replacementRetry = queue.replacePosition(neutral);
+
+  assert.deepEqual(queue.snapshot(), [event, otherArticle, neutral]);
+  releaseStale();
+  assert.equal(await activeRetry, true);
+  assert.equal(await replacementRetry, true);
+  assert.deepEqual(sent, [stale, event, otherArticle, neutral]);
+  assert.deepEqual(queue.snapshot(), []);
+  assert.equal(storage.read('pc-progress-queue'), null);
+});
+
 test('progress queue compacts positions to the latest atomic scroll and aloud snapshot per article', async () => {
   const stored = [
     { kind: 'event', articleId: 'a1', event: { id: 'e1', type: 'active_ms', amount: 10 } },

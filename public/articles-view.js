@@ -26,6 +26,10 @@ function progressText(progress) {
   return percent > 0 ? `已读 ${percent}%` : '未开始';
 }
 
+function canonicalArticleBody(value) {
+  return String(value || '').replace(/\r\n/g, '\n').trim();
+}
+
 export function updateArticlesAfterSave(articles, { saved, editingId = null, resetProgress = false }) {
   if (!saved) return articles;
   if (!editingId) return [saved, ...articles];
@@ -46,11 +50,19 @@ export function updateArticlesAfterSave(articles, { saved, editingId = null, res
   });
 }
 
-export function createArticlesView({ root, api, navigate, route, aloudCheckpointStore = null }) {
+export function createArticlesView({
+  root,
+  api,
+  navigate,
+  route,
+  aloudCheckpointStore = null,
+  progressQueue = null
+}) {
   let articles = [];
   let mounted = true;
   let editingId = null;
   let editingBody = '';
+  let editingPositionRatio = 0;
   let pageError = '';
   let editRequestVersion = 0;
 
@@ -144,6 +156,10 @@ export function createArticlesView({ root, api, navigate, route, aloudCheckpoint
     invalidateEditRequests();
     editingId = article.id || null;
     editingBody = article.body || '';
+    editingPositionRatio = Math.max(
+      0,
+      Math.min(1, Number(article.progress?.last_position_ratio) || 0)
+    );
     root.replaceChildren();
     renderHeader(editingId ? '编辑文章' : '新建文章', editingId ? '修改文章内容后选择是否重置阅读进度。' : '标题和正文为必填项。');
     const form = element('form', 'pc-form pc-article-form');
@@ -197,20 +213,31 @@ export function createArticlesView({ root, api, navigate, route, aloudCheckpoint
     }
     try {
       const savedArticleId = editingId;
+      const bodyChanged = canonicalArticleBody(data.body) !== canonicalArticleBody(editingBody);
       const shouldClearAloudCheckpoint = Boolean(
         savedArticleId &&
-        (data.resetProgress === true || data.body !== editingBody)
+        (data.resetProgress === true || bodyChanged)
       );
       const saved = await api(savedArticleId ? `/api/articles/${encodeURIComponent(savedArticleId)}` : '/api/articles', {
         method: savedArticleId ? 'PATCH' : 'POST', body: JSON.stringify(data)
       });
-      if (shouldClearAloudCheckpoint) aloudCheckpointStore?.clear?.(savedArticleId);
+      if (shouldClearAloudCheckpoint) {
+        aloudCheckpointStore?.clear?.(savedArticleId);
+        progressQueue?.replacePosition?.({
+          kind: 'position',
+          articleId: savedArticleId,
+          lastPositionRatio: data.resetProgress === true ? 0 : editingPositionRatio,
+          lastAloudSentenceIndex: null,
+          lastAloudOffsetSeconds: 0
+        });
+      }
       if (!mounted || !form.isConnected) return;
       articles = updateArticlesAfterSave(articles, {
         saved, editingId: savedArticleId, resetProgress: data.resetProgress === true
       });
       editingId = null;
       editingBody = '';
+      editingPositionRatio = 0;
       renderLibrary();
     } catch (error) {
       if (!mounted || !form.isConnected) return;
