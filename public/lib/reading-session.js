@@ -148,7 +148,11 @@ export function createProgressQueue({ storage, send, key = PROGRESS_QUEUE_KEY })
 
   return {
     async submit(item) {
-      items.push(normalizeProgressItem(item));
+      const normalized = normalizeProgressItem(item);
+      items.push(normalized);
+      if (normalized?.kind === 'position' && typeof normalized.articleId === 'string') {
+        items = compactStoredPositions(items);
+      }
       persist();
       return retry();
     },

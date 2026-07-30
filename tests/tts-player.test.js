@@ -284,9 +284,83 @@ test('article offset cannot seek past the loaded duration', async () => {
 
   void player.startArticle('a1', ['One.'], 0, { offsetSeconds: 12 });
   await audio.waitForSource();
-  await audio.metadata({ duration: 0 });
+  await audio.metadata({ duration: 8 });
 
   assert.equal(audio.currentTime, 0);
+});
+
+test('pause holds a next sentence that is already loading until resume', async () => {
+  const audio = new ControlledAudio();
+  let resolveHeldFetch;
+  let heldFetchCount = 0;
+  const player = createTtsPlayer({
+    fetch: (path, options = {}) => {
+      if (!options.signal) return Promise.resolve(cloudResponse());
+      if (path.endsWith('/sentences/1') && heldFetchCount++ === 0) {
+        return new Promise(resolve => { resolveHeldFetch = resolve; });
+      }
+      return Promise.resolve(cloudResponse());
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.begin();
+  await audio.finish();
+  assert.equal(player.getSnapshot().pendingIndex, 1);
+
+  player.pause();
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.equal(player.getSnapshot().currentIndex, 0);
+  resolveHeldFetch(cloudResponse());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(audio.sourceCount, 1);
+
+  player.resume();
+  await audio.waitForSource(2);
+  assert.equal(player.getSnapshot().currentIndex, 0);
+  await audio.begin();
+  assert.equal(player.getSnapshot().currentIndex, 1);
+});
+
+test('natural sentence end rechecks a pause published before advancing', async () => {
+  const audio = new ControlledAudio();
+  const actualPaths = [];
+  const player = createTtsPlayer({
+    fetch: async (path, options = {}) => {
+      if (options.signal) actualPaths.push(path);
+      return cloudResponse();
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+  let pausedAtBoundary = false;
+  player.subscribe(next => {
+    if (
+      !pausedAtBoundary &&
+      next.currentIndex === 0 &&
+      next.completion.coverage === 0.5
+    ) {
+      pausedAtBoundary = true;
+      player.pause();
+    }
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.begin();
+  await audio.finish();
+
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.deepEqual(actualPaths, ['/api/tts/articles/a1/sentences/0']);
+  player.resume();
+  await audio.waitForSource(2);
+  await audio.begin();
+  assert.equal(player.getSnapshot().currentIndex, 1);
 });
 
 test('pause is immediate and resume preserves the media position', async () => {
@@ -473,6 +547,92 @@ test('mixed fallback coverage from a later start remains uncounted', async () =>
   assert.equal(states.at(-1).completion.coverage, 2 / 3);
   assert.equal(states.at(-1).completion.counted, false);
   assert.equal(states.at(-1).completionEvent, null);
+});
+
+test('cloud completion counts at eighty percent but skip-to-end coverage does not', async () => {
+  async function run({ skipOnly }) {
+    const audio = new ControlledAudio();
+    const states = [];
+    const player = createTtsPlayer({
+      fetch: async () => cloudResponse(),
+      Audio: class { constructor() { return audio; } },
+      URL: fakeUrlApi(),
+      fallback: fakeFallback()
+    });
+    player.subscribe(next => states.push(next));
+    void player.startArticle('a1', ['Zero.', 'One.', 'Two.', 'Three.', 'Four.'], 0);
+    await audio.waitForSource(1);
+    await audio.begin();
+    if (!skipOnly) await audio.finish();
+
+    for (let index = 1; index < 5; index += 1) {
+      if (index === 1 && !skipOnly) {
+        await audio.waitForSource(2);
+        await audio.begin();
+        assert.equal(player.nextSentence(), true);
+        continue;
+      }
+      if (skipOnly) {
+        assert.equal(player.nextSentence(), true);
+      }
+      await audio.waitForSource(index + 1);
+      await audio.begin();
+      if (!skipOnly || index === 4) await audio.finish();
+    }
+    return states.at(-1);
+  }
+
+  const threshold = await run({ skipOnly: false });
+  assert.deepEqual(threshold.completion, {
+    reachedEnd: true, coverage: 0.8, counted: true
+  });
+  assert.equal(threshold.completionEvent.counted, true);
+
+  const skipped = await run({ skipOnly: true });
+  assert.deepEqual(skipped.completion, {
+    reachedEnd: true, coverage: 0.2, counted: false
+  });
+  assert.equal(skipped.completionEvent, null);
+});
+
+test('browser fallback completion also requires eighty percent coverage', async () => {
+  async function completionFor(coverage) {
+    const states = [];
+    let listener;
+    const fallback = fakeFallback({
+      subscribe(callback) {
+        listener = callback;
+        return () => { listener = null; };
+      },
+      startAt() {
+        listener?.({
+          state: 'idle',
+          currentIndex: null,
+          completion: { reachedEnd: true, coverage, counted: false },
+          completionEvent: { reachedEnd: true, coverage, counted: false }
+        });
+      }
+    });
+    const player = createTtsPlayer({
+      fetch: async () => new Response('', { status: 503 }),
+      Audio: ControlledAudio,
+      URL: fakeUrlApi(),
+      fallback
+    });
+    player.subscribe(next => states.push(next));
+    await player.startArticle('a1', ['Zero.', 'One.', 'Two.', 'Three.', 'Four.'], 0);
+    return states.at(-1);
+  }
+
+  const below = await completionFor(0.6);
+  assert.equal(below.completion.coverage, 0.6);
+  assert.equal(below.completion.counted, false);
+  assert.equal(below.completionEvent, null);
+
+  const threshold = await completionFor(0.8);
+  assert.equal(threshold.completion.coverage, 0.8);
+  assert.equal(threshold.completion.counted, true);
+  assert.equal(threshold.completionEvent.counted, true);
 });
 
 test('article onState remains subscribed through asynchronous fallback completion', async () => {

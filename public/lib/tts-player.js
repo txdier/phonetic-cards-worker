@@ -212,10 +212,15 @@ export function createTtsPlayer({
 
   function updateCompletion(reachedEnd) {
     const total = articleSession?.texts.length || 0;
+    const coverage = total ? articleSession.completed.size / total : 0;
     completion = {
       reachedEnd,
-      coverage: total ? articleSession.completed.size / total : 0,
-      counted: Boolean(reachedEnd && articleSession?.startIndex === 0)
+      coverage,
+      counted: Boolean(
+        reachedEnd &&
+        articleSession?.startIndex === 0 &&
+        coverage >= 0.8
+      )
     };
   }
 
@@ -249,7 +254,12 @@ export function createTtsPlayer({
       completion = {
         reachedEnd: Boolean(nextCompletion.reachedEnd),
         coverage: total ? session.completed.size / total : 0,
-        counted: Boolean(nextCompletion.reachedEnd && session.startIndex === 0)
+        counted: Boolean(
+          nextCompletion.reachedEnd &&
+          session.startIndex === 0 &&
+          total > 0 &&
+          session.completed.size / total >= 0.8
+        )
       };
       const completedNow = completion.reachedEnd && !reachedEndBefore;
       const completionEvent = completedNow && completion.counted && !session.completionPublished
@@ -272,6 +282,8 @@ export function createTtsPlayer({
     if (!session || index < 0 || index >= session.texts.length) return false;
 
     if (fallbackActive) stopFallback();
+    session.heldIndex = index;
+    session.heldOffsetSeconds = Math.max(0, Number(offsetSeconds) || 0);
     const token = invalidateMedia();
     if (articleSession !== session) return false;
     session.token = token;
@@ -287,6 +299,12 @@ export function createTtsPlayer({
     const objectUrl = await fetchObjectUrl(articlePath(session.articleId, index), token);
     if (!objectUrl) {
       if (token === generation && articleSession === session) {
+        if (!session.playIntent) {
+          pendingIndex = null;
+          state = 'paused';
+          publish();
+          return false;
+        }
         pendingIndex = null;
         bridgeFallback(index);
         endArticleSession(false);
@@ -311,7 +329,9 @@ export function createTtsPlayer({
       if (token !== generation || articleSession !== session) return;
       duration = mediaTime(audio.duration);
       const requestedOffset = Math.max(0, Number(offsetSeconds) || 0);
-      audio.currentTime = Math.min(requestedOffset, duration);
+      audio.currentTime = duration > 0 && requestedOffset > duration
+        ? 0
+        : Math.min(requestedOffset, duration);
       currentTime = mediaTime(audio.currentTime);
       publish();
       if (activeMetadataResolve === metadataResolve) activeMetadataResolve = null;
@@ -328,12 +348,21 @@ export function createTtsPlayer({
     };
     audio.onplay = () => {
       if (token !== generation || articleSession !== session) return;
+      if (!session.playIntent) {
+        audio.pause?.();
+        pendingIndex = null;
+        state = 'paused';
+        publishMediaPosition();
+        return;
+      }
       if (pendingIndex === index) {
         currentIndex = pendingIndex;
         pendingIndex = null;
       } else if (currentIndex !== index) {
         return;
       }
+      session.heldIndex = null;
+      session.heldOffsetSeconds = 0;
       state = 'speaking';
       publishMediaPosition();
       if (index + 1 < session.texts.length) {
@@ -359,10 +388,18 @@ export function createTtsPlayer({
       ) return;
       releaseUrl();
       session.completed.add(index);
+      const nextIndex = index + 1 < session.texts.length ? index + 1 : null;
+      session.heldIndex = nextIndex;
+      session.heldOffsetSeconds = 0;
       updateCompletion(false);
       publish();
-      if (index + 1 < session.texts.length) {
-        void playArticleIndex(index + 1);
+      if (nextIndex != null) {
+        if (session.playIntent) {
+          void playArticleIndex(nextIndex);
+        } else {
+          state = 'paused';
+          publish();
+        }
         return;
       }
       updateCompletion(true);
@@ -392,6 +429,12 @@ export function createTtsPlayer({
       settleMetadata(true);
     }
 
+    if (!session.playIntent) {
+      pendingIndex = null;
+      state = 'paused';
+      publish();
+      return false;
+    }
     try {
       await audio.play();
       return true;
@@ -430,6 +473,9 @@ export function createTtsPlayer({
       completed: new Set(),
       token: generation,
       completionPublished: false,
+      playIntent: true,
+      heldIndex: nextIndex,
+      heldOffsetSeconds: Math.max(0, Number(options.offsetSeconds) || 0),
       resolve: resolveSession,
       legacyUnsubscribe: null
     };
@@ -483,11 +529,13 @@ export function createTtsPlayer({
       if (!articleSession || !Number.isInteger(currentIndex) || currentIndex === 0) {
         return false;
       }
+      articleSession.playIntent = true;
       void playArticleIndex(currentIndex - 1);
       return true;
     },
     replayCurrentSentence() {
       if (!articleSession || !Number.isInteger(currentIndex)) return false;
+      articleSession.playIntent = true;
       void playArticleIndex(currentIndex);
       return true;
     },
@@ -497,15 +545,27 @@ export function createTtsPlayer({
         !Number.isInteger(currentIndex) ||
         currentIndex >= articleSession.texts.length - 1
       ) return false;
+      articleSession.playIntent = true;
       void playArticleIndex(currentIndex + 1);
       return true;
     },
     pause() {
       if (fallbackActive) {
+        if (articleSession) articleSession.playIntent = false;
         fallback?.pause?.();
         return;
       }
-      if (!audio || (state !== 'speaking' && state !== 'once')) return;
+      if (!audio) return;
+      if (articleSession && mode === 'article') articleSession.playIntent = false;
+      if (state === 'loading' && articleSession) {
+        if (Number.isInteger(pendingIndex)) articleSession.heldIndex = pendingIndex;
+        invalidateMedia();
+        pendingIndex = null;
+        state = 'paused';
+        publish();
+        return;
+      }
+      if (state !== 'speaking' && state !== 'once') return;
       audio.pause?.();
       currentTime = mediaTime(audio.currentTime);
       state = 'paused';
@@ -513,10 +573,20 @@ export function createTtsPlayer({
     },
     resume() {
       if (fallbackActive) {
+        if (articleSession) articleSession.playIntent = true;
         fallback?.resume?.();
         return;
       }
       if (!audio || state !== 'paused') return;
+      if (articleSession && mode === 'article') {
+        articleSession.playIntent = true;
+        if (Number.isInteger(articleSession.heldIndex)) {
+          void playArticleIndex(articleSession.heldIndex, {
+            offsetSeconds: articleSession.heldOffsetSeconds
+          });
+          return;
+        }
+      }
       audio.play?.().catch?.(() => {});
     },
     setRate(value) {

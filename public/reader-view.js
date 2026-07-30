@@ -157,6 +157,9 @@ export function createReaderView({
   let lastAutoFollowedSentenceIndex = null;
   let savedAloudSentenceIndex = null;
   let savedAloudOffsetSeconds = 0;
+  let requestedAloudPending = false;
+  let requestedAloudSentenceIndex = null;
+  let requestedAloudOffsetSeconds = 0;
   let lastLocalCheckpointAt = 0;
   let lastCheckpointSignature = null;
   let lastQueuedPosition = null;
@@ -243,6 +246,7 @@ export function createReaderView({
     if (!Number.isInteger(index)) return;
     if (checkSleepTimer()) return;
     if (tts?.speakArticleSentence) {
+      bindMediaSession();
       pointAloudSentenceIndex = index;
       tts.speakArticleSentence(articleId, index, sentenceNode.textContent, {
         rate: (tts || speech).getRate?.() || 1,
@@ -257,6 +261,10 @@ export function createReaderView({
     if (checkSleepTimer()) return;
     setStartSelectionMode(false);
     pointAloudSentenceIndex = null;
+    requestedAloudPending = true;
+    requestedAloudSentenceIndex = index;
+    requestedAloudOffsetSeconds = aloudOffset(offsetSeconds);
+    bindMediaSession();
     if (tts?.startArticle) {
       tts.startArticle(
         articleId,
@@ -266,6 +274,9 @@ export function createReaderView({
       );
     } else {
       speech.startAt(index);
+    }
+    if (requestedAloudPending) {
+      saveRequestedAloudCheckpoint(index, offsetSeconds);
     }
   }
 
@@ -323,12 +334,16 @@ export function createReaderView({
     }
     const currentAloudIndex = fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
       ? activeAloudSentenceIndex
-      : savedAloudSentenceIndex;
+      : requestedAloudPending && validAloudIndex(requestedAloudSentenceIndex)
+        ? requestedAloudSentenceIndex
+        : savedAloudSentenceIndex;
     const currentAloudOffset = currentAloudIndex === null
       ? 0
       : fullSpeechActive && Number.isInteger(activeAloudSentenceIndex)
         ? activeAloudOffsetSeconds
-        : savedAloudOffsetSeconds;
+        : requestedAloudPending && currentAloudIndex === requestedAloudSentenceIndex
+          ? requestedAloudOffsetSeconds
+          : savedAloudOffsetSeconds;
     const position = {
       kind: 'position',
       articleId,
@@ -666,6 +681,7 @@ export function createReaderView({
   function currentReplayIndex() {
     if (tts?.getSnapshot?.()?.articleId && !ownsAudioControllerPlayback()) return null;
     if (validAloudIndex(activeAloudSentenceIndex)) return activeAloudSentenceIndex;
+    if (requestedAloudPending) return null;
     return validAloudIndex(savedAloudSentenceIndex) ? savedAloudSentenceIndex : null;
   }
 
@@ -766,10 +782,29 @@ export function createReaderView({
     return true;
   }
 
+  function saveRequestedAloudCheckpoint(index, offsetSeconds = 0) {
+    if (!validAloudIndex(index) || !article) return false;
+    const offset = aloudOffset(offsetSeconds);
+    aloudCheckpointStore?.save?.({
+      articleId,
+      body: article.body,
+      sentenceIndex: index,
+      offsetSeconds: offset,
+      state: 'paused'
+    });
+    lastLocalCheckpointAt = timerRuntime.now();
+    lastCheckpointSignature = `${index}:${offset}:paused`;
+    saveProgress({ force: true });
+    return true;
+  }
+
   function clearAloudCheckpoint() {
     aloudCheckpointStore?.clear?.(articleId);
     activeAloudSentenceIndex = null;
     activeAloudOffsetSeconds = 0;
+    requestedAloudPending = false;
+    requestedAloudSentenceIndex = null;
+    requestedAloudOffsetSeconds = 0;
     setSavedAloudPosition(null, 0);
     lastCheckpointSignature = null;
     saveProgress();
@@ -781,13 +816,16 @@ export function createReaderView({
   }
 
   function syncTimerControls(timerState = sleepTimer.snapshot()) {
+    const formattedRemaining = timerState.active
+      ? formatRemaining(timerState.remainingMs)
+      : '';
     const remaining = root.querySelector('[data-role="sleep-timer-remaining"]');
     if (remaining) {
       if (timerState.expired) {
         remaining.textContent = '定时结束';
         remaining.hidden = false;
       } else if (timerState.active) {
-        remaining.textContent = formatRemaining(timerState.remainingMs);
+        remaining.textContent = formattedRemaining;
         remaining.hidden = false;
       } else {
         remaining.textContent = '';
@@ -799,6 +837,15 @@ export function createReaderView({
       '[data-action="speech-timer"], [data-action="speech-floating-timer"]'
     )) {
       trigger.setAttribute('aria-expanded', String(expanded));
+      trigger.setAttribute(
+        'aria-label',
+        timerState.active
+          ? `\u8bbe\u7f6e\u505c\u6b62\u6717\u8bfb\u5b9a\u65f6\u5668\uff0c\u5269\u4f59 ${formattedRemaining}`
+          : '\u8bbe\u7f6e\u505c\u6b62\u6717\u8bfb\u5b9a\u65f6\u5668'
+      );
+      if (trigger.dataset.action === 'speech-floating-timer') {
+        trigger.textContent = timerState.active ? formattedRemaining : '\u5b9a\u65f6';
+      }
     }
   }
 
@@ -1000,6 +1047,9 @@ export function createReaderView({
       validAloudIndex(next?.currentIndex) &&
       ownsFullArticle;
     if (validPlayerPosition) {
+      requestedAloudPending = false;
+      requestedAloudSentenceIndex = null;
+      requestedAloudOffsetSeconds = 0;
       activeAloudSentenceIndex = next.currentIndex;
       activeAloudOffsetSeconds = aloudOffset(next.currentTime);
       saveAloudCheckpoint({
@@ -1051,14 +1101,18 @@ export function createReaderView({
     const mediaSentence = ownsPointPlayback
       ? sentences[pointAloudSentenceIndex]?.text.trim() || ''
       : validAloudIndex(audibleIndex) ? sentences[audibleIndex]?.text.trim() || '' : '';
-    mediaBridge.update({
-      state: ownsPointPlayback && nextState === 'once' ? 'speaking' : nextState,
-      currentIndex: mediaIndex,
-      sentenceCount: ownsPointPlayback ? 0 : sentences.length,
-      title: article?.title || '',
-      author: article?.author || '',
-      sentence: mediaSentence
-    });
+    if (nextState === 'idle' && next?.completion?.reachedEnd) {
+      mediaBridge.cleanup();
+    } else {
+      mediaBridge.update({
+        state: ownsPointPlayback && nextState === 'once' ? 'speaking' : nextState,
+        currentIndex: mediaIndex,
+        sentenceCount: ownsPointPlayback ? 0 : sentences.length,
+        title: article?.title || '',
+        author: article?.author || '',
+        sentence: mediaSentence
+      });
+    }
     syncSpeechControls();
     if (checkTimer && article) checkSleepTimer();
   }
@@ -1789,38 +1843,41 @@ export function createReaderView({
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
   document.addEventListener('visibilitychange', onVisibilityChange);
-  mediaBridge.bind({
-    play: () => {
-      if (!checkSleepTimer() && ownsAudioControllerPlayback()) audioController.resume();
-    },
-    pause: () => {
-      if (ownsAudioControllerPlayback()) audioController.pause();
-    },
-    previous: () => {
-      if (!checkSleepTimer() && ownsAudioControllerPlayback()) tts?.previousSentence?.();
-    },
-    current: () => {
-      if (checkSleepTimer()) return;
-      if (!ownsAudioControllerPlayback()) return;
-      if (tts && validAloudIndex(pointAloudSentenceIndex)) {
-        const index = pointAloudSentenceIndex;
-        tts.speakArticleSentence(
-          articleId,
-          index,
-          sentences[index].text.trim(),
-          {
-            rate: audioController.getRate?.() || 1,
-            nextIndex: index + 1 < sentences.length ? index + 1 : null
-          }
-        );
-        return;
+  function bindMediaSession() {
+    mediaBridge.bind({
+      play: () => {
+        if (!checkSleepTimer() && ownsAudioControllerPlayback()) audioController.resume();
+      },
+      pause: () => {
+        if (ownsAudioControllerPlayback()) audioController.pause();
+      },
+      previous: () => {
+        if (!checkSleepTimer() && ownsAudioControllerPlayback()) tts?.previousSentence?.();
+      },
+      current: () => {
+        if (checkSleepTimer()) return;
+        if (!ownsAudioControllerPlayback()) return;
+        if (tts && validAloudIndex(pointAloudSentenceIndex)) {
+          const index = pointAloudSentenceIndex;
+          tts.speakArticleSentence(
+            articleId,
+            index,
+            sentences[index].text.trim(),
+            {
+              rate: audioController.getRate?.() || 1,
+              nextIndex: index + 1 < sentences.length ? index + 1 : null
+            }
+          );
+          return;
+        }
+        tts?.replayCurrentSentence?.();
+      },
+      next: () => {
+        if (!checkSleepTimer() && ownsAudioControllerPlayback()) tts?.nextSentence?.();
       }
-      tts?.replayCurrentSentence?.();
-    },
-    next: () => {
-      if (!checkSleepTimer() && ownsAudioControllerPlayback()) tts?.nextSentence?.();
-    }
-  });
+    });
+  }
+  bindMediaSession();
   unsubscribeTimer = sleepTimer.subscribe(timerState => {
     if (!timerState.expired) {
       syncTimerControls(timerState);

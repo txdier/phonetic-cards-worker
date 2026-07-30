@@ -258,6 +258,78 @@ test('progress queue compacts positions to the latest atomic scroll and aloud sn
   assert.equal(storage.read('pc-progress-queue'), null);
 });
 
+test('live submissions coalesce same-article positions without dropping events or unrelated positions', async () => {
+  const queue = createProgressQueue({
+    storage: memoryStorage(),
+    send: async () => { throw new Error('offline'); }
+  });
+  const event = {
+    kind: 'event', articleId: 'a1',
+    event: { id: 'e1', type: 'active_ms', amount: 10 }
+  };
+  const unrelated = {
+    kind: 'position', articleId: 'a2', lastPositionRatio: 0.4,
+    lastAloudSentenceIndex: 1, lastAloudOffsetSeconds: 2
+  };
+  const latest = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.9,
+    lastAloudSentenceIndex: 4, lastAloudOffsetSeconds: 3
+  };
+
+  await queue.submit({
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.1,
+    lastAloudSentenceIndex: 0, lastAloudOffsetSeconds: 1
+  });
+  await queue.submit(event);
+  await queue.submit(unrelated);
+  await queue.submit(latest);
+
+  assert.deepEqual(queue.snapshot(), [event, unrelated, latest]);
+});
+
+test('live position coalescing retains in-flight identity and serialized queue order', async () => {
+  let releaseStale;
+  const stalePending = new Promise(resolve => { releaseStale = resolve; });
+  const sent = [];
+  const stale = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.1,
+    lastAloudSentenceIndex: 0, lastAloudOffsetSeconds: 1
+  };
+  const event = {
+    kind: 'event', articleId: 'a1',
+    event: { id: 'e1', type: 'active_ms', amount: 10 }
+  };
+  const unrelated = {
+    kind: 'position', articleId: 'a2', lastPositionRatio: 0.4,
+    lastAloudSentenceIndex: 1, lastAloudOffsetSeconds: 2
+  };
+  const latest = {
+    kind: 'position', articleId: 'a1', lastPositionRatio: 0.9,
+    lastAloudSentenceIndex: 4, lastAloudOffsetSeconds: 3
+  };
+  const queue = createProgressQueue({
+    storage: memoryStorage(),
+    send: async item => {
+      sent.push({ ...item });
+      if (item.articleId === 'a1' && item.lastPositionRatio === 0.1) {
+        await stalePending;
+      }
+    }
+  });
+
+  const activeRetry = queue.submit(stale);
+  queue.submit(event);
+  queue.submit(unrelated);
+  const coalescedRetry = queue.submit(latest);
+  assert.deepEqual(queue.snapshot(), [event, unrelated, latest]);
+
+  releaseStale();
+  assert.equal(await activeRetry, true);
+  assert.equal(await coalescedRetry, true);
+  assert.deepEqual(sent, [stale, event, unrelated, latest]);
+  assert.deepEqual(queue.snapshot(), []);
+});
+
 test('progress sender maps queued events and positions to the API contract', async () => {
   const calls = [];
   const api = async (path, init) => { calls.push({ path, init }); return { ok: true }; };

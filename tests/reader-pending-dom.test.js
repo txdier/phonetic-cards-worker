@@ -503,6 +503,32 @@ test('reader checkpoints state changes immediately and throttles time updates', 
   }
 });
 
+test('full-reading start synchronously checkpoints the requested target without making it audible', async () => {
+  const env = setupReader({
+    articleProgress: { last_position_ratio: 0 },
+    publishStart: false
+  });
+  try {
+    await env.ready();
+    const current = env.root.querySelector('[data-action="speech-current"]');
+    assert.equal(current.disabled, true);
+
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+
+    assert.deepEqual(env.tts.starts.at(-1), {
+      articleId: 'a1', startIndex: 0, offsetSeconds: 0
+    });
+    assert.deepEqual(env.checkpointStore.lastSaved, {
+      sentenceIndex: 0, offsetSeconds: 0, state: 'paused'
+    });
+    assert.equal(env.tts.controller.getSnapshot().currentIndex, null);
+    assert.equal(current.disabled, true);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('pagehide atomically checkpoints the last actually audible sentence and offset', async () => {
   const env = setupReader({
     articleProgress: { last_position_ratio: 0 }
@@ -544,7 +570,7 @@ test('reader restart clears local and queued read-aloud positions', async () => 
       kind: 'position',
       articleId: 'a1',
       lastPositionRatio: 0,
-      lastAloudSentenceIndex: null,
+      lastAloudSentenceIndex: 0,
       lastAloudOffsetSeconds: 0
     });
   } finally {
@@ -605,6 +631,49 @@ test('reader maps Media Session actions and cleanup preserves a future timer', a
     env.cleanup();
     assert.equal(env.mediaSession.handlers.size, 0);
     assert.notEqual(env.window.localStorage.getItem(env.timerKey), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('natural completion releases Media Session and a new full-reading session rebinds it', async () => {
+  const env = setupReader({
+    articleProgress: { last_position_ratio: 0 },
+    liveSnapshot: {
+      state: 'speaking',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 1,
+      currentTime: 2
+    }
+  });
+  try {
+    await env.ready();
+    assert.equal(env.mediaSession.playbackState, 'playing');
+    assert.notEqual(env.mediaSession.metadata, null);
+    assert.equal(env.mediaSession.handlers.has('play'), true);
+
+    env.tts.emit({
+      state: 'idle',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 1,
+      completion: { reachedEnd: true, coverage: 1, counted: true },
+      completionEvent: { reachedEnd: true, coverage: 1, counted: true }
+    });
+
+    assert.equal(env.mediaSession.handlers.size, 0);
+    assert.equal(env.mediaSession.metadata, null);
+    assert.equal(env.mediaSession.playbackState, 'none');
+
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+    assert.equal(env.mediaSession.handlers.has('play'), true);
+    assert.equal(env.mediaSession.handlers.has('pause'), true);
+    assert.equal(env.mediaSession.handlers.has('seekbackward'), true);
+    assert.notEqual(env.mediaSession.metadata, null);
+    env.mediaSession.handlers.get('seekbackward')();
+    assert.equal(env.tts.calls.at(-1), 'current');
   } finally {
     env.cleanup();
     env.restore();
@@ -697,6 +766,13 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="10"]'));
     assert.equal(env.root.querySelector('[data-role="sleep-timer-panel"]'), null);
     assert.equal(remaining.textContent, '10:00');
+    const floatingTimer = env.root.querySelector('[data-action="speech-floating-timer"]');
+    assert.equal(floatingTimer.textContent, '10:00');
+    assert.match(floatingTimer.getAttribute('aria-label'), /10:00/);
+    env.setNow(1_000);
+    env.intervals.find(entry => entry.delay === 1_000).callback();
+    assert.equal(floatingTimer.textContent, '9:59');
+    assert.match(floatingTimer.getAttribute('aria-label'), /9:59/);
 
     click(env.window, timer);
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
@@ -731,6 +807,11 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
     click(env.window, panel.querySelector('[data-action="speech-timer-cancel"]'));
     assert.equal(remaining.hidden, true);
+    assert.equal(floatingTimer.textContent, '\u5b9a\u65f6');
+    assert.equal(
+      floatingTimer.getAttribute('aria-label'),
+      '\u8bbe\u7f6e\u505c\u6b62\u6717\u8bfb\u5b9a\u65f6\u5668'
+    );
     assert.equal(env.window.document.activeElement, timer);
 
     click(env.window, timer);
@@ -741,7 +822,7 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     click(env.window, timer);
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
     click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="10"]'));
-    env.setNow(600_001);
+    env.setNow(601_001);
     for (const interval of env.intervals) interval.callback();
     assert.equal(remaining.textContent, '定时结束');
     assert.match(env.root.querySelector('[data-role="speech-status"]').textContent, /定时结束/);
@@ -2212,7 +2293,7 @@ test('reader exposes one stateful full-reading action and restart only after pro
     assert.equal(restart.hidden, false);
     click(env.window, restart);
     assert.deepEqual(speech.calls.at(-1), ['startAt', 0]);
-    assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, null);
+    assert.equal(submissions.filter(item => item.kind === 'position').at(-1).lastAloudSentenceIndex, 0);
 
     speech.emit({
       state: 'idle',

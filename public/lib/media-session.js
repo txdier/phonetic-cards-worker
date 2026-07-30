@@ -67,6 +67,9 @@ export function createMediaSessionBridge({ mediaSession, MediaMetadata } = {}) {
     },
 
     update({ state, currentIndex, sentenceCount, title, author, sentence } = {}) {
+      applyAction('play', callbacks.play);
+      applyAction('pause', callbacks.pause);
+      applyAction('seekbackward', callbacks.current);
       updateSentenceActions(currentIndex, sentenceCount);
       setPlaybackState(mediaSession, state);
       setMetadata(mediaSession, MediaMetadata, { title, author, sentence });

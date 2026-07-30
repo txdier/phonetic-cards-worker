@@ -117,6 +117,34 @@ test('media session update is capability-gated and cleanup clears registered con
   assert.equal(mediaSession.metadata, null);
 });
 
+test('a playback update after cleanup rebinds every control for replay or a new session', () => {
+  const { actions, mediaSession } = createMediaSession();
+  const calls = [];
+  const bridge = createMediaSessionBridge({ mediaSession, MediaMetadata });
+  bridge.bind({
+    play: () => calls.push('play'),
+    pause: () => calls.push('pause'),
+    previous: () => calls.push('previous'),
+    current: () => calls.push('current'),
+    next: () => calls.push('next')
+  });
+  bridge.cleanup();
+
+  bridge.update({
+    state: 'speaking', currentIndex: 1, sentenceCount: 3,
+    title: 'Replay', author: 'Author', sentence: 'Second.'
+  });
+
+  for (const action of ['play', 'pause', 'previoustrack', 'seekbackward', 'nexttrack']) {
+    assert.equal(typeof actions.get(action), 'function', action);
+  }
+  actions.get('play')();
+  actions.get('seekbackward')();
+  assert.deepEqual(calls, ['play', 'current']);
+  assert.equal(mediaSession.playbackState, 'playing');
+  assert.equal(mediaSession.metadata.title, 'Replay');
+});
+
 test('media session is safe when the API is unavailable', () => {
   const bridge = createMediaSessionBridge();
 
