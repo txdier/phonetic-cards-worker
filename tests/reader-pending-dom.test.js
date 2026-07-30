@@ -826,6 +826,18 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
 
     assert.equal(previous.disabled, true);
     assert.equal(current.disabled, false);
+    for (const action of ['speech-previous', 'speech-floating-previous']) {
+      const button = env.root.querySelector(`[data-action="${action}"]`);
+      assert.equal(button.textContent.trim(), '上一句');
+      assert.equal(button.getAttribute('aria-label'), '重播上一句');
+      assert.ok(button.querySelector('svg'));
+    }
+    for (const action of ['speech-current', 'speech-floating-current']) {
+      const button = env.root.querySelector(`[data-action="${action}"]`);
+      assert.equal(button.textContent.trim(), '重听');
+      assert.equal(button.getAttribute('aria-label'), '重新朗读当前句');
+      assert.ok(button.querySelector('svg'));
+    }
     assert.deepEqual(
       [...env.root.querySelectorAll('[data-role="floating-speech"] [data-action]')]
         .map(node => node.dataset.action),
@@ -2317,12 +2329,15 @@ test('rate value follows real range input and controller rate', async () => {
     const rateValue = env.root.querySelector('[data-role="speech-rate-value"]');
     assert.equal(rateValue.tagName, 'OUTPUT');
     assert.equal(rateValue.textContent, '1×');
+    assert.deepEqual([rate.min, rate.max, rate.step, rate.value], ['0.5', '1.5', '0.25', '1']);
     const returningSetRate = speech.controller.setRate;
     speech.controller.setRate = value => { speech.calls.push(['setRate', Number(value)]); };
-    rate.value = '0.5';
-    rate.dispatchEvent(new env.window.Event('input', { bubbles: true }));
-    assert.deepEqual(speech.calls.at(-1), ['setRate', 0.5]);
-    assert.equal(rateValue.textContent, '0.5×');
+    for (const value of ['0.75', '1.25']) {
+      rate.value = value;
+      rate.dispatchEvent(new env.window.Event('input', { bubbles: true }));
+      assert.deepEqual(speech.calls.at(-1), ['setRate', Number(value)]);
+      assert.equal(rateValue.textContent, `${value}×`);
+    }
     speech.controller.setRate = returningSetRate;
     rate.value = '1.5';
     rate.dispatchEvent(new env.window.Event('input', { bubbles: true }));
@@ -2423,7 +2438,7 @@ test('reader wires sequenced controls, rate, sentence and selection speech, acti
 
     const rate = env.root.querySelector('[data-action="speech-rate"]');
     assert.equal(rate.type, 'range');
-    assert.deepEqual([rate.min, rate.max, rate.step, rate.value], ['0.5', '1.5', '0.5', '1']);
+    assert.deepEqual([rate.min, rate.max, rate.step, rate.value], ['0.5', '1.5', '0.25', '1']);
     rate.value = '1.5';
     rate.dispatchEvent(new env.window.Event('input', { bubbles: true }));
     assert.deepEqual(speech.calls.at(-1), ['setRate', 1.5]);

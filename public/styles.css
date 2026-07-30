@@ -300,6 +300,8 @@
     min-height: 44px;
     touch-action: manipulation;
   }
+  .pc-speech-replay-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .pc-speech-replay-action svg { width: 16px; height: 16px; flex: 0 0 16px; }
   .pc-speech-field { display: flex; align-items: center; gap: 6px; color: var(--ink-dim); font-size: 12px; }
   .pc-speech-field input[type="range"] { width: 110px; accent-color: var(--teal); }
   .pc-speech-rate-value { color: var(--ink); font-variant-numeric: tabular-nums; min-inline-size: 3ch; }

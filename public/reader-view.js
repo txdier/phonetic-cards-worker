@@ -77,7 +77,9 @@ const POPOVER_ICONS = {
   bookmark: ['M6 3h12v18l-6-4.5L6 21V3z'],
   check: ['M5 13l4 4L19 7'],
   volume: ['M11 5 6 9H2v6h4l5 4V5z', 'M15.5 8.5a5 5 0 0 1 0 7'],
-  play: ['M10 8.5l6 3.5-6 3.5v-7z', 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z']
+  play: ['M10 8.5l6 3.5-6 3.5v-7z', 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z'],
+  previous: ['M6 5v14', 'M18 6l-8 6 8 6V6z'],
+  replay: ['M7 7h6a6 6 0 1 1-5.4 8.6', 'M7 3v4h4']
 };
 
 function svgIcon(name, { filled = false } = {}) {
@@ -448,13 +450,23 @@ export function createReaderView({
     primary.dataset.role = 'speech-primary';
     primary.dataset.speechControl = '';
     primary.disabled = !speechAvailable;
-    const previous = actionButton('speech-previous', '上一句');
+    const previous = labeledIconButton(
+      'speech-previous',
+      '上一句',
+      'previous',
+      'pc-btn-ghost pc-speech-replay-action'
+    );
     previous.dataset.speechControl = '';
     previous.setAttribute('aria-label', '重播上一句');
     previous.disabled = !speechAvailable;
-    const current = actionButton('speech-current', '本句');
+    const current = labeledIconButton(
+      'speech-current',
+      '重听',
+      'replay',
+      'pc-btn-ghost pc-speech-replay-action'
+    );
     current.dataset.speechControl = '';
-    current.setAttribute('aria-label', '重播本句');
+    current.setAttribute('aria-label', '重新朗读当前句');
     current.disabled = !speechAvailable;
     const timer = actionButton('speech-timer', '定时');
     timer.dataset.speechControl = '';
@@ -473,7 +485,7 @@ export function createReaderView({
     rate.type = 'range';
     rate.min = '0.5';
     rate.max = '1.5';
-    rate.step = '0.5';
+    rate.step = '0.25';
     rate.value = String(audioController.getRate?.() || speech.getRate?.() || 1);
     rate.dataset.action = 'speech-rate';
     rate.dataset.speechControl = '';
@@ -532,12 +544,22 @@ export function createReaderView({
     capsule.setAttribute('role', 'group');
     capsule.setAttribute('aria-label', '悬浮朗读控制');
     capsule.hidden = true;
-    const previous = actionButton('speech-floating-previous', '上一句', 'pc-floating-speech-action');
+    const previous = labeledIconButton(
+      'speech-floating-previous',
+      '上一句',
+      'previous',
+      'pc-floating-speech-action pc-speech-replay-action'
+    );
     previous.dataset.speechControl = '';
     previous.setAttribute('aria-label', '重播上一句');
-    const current = actionButton('speech-floating-current', '本句', 'pc-floating-speech-action');
+    const current = labeledIconButton(
+      'speech-floating-current',
+      '重听',
+      'replay',
+      'pc-floating-speech-action pc-speech-replay-action'
+    );
     current.dataset.speechControl = '';
-    current.setAttribute('aria-label', '重播本句');
+    current.setAttribute('aria-label', '重新朗读当前句');
     const action = speechAction(true);
     const toggle = actionButton('speech-floating-toggle', action.label, 'pc-floating-speech-action');
     toggle.dataset.role = 'floating-speech-toggle';
@@ -1685,7 +1707,9 @@ export function createReaderView({
     if (action === 'speech-rate-cycle') {
       if (checkSleepTimer()) return;
       const current = Number((tts || speech).getRate?.() || 1);
-      const nextRate = current < 1 ? 1 : current < 1.5 ? 1.5 : 0.5;
+      const rates = [0.5, 0.75, 1, 1.25, 1.5];
+      const currentIndex = rates.indexOf(current);
+      const nextRate = rates[(currentIndex + 1 + rates.length) % rates.length];
       (tts || speech).setRate(nextRate);
       syncSpeechControls();
     }
