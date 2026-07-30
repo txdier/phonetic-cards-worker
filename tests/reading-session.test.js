@@ -178,6 +178,25 @@ test('progress sender normalizes invalid aloud offsets to a finite zero', async 
   ]);
 });
 
+test('progress sender clears corrupt aloud sentence indices as an atomic pair', async () => {
+  const calls = [];
+  const api = async (path, init) => { calls.push({ path, init }); return { ok: true }; };
+
+  for (const sentenceIndex of [undefined, '3', -1, 1.5]) {
+    await sendProgressItem(api, {
+      kind: 'position', articleId: 'a1', lastPositionRatio: 0.5,
+      lastAloudSentenceIndex: sentenceIndex, lastAloudOffsetSeconds: 2.5
+    });
+  }
+
+  assert.deepEqual(calls.map(({ init }) => JSON.parse(init.body)), [
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 },
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 },
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 },
+    { lastPositionRatio: 0.5, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 }
+  ]);
+});
+
 test('queue retries an invalid aloud offset as a finite atomic snapshot', async () => {
   const storage = memoryStorage();
   const sent = [];
@@ -210,6 +229,54 @@ test('queue retries an invalid aloud offset as a finite atomic snapshot', async 
   }, {
     path: '/api/articles/a1/progress',
     body: { lastPositionRatio: 0.5, lastAloudSentenceIndex: 3, lastAloudOffsetSeconds: 0 }
+  }]);
+});
+
+test('queue canonicalizes corrupt restored and submitted aloud pairs before retrying', async () => {
+  const storage = memoryStorage({
+    'pc-progress-queue': JSON.stringify([{
+      kind: 'position', articleId: 'restored', lastPositionRatio: 0.3,
+      lastAloudOffsetSeconds: 4
+    }])
+  });
+  const sent = [];
+  let offline = true;
+  const queue = createProgressQueue({
+    storage,
+    send: item => sendProgressItem(async (path, init) => {
+      sent.push({ path, body: JSON.parse(init.body) });
+      if (offline) throw new Error('offline');
+      return { ok: true };
+    }, item)
+  });
+
+  assert.deepEqual(queue.snapshot(), [{
+    kind: 'position', articleId: 'restored', lastPositionRatio: 0.3,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  }]);
+  assert.equal(await queue.submit({
+    kind: 'position', articleId: 'submitted', lastPositionRatio: 0.4,
+    lastAloudSentenceIndex: -1, lastAloudOffsetSeconds: 5
+  }), false);
+  assert.deepEqual(queue.snapshot(), [{
+    kind: 'position', articleId: 'restored', lastPositionRatio: 0.3,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  }, {
+    kind: 'position', articleId: 'submitted', lastPositionRatio: 0.4,
+    lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0
+  }]);
+
+  offline = false;
+  assert.equal(await queue.retry(), true);
+  assert.deepEqual(sent, [{
+    path: '/api/articles/restored/progress',
+    body: { lastPositionRatio: 0.3, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 }
+  }, {
+    path: '/api/articles/restored/progress',
+    body: { lastPositionRatio: 0.3, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 }
+  }, {
+    path: '/api/articles/submitted/progress',
+    body: { lastPositionRatio: 0.4, lastAloudSentenceIndex: null, lastAloudOffsetSeconds: 0 }
   }]);
 });
 

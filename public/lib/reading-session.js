@@ -92,13 +92,18 @@ function normalizeAloudOffsetSeconds(value) {
 }
 
 function normalizeProgressItem(item) {
-  if (
-    item?.kind !== 'position' ||
-    !Object.prototype.hasOwnProperty.call(item, 'lastAloudSentenceIndex')
-  ) return item;
+  if (item?.kind !== 'position') return item;
+  const hasSentenceIndex = Object.prototype.hasOwnProperty.call(item, 'lastAloudSentenceIndex');
+  const hasOffset = Object.prototype.hasOwnProperty.call(item, 'lastAloudOffsetSeconds');
+  if (!hasSentenceIndex && !hasOffset) return item;
+  const sentenceIndex = Number.isInteger(item.lastAloudSentenceIndex) &&
+    item.lastAloudSentenceIndex >= 0
+    ? item.lastAloudSentenceIndex
+    : null;
   return {
     ...item,
-    lastAloudOffsetSeconds: item.lastAloudSentenceIndex === null
+    lastAloudSentenceIndex: sentenceIndex,
+    lastAloudOffsetSeconds: sentenceIndex === null
       ? 0
       : normalizeAloudOffsetSeconds(item.lastAloudOffsetSeconds)
   };
@@ -151,12 +156,11 @@ export function sendProgressItem(api, item) {
     });
   }
   if (item.kind === 'position') {
-    const body = { lastPositionRatio: item.lastPositionRatio };
-    if (Object.prototype.hasOwnProperty.call(item, 'lastAloudSentenceIndex')) {
-      body.lastAloudSentenceIndex = item.lastAloudSentenceIndex;
-      body.lastAloudOffsetSeconds = item.lastAloudSentenceIndex === null
-        ? 0
-        : normalizeAloudOffsetSeconds(item.lastAloudOffsetSeconds);
+    const position = normalizeProgressItem(item);
+    const body = { lastPositionRatio: position.lastPositionRatio };
+    if (Object.prototype.hasOwnProperty.call(position, 'lastAloudSentenceIndex')) {
+      body.lastAloudSentenceIndex = position.lastAloudSentenceIndex;
+      body.lastAloudOffsetSeconds = position.lastAloudOffsetSeconds;
     }
     return api(`/api/articles/${articleId}/progress`, {
       method: 'PATCH', body: JSON.stringify(body)
