@@ -85,7 +85,8 @@ test('PATCH writes, preserves, and clears the aloud sentence independently', asy
   let response = await handleProgressApi(
     jsonRequest('PATCH', {
       lastPositionRatio: 0.2,
-      lastAloudSentenceIndex: 4
+      lastAloudSentenceIndex: 4,
+      lastAloudOffsetSeconds: 3.25
     }),
     { DB }, '/api/articles/a1/progress', 'u1'
   );
@@ -113,10 +114,13 @@ test('PATCH writes, preserves, and clears the aloud sentence independently', asy
     { DB }, '/api/articles/a1/progress', 'u1'
   );
   assert.equal(response.status, 200);
-  assert.equal(DB.get(`
-    SELECT last_aloud_sentence_index AS value
+  assert.deepEqual(DB.get(`
+    SELECT last_aloud_sentence_index, last_aloud_offset_seconds
     FROM article_progress WHERE article_id = 'a1'
-  `).value, null);
+  `), {
+    last_aloud_sentence_index: null,
+    last_aloud_offset_seconds: 0
+  });
 });
 
 test('PATCH stores aloud sentence and offset as one snapshot', async t => {

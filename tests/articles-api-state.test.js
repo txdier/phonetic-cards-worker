@@ -114,7 +114,9 @@ test('metadata-only changes preserve the aloud sentence in real storage', async 
   t.after(() => DB.close());
   insertArticle(DB, 'a1', 'Body');
   DB.prepare(`
-    UPDATE article_progress SET last_aloud_sentence_index = 2 WHERE article_id = 'a1'
+    UPDATE article_progress
+    SET last_aloud_sentence_index = 2, last_aloud_offset_seconds = 2.75
+    WHERE article_id = 'a1'
   `).run();
 
   const response = await handleArticlesApi(jsonRequest('PATCH', {
@@ -122,10 +124,13 @@ test('metadata-only changes preserve the aloud sentence in real storage', async 
   }), { DB }, '/api/articles/a1', 'u1');
 
   assert.equal(response.status, 200);
-  assert.equal(DB.get(`
-    SELECT last_aloud_sentence_index AS value
+  assert.deepEqual(DB.get(`
+    SELECT last_aloud_sentence_index, last_aloud_offset_seconds
     FROM article_progress WHERE article_id = 'a1'
-  `).value, 2);
+  `), {
+    last_aloud_sentence_index: 2,
+    last_aloud_offset_seconds: 2.75
+  });
 });
 
 function createSeededDb() {
