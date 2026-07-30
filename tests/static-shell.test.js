@@ -36,6 +36,9 @@ test('tag checkboxes render as accessible selected chips', async () => {
   assert.match(choice, /min-height:\s*44px/);
   assert.match(choice, /border-radius:\s*999px/);
   assert.match(choice, /cursor:\s*pointer/);
+  assert.match(choice, /max-width:\s*100%/);
+  assert.match(choice, /white-space:\s*nowrap/);
+  assert.match(choice, /overflow:\s*hidden/);
   assert.ok(checkbox, 'native tag checkboxes should have a visually hidden rule');
   assert.match(checkbox, /position:\s*absolute/);
   assert.match(checkbox, /clip-path:\s*inset\(50%\)/);
@@ -43,6 +46,15 @@ test('tag checkboxes render as accessible selected chips', async () => {
   assert.match(css, /\.pc-tag-choice:has\(input:checked\)::before\s*\{[^}]*content:\s*"✓"/);
   assert.match(css, /\.pc-tag-choice:has\(input:focus-visible\)\s*\{[^}]*outline:/);
   assert.match(css, /\.pc-form input:not\(\[type="checkbox"\]\),\s*\.pc-form textarea/);
+  assert.match(css, /\.pc-form label:not\(\.pc-tag-choice\)\s*\{/);
+});
+
+test('disabled tag chips do not advertise interaction', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.pc-tag-choice:has\(input:disabled\)\s*\{[^}]*cursor:\s*not-allowed;[^}]*opacity:/);
+  assert.match(css, /\.pc-tag-choice:not\(:has\(input:disabled\)\):hover\s*\{/);
+  assert.match(css, /\.pc-tag-choice:not\(:has\(input:disabled\)\):active\s*\{/);
 });
 
 test('reader popovers become safe-area bottom sheets on phones and coarse tablets', async () => {
