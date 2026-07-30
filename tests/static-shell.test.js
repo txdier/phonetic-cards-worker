@@ -27,6 +27,24 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
   assert.doesNotMatch(selectionReading, /(?:^|[;\s])(?:(?:width|min-width)\s*:|position\s*:\s*(?:fixed|absolute)|(?:left|right)\s*:)/);
 });
 
+test('tag checkboxes render as accessible selected chips', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const choice = css.match(/\.pc-tag-choice\s*\{([^}]*)\}/)?.[1];
+  const checkbox = css.match(/\.pc-tag-choice input\[type="checkbox"\]\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(choice, 'tag choices should have a style rule');
+  assert.match(choice, /min-height:\s*44px/);
+  assert.match(choice, /border-radius:\s*999px/);
+  assert.match(choice, /cursor:\s*pointer/);
+  assert.ok(checkbox, 'native tag checkboxes should have a visually hidden rule');
+  assert.match(checkbox, /position:\s*absolute/);
+  assert.match(checkbox, /clip-path:\s*inset\(50%\)/);
+  assert.match(css, /\.pc-tag-choice:has\(input:checked\)\s*\{[^}]*border-color:\s*var\(--teal\)/);
+  assert.match(css, /\.pc-tag-choice:has\(input:checked\)::before\s*\{[^}]*content:\s*"✓"/);
+  assert.match(css, /\.pc-tag-choice:has\(input:focus-visible\)\s*\{[^}]*outline:/);
+  assert.match(css, /\.pc-form input:not\(\[type="checkbox"\]\),\s*\.pc-form textarea/);
+});
+
 test('reader popovers become safe-area bottom sheets on phones and coarse tablets', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const responsiveQuery = css.match(
