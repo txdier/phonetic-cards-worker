@@ -263,12 +263,18 @@
     border: 1px solid var(--coral); border-radius: 7px; padding: 8px 10px; font-size: 12.5px; margin-top: 10px;
   }
 
-  .pc-reader-header, .pc-reader-content { max-width: 760px; margin-inline: auto; }
+  .pc-reader-header { max-width: 760px; margin-inline: auto; }
+  .pc-reader-content {
+    width: 100%; max-width: var(--reader-max-width, 760px); margin-inline: auto;
+  }
   .pc-reader-header { display: grid; gap: 12px; margin-bottom: 22px; }
   .pc-reader-title { margin: 0; font-size: clamp(1.7rem, 5vw, 2.7rem); line-height: 1.2; overflow-wrap: anywhere; }
   .pc-reader-text {
-    white-space: pre-wrap; overflow-wrap: anywhere; font-size: clamp(1.05rem, 2vw, 1.22rem); line-height: 1.95;
+    font-family: 'Atkinson Hyperlegible', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    white-space: normal; overflow-wrap: anywhere; font-size: var(--reader-font-size, 19px); line-height: var(--reader-line-height, 1.9);
   }
+  .pc-reader-paragraph { margin: 0; }
+  .pc-reader-paragraph + .pc-reader-paragraph { margin-top: 1em; }
   .pc-reader-start-hint {
     margin-bottom: 10px;
     color: var(--ink-dim);
@@ -354,9 +360,9 @@
   .pc-play:disabled, [data-speech-control]:disabled { cursor: not-allowed; opacity: .45; }
   .pc-sleep-timer-panel {
     position: fixed; z-index: 21;
-    left: max(12px, min(var(--sleep-timer-left, 12px), calc(100vw - 324px)));
-    top: max(12px, min(var(--sleep-timer-top, 70px), calc(100dvh - 310px)));
-    width: min(312px, calc(100vw - 24px)); display: grid; gap: 10px;
+    left: var(--sleep-timer-left, 12px); top: var(--sleep-timer-top, 12px);
+    width: min(312px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+    display: grid; gap: 10px; overflow-y: auto; overscroll-behavior: contain;
     padding: 16px; border: 1px solid var(--line); border-radius: 12px;
     background: var(--bg-panel); box-shadow: 0 14px 36px rgba(0,0,0,.18);
   }
@@ -373,6 +379,29 @@
   }
   .pc-sleep-timer-custom:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
   .pc-sleep-timer-error { min-height: 1.4em; color: var(--coral); font-size: 12px; }
+  .pc-reader-settings-trigger {
+    min-width: 44px; min-height: 44px; padding: 8px; display: inline-grid; place-items: center;
+  }
+  .pc-reader-settings-trigger svg { width: 18px; height: 18px; }
+  .pc-reader-settings-panel {
+    position: fixed; z-index: 21;
+    left: var(--reader-settings-left, 12px); top: var(--reader-settings-top, 12px);
+    width: min(288px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+    padding: 16px; display: grid; gap: 12px; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--bg-panel); color: var(--ink);
+    box-shadow: 0 14px 36px rgba(0,0,0,.18);
+  }
+  .pc-reader-settings-title { margin: 0; font-size: 16px; }
+  .pc-reader-settings-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+  .pc-reader-settings-group legend { margin-bottom: 6px; color: var(--ink-dim); font-size: 12px; }
+  .pc-reader-settings-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .pc-reader-settings-choice {
+    min-height: 44px; padding: 7px 6px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg-deep); color: var(--ink-dim); font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .pc-reader-settings-choice[aria-pressed="true"] {
+    border-color: var(--teal); background: color-mix(in srgb, var(--teal) 16%, var(--bg-panel)); color: var(--teal);
+  }
   .pc-term {
     appearance: none; border: 0; border-radius: 4px; padding: 1px 2px;
     font: inherit; line-height: inherit; color: inherit; cursor: pointer;
@@ -671,7 +700,6 @@
     .pc-article-nav-link { padding-inline: 4px; }
     .pc-article-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .pc-article-actions .pc-btn-primary { grid-column: 1 / -1; }
-    .pc-reader-text { line-height: 1.8; }
     .pc-reader-speech { align-items: stretch; }
     .pc-stats-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .pc-dialog-backdrop { padding: 14px; }
@@ -706,6 +734,14 @@
       overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
       border-radius: 14px 14px 0 0;
     }
+    .pc-reader-settings-panel {
+      position: fixed; top: auto; right: 0; bottom: 0; left: 0;
+      width: 100%; max-height: 70vh; max-height: 70dvh; margin: 0;
+      padding-bottom: calc(14px + env(safe-area-inset-bottom));
+      overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+      border-radius: 14px 14px 0 0;
+    }
+    .pc-sleep-timer-custom { font-size: 16px; }
     .pc-reader-popover-actions, .pc-selection-reading { grid-template-columns: 1fr; }
     .pc-aloud-resume-entry {
       display: grid;

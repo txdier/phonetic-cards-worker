@@ -374,6 +374,7 @@ export function createTtsPlayer({
         token !== generation ||
         articleSession !== session ||
         currentIndex !== index ||
+        audio.ended === true ||
         state !== 'speaking'
       ) return;
       state = 'paused';

@@ -142,6 +142,30 @@ test('article playback reuses one audio and changes current only on play', async
   assert.equal(constructions, 1);
 });
 
+test('natural media-end pause event does not publish a paused state', async () => {
+  const audio = new ControlledAudio();
+  const states = [];
+  const player = createTtsPlayer({
+    fetch: async () => cloudResponse(),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+  player.subscribe(next => states.push(next.state));
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.begin();
+  states.length = 0;
+
+  audio.ended = true;
+  audio.onpause?.();
+  audio.onended?.();
+  await audio.waitForSource(2);
+
+  assert.equal(states.includes('paused'), false);
+});
+
 test('replay current sentence targets the audible sentence', async () => {
   const audio = new ControlledAudio();
   const paths = [];

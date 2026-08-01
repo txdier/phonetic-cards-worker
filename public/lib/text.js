@@ -27,6 +27,33 @@ export function splitSentences(value, segmenter = null) {
   return fallbackSentenceSpans(text);
 }
 
+export function splitArticleParagraphs(value, segmenter = null) {
+  const blocks = String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .split(/\n[\t ]*\n+/)
+    .map(block => block.replace(/[\t ]*\n[\t ]*/g, ' ').trim())
+    .filter(Boolean);
+  const paragraphs = [];
+  const sentences = [];
+  let sentenceIndex = 0;
+  let displayOffset = 0;
+
+  for (const text of blocks) {
+    const paragraphSentences = splitSentences(text, segmenter).map(sentence => ({
+      ...sentence,
+      index: sentenceIndex++,
+      start: displayOffset + sentence.start,
+      end: displayOffset + sentence.end
+    }));
+    const paragraph = { index: paragraphs.length, text, sentences: paragraphSentences };
+    paragraphs.push(paragraph);
+    sentences.push(...paragraphSentences);
+    displayOffset += text.length + 2;
+  }
+
+  return { paragraphs, sentences };
+}
+
 export function validateSelection({ text, startSentence, endSentence }) {
   if (!Number.isInteger(startSentence) || !Number.isInteger(endSentence)) {
     return { ok: false, code: 'INVALID_SENTENCE', reason: 'invalid-sentence' };

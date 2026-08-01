@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
 import { createAloudCheckpointStore } from '../public/lib/aloud-checkpoint.js';
+import { READER_PREFERENCES_KEY } from '../public/lib/reader-preferences.js';
 import { createProgressQueue, PROGRESS_QUEUE_KEY } from '../public/lib/reading-session.js';
 import { createPendingView } from '../public/pending-view.js';
 import { createReaderView } from '../public/reader-view.js';
@@ -932,6 +933,123 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     assert.equal(remaining.textContent, '定时结束');
     assert.match(env.root.querySelector('[data-role="speech-status"]').textContent, /定时结束/);
   } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader settings apply global typography preferences and restore focus on dismissal', async () => {
+  const env = setupReader();
+  try {
+    await env.ready();
+    const content = env.root.querySelector('.pc-reader-content');
+    const trigger = env.root.querySelector('[data-action="reader-settings"]');
+    assert.ok(trigger);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.deepEqual([
+      content.style.getPropertyValue('--reader-font-size'),
+      content.style.getPropertyValue('--reader-line-height'),
+      content.style.getPropertyValue('--reader-max-width')
+    ], ['19px', '1.9', '760px']);
+
+    trigger.focus();
+    click(env.window, trigger);
+    let panel = env.root.querySelector('[data-role="reader-settings-panel"]');
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+    assert.equal(panel.getAttribute('role'), 'dialog');
+    assert.equal(
+      panel.querySelector('[data-preference="fontSize"][data-value="medium"]').getAttribute('aria-pressed'),
+      'true'
+    );
+
+    click(env.window, panel.querySelector('[data-preference="fontSize"][data-value="large"]'));
+    click(env.window, panel.querySelector('[data-preference="lineHeight"][data-value="loose"]'));
+    click(env.window, panel.querySelector('[data-preference="measure"][data-value="wide"]'));
+    assert.deepEqual([
+      content.style.getPropertyValue('--reader-font-size'),
+      content.style.getPropertyValue('--reader-line-height'),
+      content.style.getPropertyValue('--reader-max-width')
+    ], ['21px', '2.1', '880px']);
+    assert.deepEqual(JSON.parse(env.window.localStorage.getItem(READER_PREFERENCES_KEY)), {
+      fontSize: 'large', lineHeight: 'loose', measure: 'wide'
+    });
+
+    click(env.window, env.window.document.body);
+    assert.equal(env.root.querySelector('[data-role="reader-settings-panel"]'), null);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(env.window.document.activeElement, trigger);
+
+    click(env.window, trigger);
+    panel = env.root.querySelector('[data-role="reader-settings-panel"]');
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(panel.isConnected, false);
+    assert.equal(env.window.document.activeElement, trigger);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('opening reader settings exits sentence-start selection so one Escape closes the panel', async () => {
+  const env = setupReader({ articleProgress: { last_position_ratio: 0 } });
+  try {
+    await env.ready();
+    const selectionToggle = env.root.querySelector('[data-action="speech-floating-toggle"]');
+    click(env.window, selectionToggle);
+    assert.equal(env.root.classList.contains('pc-reader-start-selecting'), true);
+
+    const settings = env.root.querySelector('[data-action="reader-settings"]');
+    click(env.window, settings);
+    assert.ok(env.root.querySelector('[data-role="reader-settings-panel"]'));
+
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.root.classList.contains('pc-reader-start-selecting'), false);
+    assert.equal(env.root.querySelector('[data-role="reader-settings-panel"]'), null);
+    assert.equal(env.window.document.activeElement, settings);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('desktop sleep timer uses its measured size and repositions within the viewport', async () => {
+  const env = setupReader();
+  const prototype = env.window.HTMLElement.prototype;
+  const originalRect = prototype.getBoundingClientRect;
+  prototype.getBoundingClientRect = function getBoundingClientRect() {
+    if (this.matches?.('[data-role="sleep-timer-panel"]')) {
+      return { left: 0, top: 0, right: 312, bottom: 366, width: 312, height: 366 };
+    }
+    return originalRect.call(this);
+  };
+  try {
+    await env.ready();
+    Object.defineProperty(env.window, 'innerWidth', { configurable: true, value: 1366 });
+    Object.defineProperty(env.window, 'innerHeight', { configurable: true, value: 768 });
+    const timer = env.root.querySelector('[data-action="speech-timer"]');
+    timer.getBoundingClientRect = () => ({ left: 1100, top: 700, bottom: 744 });
+
+    click(env.window, timer);
+    const panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    assert.deepEqual([
+      panel.style.getPropertyValue('--sleep-timer-left'),
+      panel.style.getPropertyValue('--sleep-timer-top')
+    ], ['1042px', '326px']);
+    assert.ok(panel.querySelector('[data-action="speech-timer-cancel"]'));
+
+    Object.defineProperty(env.window, 'innerWidth', { configurable: true, value: 1024 });
+    Object.defineProperty(env.window, 'innerHeight', { configurable: true, value: 600 });
+    env.window.dispatchEvent(new env.window.Event('resize'));
+    assert.deepEqual([
+      panel.style.getPropertyValue('--sleep-timer-left'),
+      panel.style.getPropertyValue('--sleep-timer-top')
+    ], ['700px', '222px']);
+  } finally {
+    prototype.getBoundingClientRect = originalRect;
     env.cleanup();
     env.restore();
   }
@@ -2217,6 +2335,16 @@ test('reader safely renders, prioritizes words, wires lookup speech, and marks o
     assert.deepEqual(restoredTops, [0]);
     assert.equal(env.root.querySelector('.pc-reader-title').textContent, '<img src=x onerror=alert(1)>');
     assert.equal(env.root.querySelector('img'), null);
+    const paragraphs = [...env.root.querySelectorAll('.pc-reader-paragraph')];
+    assert.deepEqual(paragraphs.map(paragraph => paragraph.textContent), [
+      'Deployed safely. Select this phrase.',
+      'Again deploy.'
+    ]);
+    assert.deepEqual(
+      paragraphs.map(paragraph => [...paragraph.querySelectorAll('[data-sentence-index]')]
+        .map(node => node.dataset.sentenceIndex)),
+      [['0', '1'], ['2']]
+    );
     assert.equal(env.root.querySelectorAll('[data-sentence-index]').length, 3);
     assert.deepEqual(
       [...env.root.querySelectorAll('[data-sentence-index]')].map(node => node.dataset.sentenceIndex),
@@ -2257,7 +2385,7 @@ test('reader safely renders, prioritizes words, wires lookup speech, and marks o
     assert.deepEqual(JSON.parse(post.init.body), {
       selectedText: 'Select this phrase',
       normalizedText: 'select this phrase',
-      contextSentence: 'Select this phrase.\n\n'
+      contextSentence: 'Select this phrase.'
     });
     assert.equal(env.root.querySelector('[data-term-id="t2"]').textContent, 'Select this phrase');
   } finally {

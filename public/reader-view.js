@@ -1,8 +1,14 @@
-import { findTermMatches, normalizeTerm, splitSentences, validateSelection } from './lib/text.js';
+import { findTermMatches, normalizeTerm, splitArticleParagraphs, validateSelection } from './lib/text.js';
 import { mountConversionForm } from './pending-view.js';
 import { createReadingSession } from './lib/reading-session.js';
 import { createMediaSessionBridge } from './lib/media-session.js';
 import { createSleepTimer } from './lib/sleep-timer.js';
+import { anchoredPanelPosition } from './lib/floating-panel.js';
+import {
+  loadReaderPreferences,
+  readerPreferenceStyles,
+  saveReaderPreferences
+} from './lib/reader-preferences.js';
 import { renderInlineError, showToast } from './lib/dom.js';
 
 function element(tag, className, text) {
@@ -79,7 +85,11 @@ const POPOVER_ICONS = {
   volume: ['M11 5 6 9H2v6h4l5 4V5z', 'M15.5 8.5a5 5 0 0 1 0 7'],
   play: ['M10 8.5l6 3.5-6 3.5v-7z', 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z'],
   previous: ['M6 5v14', 'M18 6l-8 6 8 6V6z'],
-  replay: ['M7 7h6a6 6 0 1 1-5.4 8.6', 'M7 3v4h4']
+  replay: ['M7 7h6a6 6 0 1 1-5.4 8.6', 'M7 3v4h4'],
+  settings: [
+    'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z',
+    'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'
+  ]
 };
 
 function svgIcon(name, { filled = false } = {}) {
@@ -134,6 +144,7 @@ export function createReaderView({
 }) {
   let mounted = true;
   let article = null;
+  let paragraphs = [];
   let sentences = [];
   let loadVersion = 0;
   let conversionCleanup = null;
@@ -170,8 +181,10 @@ export function createReaderView({
   let speechToolbarObserver = null;
   let startSelectionMode = false;
   let timerPanelTrigger = null;
+  let settingsPanelTrigger = null;
   let timerBackgroundState = [];
   let timerControlState = [];
+  let readerPreferences = loadReaderPreferences(storage);
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
@@ -427,16 +440,99 @@ export function createReaderView({
     const body = element('div', 'pc-reader-text');
     body.dataset.role = 'reader-text';
     const candidates = highlightCandidates(article);
-    for (const sentence of sentences) {
-      if (sentence.index === pausedAloudSentenceIndex) {
-        const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
-        marker.dataset.role = 'aloud-resume-marker';
-        marker.setAttribute('aria-hidden', 'true');
-        body.append(marker);
+    for (const paragraph of paragraphs) {
+      const paragraphNode = element('p', 'pc-reader-paragraph');
+      for (const sentence of paragraph.sentences) {
+        if (sentence.index === pausedAloudSentenceIndex) {
+          const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
+          marker.dataset.role = 'aloud-resume-marker';
+          marker.setAttribute('aria-hidden', 'true');
+          paragraphNode.append(marker);
+        }
+        paragraphNode.append(renderSentence(sentence, candidates));
       }
-      body.append(renderSentence(sentence, candidates));
+      body.append(paragraphNode);
     }
     container.append(body);
+  }
+
+  function applyReaderPreferences() {
+    const content = root.querySelector('.pc-reader-content');
+    if (!content) return;
+    const styles = readerPreferenceStyles(readerPreferences);
+    content.style.setProperty('--reader-font-size', styles.fontSize);
+    content.style.setProperty('--reader-line-height', styles.lineHeight);
+    content.style.setProperty('--reader-max-width', styles.maxWidth);
+  }
+
+  function closeReaderSettings({ restoreFocus = true } = {}) {
+    const panel = root.querySelector('[data-role="reader-settings-panel"]');
+    if (!panel) return;
+    panel.remove();
+    if (settingsPanelTrigger) settingsPanelTrigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && settingsPanelTrigger?.isConnected) settingsPanelTrigger.focus();
+    settingsPanelTrigger = null;
+  }
+
+  function readerSettingGroup({ preference, label, options }) {
+    const group = element('fieldset', 'pc-reader-settings-group');
+    const legend = element('legend', '', label);
+    const choices = element('div', 'pc-reader-settings-choices');
+    for (const [value, text] of options) {
+      const choice = actionButton('reader-preference', text, 'pc-reader-settings-choice');
+      choice.dataset.preference = preference;
+      choice.dataset.value = value;
+      choice.setAttribute('aria-pressed', String(readerPreferences[preference] === value));
+      choices.append(choice);
+    }
+    group.append(legend, choices);
+    return group;
+  }
+
+  function openReaderSettings(trigger) {
+    setStartSelectionMode(false);
+    closeReaderSettings({ restoreFocus: false });
+    settingsPanelTrigger = trigger;
+    trigger.setAttribute('aria-expanded', 'true');
+    const panel = element('section', 'pc-reader-settings-panel');
+    panel.dataset.role = 'reader-settings-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '阅读设置');
+    panel.append(
+      element('h2', 'pc-reader-settings-title', '阅读设置'),
+      readerSettingGroup({
+        preference: 'fontSize', label: '字号',
+        options: [['small', '小'], ['medium', '中'], ['large', '大']]
+      }),
+      readerSettingGroup({
+        preference: 'lineHeight', label: '行距',
+        options: [['compact', '紧凑'], ['comfortable', '舒适'], ['loose', '宽松']]
+      }),
+      readerSettingGroup({
+        preference: 'measure', label: '版心',
+        options: [['narrow', '窄'], ['medium', '中'], ['wide', '宽']]
+      })
+    );
+    root.append(panel);
+    positionAnchoredPanel(panel, trigger, '--reader-settings-left', '--reader-settings-top');
+    panel.querySelector('[aria-pressed="true"]')?.focus();
+  }
+
+  function updateReaderPreference(target) {
+    const { preference, value } = target.dataset;
+    if (!Object.hasOwn(readerPreferences, preference)) return;
+    const next = { ...readerPreferences, [preference]: value };
+    if (!saveReaderPreferences(storage, next)) {
+      const styles = readerPreferenceStyles(next);
+      const accepted = Object.values(styles).every(Boolean);
+      if (!accepted) return;
+    }
+    readerPreferences = next;
+    applyReaderPreferences();
+    const panel = target.closest('[data-role="reader-settings-panel"]');
+    for (const choice of panel?.querySelectorAll(`[data-preference="${preference}"]`) || []) {
+      choice.setAttribute('aria-pressed', String(choice === target));
+    }
   }
 
   function speechToolbar() {
@@ -500,6 +596,15 @@ export function createReaderView({
     timerRemaining.setAttribute('aria-live', 'polite');
     timerRemaining.hidden = true;
     toolbar.append(timerRemaining);
+    const settings = iconButton(
+      'reader-settings',
+      '阅读设置',
+      'settings',
+      'pc-btn-ghost pc-reader-settings-trigger'
+    );
+    settings.setAttribute('aria-expanded', 'false');
+    settings.setAttribute('aria-haspopup', 'dialog');
+    toolbar.append(settings);
     const status = element('div', 'pc-speech-status');
     status.dataset.role = 'speech-status';
     status.setAttribute('role', 'status');
@@ -939,7 +1044,35 @@ export function createReaderView({
     timerPanelTrigger = null;
   }
 
+  function positionAnchoredPanel(panel, trigger, leftProperty, topProperty) {
+    if (!panel || !trigger?.isConnected) return;
+    const position = anchoredPanelPosition({
+      anchorRect: trigger.getBoundingClientRect?.(),
+      panelRect: panel.getBoundingClientRect?.(),
+      viewportWidth: window.innerWidth || document.documentElement.clientWidth,
+      viewportHeight: window.innerHeight || document.documentElement.clientHeight
+    });
+    panel.style.setProperty(leftProperty, `${position.left}px`);
+    panel.style.setProperty(topProperty, `${position.top}px`);
+  }
+
+  function positionOpenPanels() {
+    positionAnchoredPanel(
+      root.querySelector('[data-role="sleep-timer-panel"]'),
+      timerPanelTrigger,
+      '--sleep-timer-left',
+      '--sleep-timer-top'
+    );
+    positionAnchoredPanel(
+      root.querySelector('[data-role="reader-settings-panel"]'),
+      settingsPanelTrigger,
+      '--reader-settings-left',
+      '--reader-settings-top'
+    );
+  }
+
   function openTimerPanel(trigger) {
+    closeReaderSettings({ restoreFocus: false });
     closeTimerPanel({ restoreFocus: false });
     timerPanelTrigger = trigger;
     const panel = element('section', 'pc-sleep-timer-panel');
@@ -974,12 +1107,8 @@ export function createReaderView({
     error.setAttribute('aria-live', 'polite');
     const cancel = actionButton('speech-timer-cancel', '取消定时');
     panel.append(title, presets, customLabel, customSet, error, cancel);
-    const rect = trigger.getBoundingClientRect?.();
-    if (rect) {
-      panel.style.setProperty('--sleep-timer-left', `${rect.left}px`);
-      panel.style.setProperty('--sleep-timer-top', `${rect.bottom + 8}px`);
-    }
     root.append(panel);
+    positionAnchoredPanel(panel, trigger, '--sleep-timer-left', '--sleep-timer-top');
     setTimerDialogState(true, panel);
     syncSpeechControls();
     syncTimerControls();
@@ -1196,6 +1325,7 @@ export function createReaderView({
     const popoverHost = element('div', 'pc-popover-host');
     popoverHost.dataset.role = 'popover-host';
     root.append(header, content, selectionHost, popoverHost, floatingSpeechControls());
+    applyReaderPreferences();
     if (!tts) speech.load(sentences.map(sentence => sentence.text));
     restorePosition();
     observeSpeechToolbar();
@@ -1212,7 +1342,9 @@ export function createReaderView({
       const next = await api(`/api/articles/${encodeURIComponent(articleId)}`);
       if (!isCurrent(version)) return;
       article = next;
-      sentences = splitSentences(article.body);
+      const parsedBody = splitArticleParagraphs(article.body);
+      paragraphs = parsedBody.paragraphs;
+      sentences = parsedBody.sentences;
       const resumeState = resolveResumeState();
       setSavedAloudPosition(
         resumeState.position.sentenceIndex,
@@ -1658,6 +1790,11 @@ export function createReaderView({
     if (action === 'speech-timer' || action === 'speech-floating-timer') {
       openTimerPanel(target);
     }
+    if (action === 'reader-settings') {
+      if (root.querySelector('[data-role="reader-settings-panel"]')) closeReaderSettings();
+      else openReaderSettings(target);
+    }
+    if (action === 'reader-preference') updateReaderPreference(target);
     if (action === 'speech-timer-set') {
       setSleepTimer(target);
     }
@@ -1848,6 +1985,11 @@ export function createReaderView({
       closeTimerPanel();
       return;
     }
+    if (root.querySelector('[data-role="reader-settings-panel"]')) {
+      event.preventDefault();
+      closeReaderSettings();
+      return;
+    }
     if (root.querySelector('[data-role="selection-action"]')) {
       event.preventDefault();
       closeSelection();
@@ -1871,6 +2013,14 @@ export function createReaderView({
       closeTimerPanel();
       return;
     }
+    const settingsPanel = root.querySelector('[data-role="reader-settings-panel"]');
+    if (
+      settingsPanel && !settingsPanel.contains(event.target)
+      && !settingsPanelTrigger?.contains?.(event.target)
+    ) {
+      closeReaderSettings();
+      return;
+    }
     const panel = root.querySelector('[data-role="selection-action"], [data-role="term-popover"], [data-role="conversion-panel"]');
     if (
       !panel || panel.contains(event.target) || popoverTrigger?.contains?.(event.target)
@@ -1892,6 +2042,7 @@ export function createReaderView({
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('selectionchange', onSelectionChange);
   window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', positionOpenPanels);
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
   document.addEventListener('visibilitychange', onVisibilityChange);
@@ -1949,6 +2100,7 @@ export function createReaderView({
     saveProgress();
     mounted = false;
     closeTimerPanel({ restoreFocus: false });
+    closeReaderSettings({ restoreFocus: false });
     document.removeEventListener('selectionchange', onSelectionChange);
     if (selectionTimer !== null) runtime.clearTimeout(selectionTimer);
     selectionTimer = null;
@@ -1976,6 +2128,7 @@ export function createReaderView({
     document.removeEventListener('click', onDocumentClick);
     document.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('scroll', onScroll);
+    window.removeEventListener('resize', positionOpenPanels);
     window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('pageshow', onPageShow);
     document.removeEventListener('visibilitychange', onVisibilityChange);

@@ -2,11 +2,44 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeTerm,
+  splitArticleParagraphs,
   splitSentences,
   validateSelection,
   findTermMatches,
   containsNormalizedTerm
 } from '../public/lib/text.js';
+
+test('article paragraphs normalize line endings, collapse soft wraps, and keep global sentence indexes', () => {
+  const parsed = splitArticleParagraphs(
+    '\r\nFirst line\r\nwraps here. Next sentence.\r\n\r\n  \r\nSecond paragraph!\n\n',
+    { segment: null }
+  );
+
+  assert.deepEqual(parsed.paragraphs.map(paragraph => ({
+    text: paragraph.text,
+    sentences: paragraph.sentences.map(({ index, text }) => ({ index, text }))
+  })), [
+    {
+      text: 'First line wraps here. Next sentence.',
+      sentences: [
+        { index: 0, text: 'First line wraps here. ' },
+        { index: 1, text: 'Next sentence.' }
+      ]
+    },
+    {
+      text: 'Second paragraph!',
+      sentences: [{ index: 2, text: 'Second paragraph!' }]
+    }
+  ]);
+  assert.deepEqual(parsed.sentences, parsed.paragraphs.flatMap(paragraph => paragraph.sentences));
+});
+
+test('article paragraphs discard whitespace-only content', () => {
+  assert.deepEqual(splitArticleParagraphs(' \r\n\t\r\n ', { segment: null }), {
+    paragraphs: [],
+    sentences: []
+  });
+});
 
 test('normalizes case and internal whitespace', () => {
   assert.equal(normalizeTerm('  Take   Part In  '), 'take part in');

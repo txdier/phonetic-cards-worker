@@ -27,6 +27,48 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
   assert.doesNotMatch(selectionReading, /(?:^|[;\s])(?:(?:width|min-width)\s*:|position\s*:\s*(?:fixed|absolute)|(?:left|right)\s*:)/);
 });
 
+test('mobile sleep timer input prevents focus zoom', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\),\s*\(max-width:\s*900px\)\s+and\s+\(pointer:\s*coarse\)\s*\{[\s\S]*?\.pc-sleep-timer-custom\s*\{[^}]*font-size:\s*16px/
+  );
+});
+
+test('desktop sleep timer uses measured coordinates with a scroll-safe viewport limit', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const panel = css.match(/\.pc-sleep-timer-panel\s*\{([^}]*)\}/)?.[1];
+  assert.ok(panel);
+  assert.match(panel, /left:\s*var\(--sleep-timer-left,\s*12px\)/);
+  assert.match(panel, /top:\s*var\(--sleep-timer-top,\s*12px\)/);
+  assert.match(panel, /max-height:\s*calc\(100dvh\s*-\s*24px\)/);
+  assert.match(panel, /overflow-y:\s*auto/);
+  assert.doesNotMatch(panel, /310px/);
+});
+
+test('article reader uses normal-flow paragraphs with themed typography', async () => {
+  const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(html, /family=Atkinson\+Hyperlegible:wght@400;700/);
+  assert.match(css, /\.pc-reader-text\s*\{[^}]*font-family:\s*'Atkinson Hyperlegible',\s*'Noto Sans SC'/);
+  assert.match(css, /\.pc-reader-text\s*\{[^}]*white-space:\s*normal/);
+  assert.match(css, /\.pc-reader-paragraph\s*\{[^}]*margin:\s*0/);
+  assert.match(css, /\.pc-reader-paragraph\s*\+\s*\.pc-reader-paragraph\s*\{[^}]*margin-top:\s*1em/);
+});
+
+test('reader settings use theme tokens, responsive measure, and accessible controls', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.pc-reader-content\s*\{[^}]*max-width:\s*var\(--reader-max-width,\s*760px\)/);
+  assert.match(css, /\.pc-reader-settings-trigger\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px/);
+  const panel = css.match(/\.pc-reader-settings-panel\s*\{([^}]*)\}/)?.[1];
+  assert.ok(panel);
+  assert.match(panel, /background:\s*var\(--bg-panel\)/);
+  assert.match(panel, /border:\s*1px solid var\(--line\)/);
+  assert.match(panel, /color:\s*var\(--ink\)/);
+  assert.match(panel, /overflow-y:\s*auto/);
+  assert.match(css, /\.pc-reader-settings-choice\[aria-pressed="true"\]\s*\{[^}]*var\(--teal\)/);
+});
+
 test('tag checkboxes render as compact centered color chips', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const choice = css.match(/\.pc-tag-choice\s*\{([^}]*)\}/)?.[1];
