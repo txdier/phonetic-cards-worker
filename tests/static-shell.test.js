@@ -48,13 +48,46 @@ test('tag checkboxes render as compact centered color chips', async () => {
   assert.match(checkbox, /clip-path:\s*inset\(50%\)/);
   assert.ok(checked, 'checked tag choices should have a color state');
   assert.match(checked, /border-color:\s*var\(--teal\)/);
-  assert.match(checked, /background:\s*color-mix/);
-  assert.match(checked, /color:\s*color-mix/);
-  assert.doesNotMatch(checked, /font-weight/);
+  assert.match(checked, /background:\s*color-mix\(in srgb,\s*var\(--teal\)\s+16%,\s*var\(--bg-panel\)\)/);
+  assert.match(checked, /color:\s*color-mix\(in srgb,\s*var\(--teal\)\s+78%,\s*var\(--ink\)\)/);
+  assert.deepEqual(
+    checked.split(';').map((declaration) => declaration.trim().match(/^([\w-]+)\s*:/)?.[1]).filter(Boolean),
+    ['border-color', 'background', 'color'],
+    'checked tag choices should use only color declarations'
+  );
   assert.doesNotMatch(css, /\.pc-tag-choice(?::has\(input:checked\))?::before\s*\{/);
   assert.match(css, /\.pc-tag-choice:has\(input:focus-visible\)\s*\{[^}]*outline:/);
   assert.match(css, /\.pc-form input:not\(\[type="checkbox"\]\),\s*\.pc-form textarea/);
   assert.match(css, /\.pc-form label:not\(\.pc-tag-choice\)\s*\{/);
+});
+
+test('checked tag chip colors meet WCAG contrast in both shipped themes', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const themeRules = [
+    css.match(/#pc-root\s*\{([^}]*)\}/)?.[1],
+    css.match(/#pc-root\.pc-light\s*\{([^}]*)\}/)?.[1],
+  ];
+  const toRgb = (hex) => hex.match(/[\da-f]{2}/gi).map((value) => Number.parseInt(value, 16));
+  const token = (rule, name) => rule.match(new RegExp(`${name}:\\s*(#[\\da-fA-F]{6})`))?.[1];
+  const mix = (foreground, background, percentage) => foreground.map(
+    (value, index) => Math.round(value * percentage + background[index] * (1 - percentage))
+  );
+  const luminance = (color) => color.map((value) => {
+    const channel = value / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  }).reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const contrast = (first, second) => {
+    const [lighter, darker] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+    return (lighter + 0.05) / (darker + 0.05);
+  };
+
+  for (const rule of themeRules) {
+    assert.ok(rule, 'each shipped theme should define a token rule');
+    const teal = toRgb(token(rule, '--teal'));
+    const ink = toRgb(token(rule, '--ink'));
+    const panel = toRgb(token(rule, '--bg-panel'));
+    assert.ok(contrast(mix(teal, ink, 0.78), mix(teal, panel, 0.16)) >= 4.5);
+  }
 });
 
 test('disabled tag chips do not advertise interaction', async () => {
