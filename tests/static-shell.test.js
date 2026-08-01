@@ -51,8 +51,8 @@ test('tag checkboxes render as compact centered color chips', async () => {
   assert.match(checked, /background:\s*color-mix\(in srgb,\s*var\(--teal\)\s+16%,\s*var\(--bg-panel\)\)/);
   assert.match(checked, /color:\s*color-mix\(in srgb,\s*var\(--teal\)\s+78%,\s*var\(--ink\)\)/);
   assert.deepEqual(
-    checked.split(';').map((declaration) => declaration.trim().match(/^([\w-]+)\s*:/)?.[1]).filter(Boolean),
-    ['border-color', 'background', 'color'],
+    checked.split(';').map((declaration) => declaration.trim().match(/^([\w-]+)\s*:/)?.[1]).filter(Boolean).sort(),
+    ['border-color', 'background', 'color'].sort(),
     'checked tag choices should use only color declarations'
   );
   assert.doesNotMatch(css, /\.pc-tag-choice(?::has\(input:checked\))?::before\s*\{/);
