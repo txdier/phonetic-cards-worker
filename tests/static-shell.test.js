@@ -27,23 +27,31 @@ test('styles protect small screens, touch targets, focus, and reduced motion', a
   assert.doesNotMatch(selectionReading, /(?:^|[;\s])(?:(?:width|min-width)\s*:|position\s*:\s*(?:fixed|absolute)|(?:left|right)\s*:)/);
 });
 
-test('tag checkboxes render as accessible selected chips', async () => {
+test('tag checkboxes render as compact centered color chips', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const choice = css.match(/\.pc-tag-choice\s*\{([^}]*)\}/)?.[1];
   const checkbox = css.match(/\.pc-tag-choice input\[type="checkbox"\]\s*\{([^}]*)\}/)?.[1];
+  const checked = css.match(/\.pc-tag-choice:has\(input:checked\)\s*\{([^}]*)\}/)?.[1];
 
   assert.ok(choice, 'tag choices should have a style rule');
-  assert.match(choice, /min-height:\s*44px/);
+  assert.match(choice, /min-height:\s*32px/);
+  assert.match(choice, /padding:\s*4px 11px/);
+  assert.match(choice, /align-items:\s*center/);
+  assert.match(choice, /justify-content:\s*center/);
   assert.match(choice, /border-radius:\s*999px/);
-  assert.match(choice, /cursor:\s*pointer/);
   assert.match(choice, /max-width:\s*100%/);
   assert.match(choice, /white-space:\s*nowrap/);
   assert.match(choice, /overflow:\s*hidden/);
+  assert.match(choice, /cursor:\s*pointer/);
   assert.ok(checkbox, 'native tag checkboxes should have a visually hidden rule');
   assert.match(checkbox, /position:\s*absolute/);
   assert.match(checkbox, /clip-path:\s*inset\(50%\)/);
-  assert.match(css, /\.pc-tag-choice:has\(input:checked\)\s*\{[^}]*border-color:\s*var\(--teal\)/);
-  assert.match(css, /\.pc-tag-choice:has\(input:checked\)::before\s*\{[^}]*content:\s*"✓"/);
+  assert.ok(checked, 'checked tag choices should have a color state');
+  assert.match(checked, /border-color:\s*var\(--teal\)/);
+  assert.match(checked, /background:\s*color-mix/);
+  assert.match(checked, /color:\s*color-mix/);
+  assert.doesNotMatch(checked, /font-weight/);
+  assert.doesNotMatch(css, /\.pc-tag-choice(?::has\(input:checked\))?::before\s*\{/);
   assert.match(css, /\.pc-tag-choice:has\(input:focus-visible\)\s*\{[^}]*outline:/);
   assert.match(css, /\.pc-form input:not\(\[type="checkbox"\]\),\s*\.pc-form textarea/);
   assert.match(css, /\.pc-form label:not\(\.pc-tag-choice\)\s*\{/);

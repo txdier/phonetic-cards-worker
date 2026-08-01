@@ -526,8 +526,8 @@
   }
   .pc-tag-field { display: block; border: 0; padding: 0; }
   .pc-tag-choice {
-    position: relative; display: inline-flex; align-items: center; gap: 6px;
-    min-width: 0; max-width: 100%; min-height: 44px; margin: 0; padding: 8px 12px;
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    min-width: 0; max-width: 100%; min-height: 32px; margin: 0; padding: 4px 11px;
     border: 1px solid var(--line); border-radius: 999px;
     background: var(--bg-panel); color: var(--ink-dim);
     font-size: 12.5px; line-height: 1.2; white-space: nowrap;
@@ -537,12 +537,6 @@
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
     overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
     white-space: nowrap; border: 0;
-  }
-  .pc-tag-choice::before {
-    content: ""; display: inline-grid; place-items: center; flex: 0 0 14px;
-    width: 14px; height: 14px; border-radius: 50%;
-    color: var(--teal); font-size: 11px; font-weight: 800; line-height: 1;
-    opacity: 0;
   }
   .pc-tag-choice:not(:has(input:disabled)):hover {
     border-color: color-mix(in srgb, var(--teal) 65%, var(--line));
@@ -558,10 +552,6 @@
     border-color: var(--teal);
     background: color-mix(in srgb, var(--teal) 16%, var(--bg-panel));
     color: color-mix(in srgb, var(--teal) 78%, var(--ink));
-    font-weight: 600;
-  }
-  .pc-tag-choice:has(input:checked)::before {
-    content: "✓"; opacity: 1;
   }
   .pc-tag-choice:has(input:focus-visible) {
     outline: 3px solid color-mix(in srgb, var(--teal) 45%, transparent);
