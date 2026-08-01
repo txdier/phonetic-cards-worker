@@ -31,7 +31,7 @@ export function splitArticleParagraphs(value, segmenter = null) {
   const blocks = String(value || '')
     .replace(/\r\n?/g, '\n')
     .split(/\n[\t ]*\n+/)
-    .map(block => block.replace(/[\t ]*\n[\t ]*/g, ' ').trim())
+    .map(block => block.split('\n').map(line => line.trim()).join('\n').trim())
     .filter(Boolean);
   const paragraphs = [];
   const sentences = [];

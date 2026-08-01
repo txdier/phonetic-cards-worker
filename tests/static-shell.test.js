@@ -51,7 +51,7 @@ test('article reader uses normal-flow paragraphs with themed typography', async 
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   assert.match(html, /family=Atkinson\+Hyperlegible:wght@400;700/);
   assert.match(css, /\.pc-reader-text\s*\{[^}]*font-family:\s*'Atkinson Hyperlegible',\s*'Noto Sans SC'/);
-  assert.match(css, /\.pc-reader-text\s*\{[^}]*white-space:\s*normal/);
+  assert.match(css, /\.pc-reader-text\s*\{[^}]*white-space:\s*pre-line/);
   assert.match(css, /\.pc-reader-paragraph\s*\{[^}]*margin:\s*0/);
   assert.match(css, /\.pc-reader-paragraph\s*\+\s*\.pc-reader-paragraph\s*\{[^}]*margin-top:\s*1em/);
 });

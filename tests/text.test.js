@@ -9,7 +9,7 @@ import {
   containsNormalizedTerm
 } from '../public/lib/text.js';
 
-test('article paragraphs normalize line endings, collapse soft wraps, and keep global sentence indexes', () => {
+test('article paragraphs normalize line endings, preserve single line breaks, and keep global sentence indexes', () => {
   const parsed = splitArticleParagraphs(
     '\r\nFirst line\r\nwraps here. Next sentence.\r\n\r\n  \r\nSecond paragraph!\n\n',
     { segment: null }
@@ -20,9 +20,9 @@ test('article paragraphs normalize line endings, collapse soft wraps, and keep g
     sentences: paragraph.sentences.map(({ index, text }) => ({ index, text }))
   })), [
     {
-      text: 'First line wraps here. Next sentence.',
+      text: 'First line\nwraps here. Next sentence.',
       sentences: [
-        { index: 0, text: 'First line wraps here. ' },
+        { index: 0, text: 'First line\nwraps here. ' },
         { index: 1, text: 'Next sentence.' }
       ]
     },

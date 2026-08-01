@@ -271,7 +271,7 @@
   .pc-reader-title { margin: 0; font-size: clamp(1.7rem, 5vw, 2.7rem); line-height: 1.2; overflow-wrap: anywhere; }
   .pc-reader-text {
     font-family: 'Atkinson Hyperlegible', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    white-space: normal; overflow-wrap: anywhere; font-size: var(--reader-font-size, 19px); line-height: var(--reader-line-height, 1.9);
+    white-space: pre-line; overflow-wrap: anywhere; font-size: var(--reader-font-size, 19px); line-height: var(--reader-line-height, 1.9);
   }
   .pc-reader-paragraph { margin: 0; }
   .pc-reader-paragraph + .pc-reader-paragraph { margin-top: 1em; }
