@@ -96,6 +96,26 @@ test('translation toolbar and panel reuse reader settings visual and mobile patt
   assert.match(mobilePanel, /padding-bottom:\s*calc\(14px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
 });
 
+test('sentence translation slots reserve stable space without clamping long translations', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const paragraph = css.match(/\.pc-reader-paragraph-sentence-mode\s*\{([^}]*)\}/)?.[1];
+  const unit = css.match(/\.pc-reader-sentence-unit\s*\{([^}]*)\}/)?.[1];
+  const slot = css.match(/\.pc-sentence-translation-slot\s*\{([^}]*)\}/)?.[1];
+  const action = css.match(/\.pc-sentence-translation-action\s*\{([^}]*)\}/)?.[1];
+  const translated = css.match(/\.pc-sentence-translation-text\s*\{([^}]*)\}/)?.[1];
+
+  assert.match(paragraph || '', /display:\s*grid/);
+  assert.match(paragraph || '', /gap:\s*\.55em/);
+  assert.match(unit || '', /display:\s*grid/);
+  assert.match(slot || '', /min-height:\s*calc\(2\s*\*\s*1\.75em\s*\+\s*12px\)/);
+  assert.match(action || '', /width:\s*100%/);
+  assert.match(action || '', /min-height:\s*44px/);
+  assert.match(translated || '', /line-height:\s*1\.75/);
+  assert.match(translated || '', /font-family:\s*'Noto Sans SC'/);
+  assert.doesNotMatch(slot || '', /(?:^|[;\s])height\s*:/);
+  assert.doesNotMatch(translated || '', /line-clamp|overflow:\s*hidden|max-height/);
+});
+
 test('tag checkboxes render as compact centered color chips', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const choice = css.match(/\.pc-tag-choice\s*\{([^}]*)\}/)?.[1];

@@ -276,6 +276,23 @@
   }
   .pc-reader-paragraph { margin: 0; }
   .pc-reader-paragraph + .pc-reader-paragraph { margin-top: 1em; }
+  .pc-reader-paragraph-sentence-mode { display: grid; gap: .55em; }
+  .pc-reader-sentence-unit { display: grid; gap: 4px; }
+  .pc-sentence-translation-slot {
+    min-height: calc(2 * 1.75em + 12px); padding: 6px 10px; border-radius: 8px;
+    color: var(--ink-dim); background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
+  }
+  .pc-sentence-translation-action {
+    width: 100%; min-height: 44px; border: 0; background: transparent;
+    color: inherit; text-align: left; cursor: pointer; font: inherit;
+  }
+  .pc-sentence-translation-action:disabled { cursor: wait; opacity: .7; }
+  .pc-sentence-translation-action:focus-visible { outline: 3px solid var(--teal); outline-offset: -3px; }
+  .pc-sentence-translation-text {
+    margin: 0; color: var(--ink-dim); line-height: 1.75;
+    font-family: 'Noto Sans SC', sans-serif;
+  }
+  .pc-sentence-translation-error { color: var(--coral); font-size: 12px; }
   .pc-reader-start-hint {
     margin-bottom: 10px;
     color: var(--ink-dim);

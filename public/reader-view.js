@@ -79,7 +79,7 @@ function highlightCandidates(article) {
 function sentenceNodeFor(node, root) {
   let current = node?.nodeType === 3 ? node.parentElement : node;
   while (current && current !== root) {
-    if (current.dataset?.sentenceIndex != null) return current;
+    if (current.matches?.('.pc-reader-sentence[data-sentence-index]')) return current;
     current = current.parentElement;
   }
   return null;
@@ -177,6 +177,12 @@ export function createReaderView({
   let sentences = [];
   let articleTranslation = null;
   let translationMode = loadTranslationMode(storage);
+  let sentenceTranslations = new Map();
+  const sentenceTranslationStates = new Map();
+  const sentenceTranslationGenerations = new Map();
+  let sentenceTranslationsLoaded = false;
+  let sentenceTranslationsLoading = false;
+  let sentenceTranslationsLoadGeneration = 0;
   let translationBusy = false;
   let articleTranslationGeneration = 0;
   let selectionTranslationGeneration = 0;
@@ -475,20 +481,182 @@ export function createReaderView({
     return sentenceNode;
   }
 
+  function sentenceTranslationStatus(sentenceIndex) {
+    const state = sentenceTranslationStates.get(sentenceIndex);
+    if (state?.status) return state.status;
+    return sentenceTranslations.has(sentenceIndex) ? 'translated' : 'idle';
+  }
+
+  function fillSentenceTranslationSlot(slot, sentenceIndex) {
+    const cached = sentenceTranslations.get(sentenceIndex);
+    const state = sentenceTranslationStates.get(sentenceIndex);
+    const status = sentenceTranslationStatus(sentenceIndex);
+    slot.dataset.state = status;
+    slot.replaceChildren();
+
+    const action = cached ? 'refresh-sentence-translation' : 'translate-sentence';
+    const label = status === 'loading'
+      ? (cached ? '正在重新翻译…' : '翻译中…')
+      : status === 'error'
+        ? (cached ? '重试重新翻译' : '重试翻译')
+        : (cached ? '重新翻译' : '翻译本句');
+    const button = actionButton(action, label, 'pc-sentence-translation-action');
+    button.disabled = status === 'loading';
+
+    if (cached) {
+      button.replaceChildren();
+      button.setAttribute('aria-label', label);
+      const translated = element('p', 'pc-sentence-translation-text', cached.translation);
+      translated.dataset.role = 'sentence-translation';
+      button.append(translated);
+    }
+
+    if (status === 'error') {
+      const error = element(
+        'span', 'pc-sentence-translation-error', state?.error || '本句翻译暂不可用，请重试'
+      );
+      error.dataset.role = 'sentence-translation-error';
+      error.setAttribute('role', 'alert');
+      if (cached) button.append(error);
+      else slot.append(error);
+    }
+    slot.append(button);
+  }
+
+  function renderSentenceTranslationSlot(sentence) {
+    const slot = element('div', 'pc-sentence-translation-slot');
+    slot.dataset.role = 'sentence-translation-slot';
+    slot.dataset.sentenceIndex = String(sentence.index);
+    slot.setAttribute('aria-live', 'polite');
+    fillSentenceTranslationSlot(slot, sentence.index);
+    return slot;
+  }
+
+  function syncSentenceTranslationSlot(sentenceIndex) {
+    if (!mounted || translationMode !== 'sentence') return;
+    const slot = root.querySelector(
+      `[data-role="sentence-translation-slot"][data-sentence-index="${sentenceIndex}"]`
+    );
+    if (slot) fillSentenceTranslationSlot(slot, sentenceIndex);
+  }
+
+  function syncSentenceTranslationSlots() {
+    if (!mounted || translationMode !== 'sentence') return;
+    for (const slot of root.querySelectorAll('[data-role="sentence-translation-slot"]')) {
+      const sentenceIndex = Number(slot.dataset.sentenceIndex);
+      if (Number.isInteger(sentenceIndex)) fillSentenceTranslationSlot(slot, sentenceIndex);
+    }
+  }
+
+  async function sentenceSourceHash(text) {
+    const normalized = String(text ?? '').normalize('NFKC').trim();
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+    return [...new Uint8Array(digest)]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function loadSentenceTranslations() {
+    if (sentenceTranslationsLoaded || sentenceTranslationsLoading || !article) return;
+    sentenceTranslationsLoading = true;
+    const generation = ++sentenceTranslationsLoadGeneration;
+    try {
+      const result = await api(
+        `/api/articles/${encodeURIComponent(articleId)}/sentence-translations`
+      );
+      if (!mounted || generation !== sentenceTranslationsLoadGeneration) return;
+      const restored = new Map((result?.sentences || [])
+        .filter(item => Number.isInteger(item?.sentenceIndex))
+        .map(item => [item.sentenceIndex, {
+          sourceHash: item.sourceHash,
+          translation: item.translation
+        }]));
+      sentenceTranslations = new Map([...restored, ...sentenceTranslations]);
+      sentenceTranslationsLoaded = true;
+      syncSentenceTranslationSlots();
+    } catch (error) {
+      if (mounted && generation === sentenceTranslationsLoadGeneration) {
+        showError(error.message || '句子翻译缓存暂不可用');
+      }
+    } finally {
+      if (generation === sentenceTranslationsLoadGeneration) {
+        sentenceTranslationsLoading = false;
+      }
+    }
+  }
+
+  async function translateSentence(sentenceIndex, refresh) {
+    if (!Number.isInteger(sentenceIndex) || !sentences[sentenceIndex]) return;
+    const generation = (sentenceTranslationGenerations.get(sentenceIndex) || 0) + 1;
+    sentenceTranslationGenerations.set(sentenceIndex, generation);
+    sentenceTranslationStates.set(sentenceIndex, { status: 'loading', error: '' });
+    syncSentenceTranslationSlot(sentenceIndex);
+    try {
+      const sourceHash = await sentenceSourceHash(sentences[sentenceIndex].text);
+      const result = await api(
+        `/api/articles/${encodeURIComponent(articleId)}/sentence-translations`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ sentenceIndex, sourceHash, refresh })
+        }
+      );
+      if (!mounted || sentenceTranslationGenerations.get(sentenceIndex) !== generation) return;
+      sentenceTranslations.set(sentenceIndex, {
+        sourceHash: result?.sourceHash || sourceHash,
+        translation: String(result?.translation ?? '')
+      });
+      sentenceTranslationStates.set(sentenceIndex, { status: 'translated', error: '' });
+      syncSentenceTranslationSlot(sentenceIndex);
+    } catch (error) {
+      if (!mounted || sentenceTranslationGenerations.get(sentenceIndex) !== generation) return;
+      sentenceTranslationStates.set(sentenceIndex, {
+        status: 'error',
+        error: error.message || '本句翻译暂不可用，请重试'
+      });
+      syncSentenceTranslationSlot(sentenceIndex);
+    }
+  }
+
+  function suspendSentenceTranslationRequests() {
+    for (const [sentenceIndex, state] of sentenceTranslationStates) {
+      if (state.status !== 'loading') continue;
+      sentenceTranslationGenerations.set(
+        sentenceIndex,
+        (sentenceTranslationGenerations.get(sentenceIndex) || 0) + 1
+      );
+      sentenceTranslationStates.set(sentenceIndex, {
+        status: sentenceTranslations.has(sentenceIndex) ? 'translated' : 'idle',
+        error: ''
+      });
+    }
+  }
+
   function renderBody(container) {
     const body = element('div', 'pc-reader-text');
     body.dataset.role = 'reader-text';
     const candidates = highlightCandidates(article);
     for (const paragraph of paragraphs) {
-      const paragraphNode = element('p', 'pc-reader-paragraph');
+      const sentenceMode = translationMode === 'sentence';
+      const paragraphNode = element(
+        sentenceMode ? 'div' : 'p',
+        sentenceMode
+          ? 'pc-reader-paragraph pc-reader-paragraph-sentence-mode'
+          : 'pc-reader-paragraph'
+      );
       for (const sentence of paragraph.sentences) {
+        const sentenceUnit = sentenceMode
+          ? element('div', 'pc-reader-sentence-unit')
+          : paragraphNode;
         if (sentence.index === pausedAloudSentenceIndex) {
           const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
           marker.dataset.role = 'aloud-resume-marker';
           marker.setAttribute('aria-hidden', 'true');
-          paragraphNode.append(marker);
+          sentenceUnit.append(marker);
         }
-        paragraphNode.append(renderSentence(sentence, candidates));
+        sentenceUnit.append(renderSentence(sentence, candidates));
+        if (sentenceMode) {
+          sentenceUnit.append(renderSentenceTranslationSlot(sentence));
+          paragraphNode.append(sentenceUnit);
+        }
       }
       body.append(paragraphNode);
       const translated = translationMode === 'full'
@@ -657,10 +825,14 @@ export function createReaderView({
       await translateArticle({ action: 'translation-mode', mode: 'full' });
       if (!articleTranslation) return;
     }
+    if (translationMode === 'sentence' && mode !== 'sentence') {
+      suspendSentenceTranslationRequests();
+    }
     translationMode = mode;
     saveTranslationMode(storage, mode);
     closeTranslationPanel({ restoreFocus: false });
     render();
+    if (mode === 'sentence') void loadSentenceTranslations();
   }
 
   async function refreshArticleTranslation() {
@@ -1129,7 +1301,9 @@ export function createReaderView({
     pausedAloudSentenceIndex = nextIndex;
     root.querySelector('[data-role="aloud-resume-marker"]')?.remove();
     if (Number.isInteger(pausedAloudSentenceIndex)) {
-      const sentence = root.querySelector(`[data-sentence-index="${pausedAloudSentenceIndex}"]`);
+      const sentence = root.querySelector(
+        `.pc-reader-sentence[data-sentence-index="${pausedAloudSentenceIndex}"]`
+      );
       if (sentence) {
         const marker = element('span', 'pc-aloud-resume-marker', '上次暂停');
         marker.dataset.role = 'aloud-resume-marker';
@@ -1411,7 +1585,7 @@ export function createReaderView({
   }
 
   function locateSentence(index) {
-    const sentence = root.querySelector(`[data-sentence-index="${index}"]`);
+    const sentence = root.querySelector(`.pc-reader-sentence[data-sentence-index="${index}"]`);
     if (!sentence) return;
     sentence.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
     sentence.focus?.({ preventScroll: true });
@@ -1422,7 +1596,7 @@ export function createReaderView({
     lastAutoFollowedSentenceIndex = index;
     runtime.requestAnimationFrame(() => {
       if (!mounted || speechState !== 'speaking' || activeAloudSentenceIndex !== index) return;
-      const sentence = root.querySelector(`[data-sentence-index="${index}"]`);
+      const sentence = root.querySelector(`.pc-reader-sentence[data-sentence-index="${index}"]`);
       if (!sentence) return;
       const rect = sentence.getBoundingClientRect();
       const viewportHeight = window.innerHeight || 0;
@@ -1456,7 +1630,7 @@ export function createReaderView({
       )
     );
     if (tts && !ownsFullArticle && !ownsPointPlayback) return;
-    for (const sentence of root.querySelectorAll('[data-sentence-index]')) {
+    for (const sentence of root.querySelectorAll('.pc-reader-sentence[data-sentence-index]')) {
       const speaking = ownsFullArticle && next?.state === 'speaking'
         && Number(sentence.dataset.sentenceIndex) === next.currentIndex;
       sentence.classList.toggle('pc-sentence-speaking', speaking);
@@ -1621,6 +1795,7 @@ export function createReaderView({
         activeAloudOffsetSeconds = resumeState.position.offsetSeconds;
       }
       render();
+      if (translationMode === 'sentence') void loadSentenceTranslations();
       if (resumeState.snapshot && !initialTimerExpiryHandled) {
         applySpeechState(resumeState.snapshot, {
           checkTimer: false,
@@ -2002,7 +2177,9 @@ export function createReaderView({
       if (!(article.markings || []).some(item => item.id === marking.id)) article.markings.push(marking);
       window.getSelection?.()?.removeAllRanges?.();
       render();
-      const renderedSentence = root.querySelector(`[data-sentence-index="${popoverContext.sentenceIndex}"]`);
+      const renderedSentence = root.querySelector(
+        `.pc-reader-sentence[data-sentence-index="${popoverContext.sentenceIndex}"]`
+      );
       popoverTrigger = [...(renderedSentence?.querySelectorAll('.pc-term-pending') || [])]
         .find(node => node.dataset.termId === termId) || null;
       const term = (article.pending_terms || []).find(item => item.id === termId);
@@ -2027,7 +2204,7 @@ export function createReaderView({
 
   function onClick(event) {
     const chosenSentence = event.target.closest?.(
-      '[data-role="reader-text"] [data-sentence-index]'
+      '[data-role="reader-text"] .pc-reader-sentence[data-sentence-index]'
     );
     if (startSelectionMode && chosenSentence && root.contains(chosenSentence)) {
       event.preventDefault();
@@ -2099,6 +2276,11 @@ export function createReaderView({
       else openTranslationPanel(target);
     }
     if (action === 'translation-mode') setTranslationMode(target.dataset.mode);
+    if (action === 'translate-sentence' || action === 'refresh-sentence-translation') {
+      const slot = target.closest('[data-role="sentence-translation-slot"]');
+      const sentenceIndex = Number(slot?.dataset.sentenceIndex);
+      translateSentence(sentenceIndex, action === 'refresh-sentence-translation');
+    }
     if (action === 'reader-preference') updateReaderPreference(target);
     if (action === 'translate-article') refreshArticleTranslation();
     if (action === 'speech-timer-set') {
@@ -2181,7 +2363,7 @@ export function createReaderView({
       if (!conversionBusy) closePopover();
       return;
     }
-    const sentence = event.target.closest('[data-sentence-index]');
+    const sentence = event.target.closest('.pc-reader-sentence[data-sentence-index]');
     if (panel && event.target.closest('[data-role="reader-text"]')) {
       closeSelection();
       return;
@@ -2270,7 +2452,7 @@ export function createReaderView({
   }
 
   function onKeyDown(event) {
-    const sentence = event.target.closest?.('[data-sentence-index]');
+    const sentence = event.target.closest?.('.pc-reader-sentence[data-sentence-index]');
     if (
       startSelectionMode && event.target === sentence &&
       (event.key === 'Enter' || event.key === ' ')
@@ -2429,6 +2611,13 @@ export function createReaderView({
     saveProgress();
     mounted = false;
     articleTranslationGeneration += 1;
+    sentenceTranslationsLoadGeneration += 1;
+    for (const sentenceIndex of sentenceTranslationGenerations.keys()) {
+      sentenceTranslationGenerations.set(
+        sentenceIndex,
+        (sentenceTranslationGenerations.get(sentenceIndex) || 0) + 1
+      );
+    }
     translationOperationFocusTarget = null;
     selectionTranslationGeneration += 1;
     closeTimerPanel({ restoreFocus: false });
