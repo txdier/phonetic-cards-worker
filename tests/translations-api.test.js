@@ -411,8 +411,253 @@ test('article translation GET never serves a stored translation with a stale sou
   assert.deepEqual(await response.json(), { status: 'missing' });
 });
 
-async function authenticatedRequest(path, method, body) {
-  const token = await createSessionToken('u1', SECRET);
+test('sentence translation context, cache reuse, and user isolation', async t => {
+  const DB = seededSentenceArticlesDb();
+  t.after(() => DB.close());
+  const originalSegmenter = Intl.Segmenter;
+  Intl.Segmenter = fineSentenceSegmenter(originalSegmenter);
+  t.after(() => { Intl.Segmenter = originalSegmenter; });
+
+  let aiCalls = 0;
+  let modelPrompt = '';
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run(_model, input) {
+        aiCalls += 1;
+        modelPrompt = input.messages.at(-1).content;
+        return { response: JSON.stringify({ translation: `译文 ${aiCalls}` }) };
+      }
+    }
+  };
+  const fineHash = await sentenceHash('Fine.');
+
+  const first = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 1, sourceHash: fineHash }
+  ), env);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).cached, false);
+  assert.match(modelPrompt, /Target sentence: "Fine\."/);
+  assert.match(modelPrompt, /Complete paragraph context: "After a long argument, she said, Fine\."/);
+
+  const second = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 1, sourceHash: fineHash }
+  ), env);
+  const secondResponse = await second.json();
+  assert.equal(secondResponse.cached, true);
+  assert.equal(aiCalls, 1);
+
+  const reused = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a2/sentence-translations', 'POST',
+    { sentenceIndex: 1, sourceHash: fineHash }
+  ), env);
+  assert.equal((await reused.json()).cached, true);
+  assert.equal(aiCalls, 1);
+
+  const differentContext = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a3/sentence-translations', 'POST',
+    { sentenceIndex: 1, sourceHash: fineHash }
+  ), env);
+  assert.equal((await differentContext.json()).cached, false);
+  assert.equal(aiCalls, 2);
+
+  const otherUser = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a4/sentence-translations', 'GET', undefined, 'u2'
+  ), env);
+  const otherUserResponse = await otherUser.json();
+  assert.equal(otherUserResponse.sentences.length, 0);
+});
+
+test('sentence translation refresh replaces cache only after valid AI output', async t => {
+  const DB = seededArticleDb('Fine.');
+  t.after(() => DB.close());
+  let aiCallsAfterRefresh = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        aiCallsAfterRefresh += 1;
+        return { response: JSON.stringify({
+          translation: aiCallsAfterRefresh === 1 ? '旧译文' : '新译文'
+        }) };
+      }
+    }
+  };
+  const requestBody = { sentenceIndex: 0, sourceHash: await sentenceHash('Fine.') };
+
+  await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST', requestBody
+  ), env);
+  const refresh = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST', { ...requestBody, refresh: true }
+  ), env);
+  const refreshBody = await refresh.json();
+  assert.equal(refreshBody.cached, false);
+  assert.equal(aiCallsAfterRefresh, 2);
+  assert.equal(DB.get(
+    'SELECT translation_zh FROM sentence_translation_cache WHERE user_id = ?', 'u1'
+  ).translation_zh, '新译文');
+
+  env.AI.run = async () => ({ response: '{"translation":"损坏","extra":true}' });
+  const failedRefresh = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST', { ...requestBody, refresh: true }
+  ), env);
+  assert.equal(failedRefresh.status, 502);
+  assert.equal((await failedRefresh.json()).code, 'TRANSLATION_FORMAT_INVALID');
+  assert.equal(DB.get(
+    'SELECT translation_zh FROM sentence_translation_cache WHERE user_id = ?', 'u1'
+  ).translation_zh, '新译文');
+});
+
+test('sentence translation source validation rejects stale, invalid, and oversized input before AI', async t => {
+  const DB = seededArticleDb('Fine.');
+  t.after(() => DB.close());
+  let calls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: { async run() { calls += 1; return { response: '{"translation":"意外调用"}' }; } }
+  };
+
+  const staleResponse = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 0, sourceHash: '0'.repeat(64) }
+  ), env);
+  assert.equal(staleResponse.status, 409);
+  assert.equal((await staleResponse.json()).code, 'TRANSLATION_SOURCE_CHANGED');
+
+  for (const body of [
+    { sentenceIndex: -1, sourceHash: '0'.repeat(64) },
+    { sentenceIndex: 99, sourceHash: '0'.repeat(64) },
+    { sentenceIndex: 0, sourceHash: 'not-a-hash' },
+    { sentenceIndex: 0, sourceHash: '0'.repeat(64), refresh: 'yes' }
+  ]) {
+    const response = await worker.fetch(await authenticatedRequest(
+      '/api/articles/a1/sentence-translations', 'POST', body
+    ), env);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_TRANSLATION_INPUT');
+  }
+
+  DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
+    .bind('x'.repeat(2001), 'a1').run();
+  const oversizedResponse = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 0, sourceHash: await sentenceHash('x'.repeat(2001)) }
+  ), env);
+  assert.equal(oversizedResponse.status, 413);
+  assert.equal((await oversizedResponse.json()).code, 'TRANSLATION_TOO_LONG');
+
+  DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
+    .bind('Short. '.repeat(5001), 'a1').run();
+  const oversizedContext = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 0, sourceHash: await sentenceHash('Short.') }
+  ), env);
+  assert.equal(oversizedContext.status, 413);
+  assert.equal((await oversizedContext.json()).code, 'TRANSLATION_TOO_LONG');
+
+  DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
+    .bind('x'.repeat(30001), 'a1').run();
+  const oversizedGet = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'GET'
+  ), env);
+  assert.equal(oversizedGet.status, 413);
+  assert.equal((await oversizedGet.json()).code, 'TRANSLATION_TOO_LONG');
+
+  const missing = await worker.fetch(await authenticatedRequest(
+    '/api/articles/missing/sentence-translations', 'POST',
+    { sentenceIndex: 0, sourceHash: await sentenceHash('Fine.') }
+  ), env);
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).code, 'ARTICLE_NOT_FOUND');
+  assert.equal(calls, 0);
+});
+
+test('sentence translation source change during AI leaves the cache empty', async t => {
+  const DB = seededArticleDb('Original body.');
+  t.after(() => DB.close());
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        DB.prepare('UPDATE articles SET body = ?, updated_at = ? WHERE id = ?')
+          .bind('Edited body.', 2, 'a1').run();
+        return { response: '{"translation":"旧正文。"}' };
+      }
+    }
+  };
+
+  const response = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 0, sourceHash: await sentenceHash('Original body.') }
+  ), env);
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'TRANSLATION_SOURCE_CHANGED');
+  assert.equal(DB.get('SELECT cache_key FROM sentence_translation_cache'), null);
+});
+
+test('sentence translation cache read failure returns 500 without calling AI', async t => {
+  const actualDb = seededArticleDb('Fine.');
+  t.after(() => actualDb.close());
+  let calls = 0;
+  const DB = {
+    prepare(sql) {
+      if (/FROM sentence_translation_cache/.test(sql)) throw new Error('cache unavailable');
+      return actualDb.prepare(sql);
+    }
+  };
+  const response = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'POST',
+    { sentenceIndex: 0, sourceHash: await sentenceHash('Fine.') }
+  ), {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: { async run() { calls += 1; return { response: '{"translation":"意外调用"}' }; } }
+  });
+
+  assert.equal(response.status, 500);
+  assert.equal(calls, 0);
+});
+
+test('sentence translation cache GET reads D1 in batches of at most fifty keys', async t => {
+  const actualDb = seededArticleDb(
+    Array.from({ length: 51 }, (_, index) => `Sentence ${index}.`).join(' ')
+  );
+  t.after(() => actualDb.close());
+  const bindCounts = [];
+  const DB = {
+    prepare(sql) {
+      const statement = actualDb.prepare(sql);
+      if (!/FROM sentence_translation_cache/.test(sql)) return statement;
+      return {
+        bind(...values) {
+          bindCounts.push(values.length);
+          statement.bind(...values);
+          return this;
+        },
+        all() { return statement.all(); }
+      };
+    }
+  };
+
+  const response = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'GET'
+  ), { AUTH_SECRET: SECRET, DB });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { sentences: [] });
+  assert.deepEqual(bindCounts, [51, 2]);
+});
+
+async function authenticatedRequest(path, method, body, userId = 'u1') {
+  const token = await createSessionToken(userId, SECRET);
   return new Request(`https://app${path}`, {
     method,
     headers: {
@@ -440,4 +685,41 @@ function seededArticleDb(body) {
     VALUES ('a1', 'u1', 0, 0, 0, 0, 0, 1)
   `).run();
   return DB;
+}
+
+function seededSentenceArticlesDb() {
+  const DB = createSqliteDb();
+  DB.exec(`
+    INSERT INTO users (id, username, created_at) VALUES
+      ('u1', 'one', 1), ('u2', 'two', 1);
+    INSERT INTO articles
+      (id, user_id, title, body, author, source, notes, created_at, updated_at)
+    VALUES
+      ('a1', 'u1', 'One', 'After a long argument, she said, Fine.', '', '', '', 1, 1),
+      ('a2', 'u1', 'Two', 'After a long argument, she said, Fine.', '', '', '', 1, 1),
+      ('a3', 'u1', 'Three', 'After breakfast, he said, Fine.', '', '', '', 1, 1),
+      ('a4', 'u2', 'Four', 'After a long argument, she said, Fine.', '', '', '', 1, 1);
+  `);
+  return DB;
+}
+
+function fineSentenceSegmenter(OriginalSegmenter) {
+  return class extends OriginalSegmenter {
+    segment(value) {
+      const text = String(value);
+      const start = text.lastIndexOf('Fine.');
+      if (start < 1) return super.segment(value);
+      return [
+        { index: 0, segment: text.slice(0, start) },
+        { index: start, segment: text.slice(start) }
+      ];
+    }
+  };
+}
+
+async function sentenceHash(value) {
+  const normalized = String(value ?? '').normalize('NFKC').replace(/\r\n?/g, '\n').trim();
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+  return [...new Uint8Array(digest)]
+    .map(byte => byte.toString(16).padStart(2, '0')).join('');
 }

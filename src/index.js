@@ -4,6 +4,7 @@ import { jsonResponse } from './http.js';
 import { handleMarkingsApi } from './markings-api.js';
 import { handleProgressApi } from './progress-api.js';
 import { handleReviewsApi } from './reviews-api.js';
+import { handleSentenceTranslationsApi } from './sentence-translations-api.js';
 import { handleStatsApi } from './stats-api.js';
 import { handleTtsApi } from './tts-api.js';
 import { handleTranslationApi } from './translation-api.js';
@@ -51,6 +52,9 @@ export default {
           /^\/api\/tts\/articles\/[a-zA-Z0-9-]+\/sentences\/\d+$/.test(path)
         ) {
           return await handleTtsApi(request, env, path, userId);
+        }
+        if (/^\/api\/articles\/[a-zA-Z0-9-]+\/sentence-translations$/.test(path)) {
+          return await handleSentenceTranslationsApi(request, env, path, userId);
         }
         if (
           path === '/api/translations/word' ||
