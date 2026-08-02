@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import { createAloudCheckpointStore } from '../public/lib/aloud-checkpoint.js';
 import { READER_PREFERENCES_KEY } from '../public/lib/reader-preferences.js';
 import { createProgressQueue, PROGRESS_QUEUE_KEY } from '../public/lib/reading-session.js';
+import { TRANSLATION_MODE_KEY } from '../public/lib/translation-preferences.js';
 import { createPendingView } from '../public/pending-view.js';
 import { createReaderView } from '../public/reader-view.js';
 
@@ -263,6 +264,7 @@ function setupReader({
   liveSnapshot = {},
   publishStart = true,
   timerDeadline = null,
+  translationMode = null,
   now: initialNow = 0,
   apiImpl = null
 } = {}) {
@@ -271,6 +273,9 @@ function setupReader({
   const timerKey = 'pc-aloud-timer:alice:a1';
   if (timerDeadline != null) {
     env.window.localStorage.setItem(timerKey, JSON.stringify({ deadline: timerDeadline }));
+  }
+  if (translationMode != null) {
+    env.window.localStorage.setItem(TRANSLATION_MODE_KEY, translationMode);
   }
   const baseCheckpointStore = createAloudCheckpointStore({
     storage: env.window.localStorage,
@@ -380,7 +385,7 @@ function setupReader({
   };
 }
 
-test('reader generates, renders, and toggles complete paragraph translations', async () => {
+test('translation toolbar panel generates and toggles complete paragraph translations', async () => {
   const calls = [];
   const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
   const translation = {
@@ -403,7 +408,21 @@ test('reader generates, renders, and toggles complete paragraph translations', a
   });
   try {
     await env.ready();
-    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.ok(trigger);
+    assert.equal(trigger.getAttribute('aria-label'), '翻译');
+    assert.equal(trigger.nextElementSibling?.dataset.action, 'reader-settings');
+    assert.equal(env.root.querySelector('.pc-reader-translation-controls'), null);
+
+    click(env.window, trigger);
+    const panel = env.root.querySelector('[data-role="translation-panel"]');
+    assert.ok(panel);
+    assert.equal(panel.getAttribute('role'), 'dialog');
+    assert.deepEqual(
+      [...panel.querySelectorAll('[data-action="translation-mode"]')].map(node => node.dataset.mode),
+      ['original', 'sentence', 'full']
+    );
+    click(env.window, panel.querySelector('[data-action="translation-mode"][data-mode="full"]'));
     await env.ready();
 
     assert.deepEqual(
@@ -411,13 +430,157 @@ test('reader generates, renders, and toggles complete paragraph translations', a
         .map(node => node.textContent),
       ['第一段。', '第二段。']
     );
-    assert.match(env.root.querySelector('[data-role="article-translation-title"]').textContent, /测试文章/);
-    click(env.window, env.root.querySelector('[data-action="toggle-article-translation"]'));
-    assert.ok(
-      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')]
-        .every(node => node.hidden)
-    );
+    const translatedTitle = env.root.querySelector('[data-role="article-translation-title"]');
+    assert.equal(translatedTitle.textContent, '测试文章');
+    assert.ok(translatedTitle.previousElementSibling.matches('.pc-reader-title'));
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(trigger.getAttribute('aria-pressed'), 'true');
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
     assert.ok(calls.some(call => call.path === '/api/articles/a1/translation' && initMethod(call) === 'PUT'));
+
+    click(env.window, trigger);
+    click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="original"]'));
+    assert.equal(env.root.querySelector('[data-role="article-translation-title"]'), null);
+    assert.equal(env.root.querySelector('[data-role="paragraph-translation"]'), null);
+    assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'false');
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'original');
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('translation panel restores focus and persists sentence mode without rendering full translation', async () => {
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return {
+        status: 'fresh', titleZh: '已保存标题', model: 'model', updatedAt: 2,
+        paragraphs: [{ index: 0, translation: '已保存译文。' }]
+      };
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
+    trigger.focus();
+    click(env.window, trigger);
+    let panel = env.root.querySelector('[data-role="translation-panel"]');
+    assert.equal(
+      env.window.document.activeElement,
+      panel.querySelector('[data-action="translation-mode"][data-mode="original"]')
+    );
+
+    click(env.window, panel.querySelector('[data-action="translation-mode"][data-mode="sentence"]'));
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(trigger.getAttribute('aria-pressed'), 'true');
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'sentence');
+    assert.equal(env.root.querySelector('[data-role="article-translation-title"]'), null);
+    assert.equal(env.root.querySelector('[data-role="paragraph-translation"]'), null);
+
+    trigger.focus();
+    click(env.window, trigger);
+    click(env.window, env.window.document.body);
+    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    assert.equal(env.window.document.activeElement, trigger);
+
+    click(env.window, trigger);
+    panel = env.root.querySelector('[data-role="translation-panel"]');
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(panel.isConnected, false);
+    assert.equal(env.window.document.activeElement, trigger);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('translation restoration falls back to original without an AI request when full is missing', async () => {
+  let aiPutCalls = 0;
+  const env = setupReader({
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        aiPutCalls += 1;
+        throw new Error('must not generate');
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    assert.equal(aiPutCalls, 0);
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'original');
+    assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'false');
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('translation restoration displays an existing full translation without an AI request', async () => {
+  let aiPutCalls = 0;
+  const translation = {
+    status: 'fresh', titleZh: '已有标题', model: 'model', updatedAt: 2,
+    paragraphs: [{ index: 0, translation: '已有译文。' }]
+  };
+  const env = setupReader({
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return translation;
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        aiPutCalls += 1;
+        return translation;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    assert.equal(aiPutCalls, 0);
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+    assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(env.root.querySelector('[data-role="article-translation-title"]').textContent, '已有标题');
+    assert.equal(env.root.querySelector('[data-role="paragraph-translation"]').textContent, '已有译文。');
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('translation mode refresh failure preserves the existing full translation and display mode', async () => {
+  const translation = {
+    status: 'fresh', titleZh: '旧标题', model: 'model', updatedAt: 2,
+    paragraphs: [{ index: 0, translation: '旧译文。' }]
+  };
+  const env = setupReader({
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return translation;
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        throw new Error('refresh failed');
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+    await env.ready();
+
+    assert.equal(env.root.querySelector('[data-role="article-translation-title"]').textContent, '旧标题');
+    assert.equal(env.root.querySelector('[data-role="paragraph-translation"]').textContent, '旧译文。');
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+    assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'true');
+    assert.ok(env.root.querySelector('[data-role="translation-panel"]'));
   } finally {
     env.cleanup();
     env.restore();
@@ -483,9 +646,14 @@ test('selection translation cannot supersede an in-flight article translation', 
   });
   try {
     await env.ready();
-    const articleButton = env.root.querySelector('[data-action="translate-article"]');
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    const articleButton = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
     click(env.window, articleButton);
-    assert.equal(articleButton.disabled, true);
+    assert.ok(env.root.querySelector('[data-role="translation-panel"]'));
+    assert.equal(
+      env.root.querySelector('[data-action="translation-mode"][data-mode="full"]').disabled,
+      true
+    );
 
     const sentence = env.root.querySelector('[data-sentence-index="0"]');
     env.window.getSelection = () => validSelection(sentence, { text: 'First sentence.' });
@@ -499,7 +667,7 @@ test('selection translation cannot supersede an in-flight article translation', 
     });
     await env.ready();
 
-    assert.equal(env.root.querySelector('[data-action="translate-article"]').disabled, false);
+    assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'true');
     assert.equal(
       env.root.querySelector('[data-role="paragraph-translation"]').textContent,
       '第一句。第二句。'

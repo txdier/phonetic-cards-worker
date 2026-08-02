@@ -78,6 +78,24 @@ test('reader settings use theme tokens, responsive measure, and accessible contr
   assert.match(css, /\.pc-reader-settings-choice\[aria-pressed="true"\]\s*\{[^}]*var\(--teal\)/);
 });
 
+test('translation toolbar and panel reuse reader settings visual and mobile patterns', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const trigger = css.match(/\.pc-reader-translation-trigger\s*\{([^}]*)\}/)?.[1];
+  assert.ok(trigger);
+  assert.match(trigger, /width:\s*44px/);
+  assert.match(trigger, /min-width:\s*44px/);
+  assert.match(trigger, /min-height:\s*44px/);
+  assert.match(trigger, /margin-inline-start:\s*auto/);
+  assert.match(css, /\.pc-reader-translation-trigger\[aria-pressed="true"\]\s*\{[^}]*color:\s*var\(--teal\)/);
+  assert.match(css, /\.pc-reader-translation-title\s*\{[^}]*font-size:\s*clamp\(1\.05rem,\s*3vw,\s*1\.35rem\)/);
+  const mobilePanel = css.match(
+    /@media\s*\(max-width:\s*640px\),\s*\(max-width:\s*900px\)\s+and\s+\(pointer:\s*coarse\)\s*\{[\s\S]*?\.pc-reader-settings-panel,\s*\.pc-reader-translation-panel\s*\{([^}]*)\}/
+  )?.[1];
+  assert.ok(mobilePanel);
+  assert.match(mobilePanel, /bottom:\s*0/);
+  assert.match(mobilePanel, /padding-bottom:\s*calc\(14px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+});
+
 test('tag checkboxes render as compact centered color chips', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const choice = css.match(/\.pc-tag-choice\s*\{([^}]*)\}/)?.[1];
