@@ -160,6 +160,7 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
   const starts = [];
   const calls = [];
   let listener = null;
+  let rate = 1;
   let snapshot = {
     state: 'idle',
     mode: 'idle',
@@ -184,10 +185,11 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
     get pauseCalls() { return calls.filter(call => call === 'pause').length; },
     controller: {
       isSupported: true,
-      getRate: () => 1,
+      getRate: () => rate,
       setRate(value) {
-        calls.push(['rate', Number(value)]);
-        return Number(value);
+        rate = Number(value);
+        calls.push(['rate', rate]);
+        return rate;
       },
       getSnapshot: () => ({ ...snapshot }),
       subscribe(next) {
@@ -846,9 +848,29 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
         'speech-floating-previous',
         'speech-floating-current',
         'speech-floating-toggle',
-        'speech-floating-timer'
+        'speech-floating-timer',
+        'speech-rate-cycle'
       ]
     );
+    for (const action of [
+      'speech-floating-previous',
+      'speech-floating-current',
+      'speech-floating-toggle',
+      'speech-floating-timer'
+    ]) {
+      const button = env.root.querySelector(`[data-action="${action}"]`);
+      assert.ok(button.querySelector('svg'));
+      assert.ok(button.querySelector('.pc-floating-speech-label'));
+    }
+    const floatingRate = env.root.querySelector('[data-action="speech-rate-cycle"]');
+    assert.equal(floatingRate.textContent.trim(), '1×');
+    assert.equal(floatingRate.getAttribute('aria-label'), '切换朗读语速，当前 1 倍');
+    for (const expected of [1.25, 1.5, 0.5, 0.75, 1]) {
+      click(env.window, floatingRate);
+      assert.equal(env.tts.controller.getRate(), expected);
+      assert.equal(env.root.querySelector('[data-action="speech-rate"]').value, String(expected));
+      assert.equal(floatingRate.textContent.trim(), `${expected}×`);
+    }
 
     env.tts.emit({
       state: 'speaking', mode: 'article', articleId: 'a1', currentIndex: 1,
@@ -3060,7 +3082,7 @@ test('reader disables speech controls and explains unsupported browsers', async 
   try {
     await flush();
     const controls = [...env.root.querySelectorAll('[data-speech-control]')];
-    assert.equal(controls.length, 9);
+    assert.equal(controls.length, 10);
     assert.ok(controls.every(control => control.disabled));
     assert.equal(env.root.querySelector('[data-action="speech-floating-toggle"]').disabled, true);
     assert.match(env.root.querySelector('[data-role="speech-unavailable"]').textContent, /浏览器.*语音/);

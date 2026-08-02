@@ -84,8 +84,11 @@ const POPOVER_ICONS = {
   check: ['M5 13l4 4L19 7'],
   volume: ['M11 5 6 9H2v6h4l5 4V5z', 'M15.5 8.5a5 5 0 0 1 0 7'],
   play: ['M10 8.5l6 3.5-6 3.5v-7z', 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z'],
+  pause: ['M8 7v10M16 7v10', 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z'],
   previous: ['M6 5v14', 'M18 6l-8 6 8 6V6z'],
   replay: ['M7 7h6a6 6 0 1 1-5.4 8.6', 'M7 3v4h4'],
+  timer: ['M12 8v4l3 2', 'M9 3h6', 'M12 5a8 8 0 1 1 0 16 8 8 0 0 1 0-16z'],
+  target: ['M12 3v3M12 18v3M3 12h3M18 12h3', 'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z'],
   settings: [
     'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z',
     'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'
@@ -118,6 +121,12 @@ function iconButton(action, label, icon, className = 'pc-popover-icon-button', f
 function labeledIconButton(action, label, icon, className = 'pc-btn-ghost') {
   const node = actionButton(action, '', className);
   node.append(svgIcon(icon), document.createTextNode(label));
+  return node;
+}
+
+function floatingIconButton(action, label, icon) {
+  const node = actionButton(action, '', 'pc-floating-speech-action');
+  node.append(svgIcon(icon), element('span', 'pc-floating-speech-label', label));
   return node;
 }
 
@@ -649,34 +658,29 @@ export function createReaderView({
     capsule.setAttribute('role', 'group');
     capsule.setAttribute('aria-label', '悬浮朗读控制');
     capsule.hidden = true;
-    const previous = labeledIconButton(
-      'speech-floating-previous',
-      '上一句',
-      'previous',
-      'pc-floating-speech-action pc-speech-replay-action'
-    );
+    const previous = floatingIconButton('speech-floating-previous', '上一句', 'previous');
+    previous.classList.add('pc-speech-replay-action');
     previous.dataset.speechControl = '';
     previous.setAttribute('aria-label', '重播上一句');
-    const current = labeledIconButton(
-      'speech-floating-current',
-      '重听',
-      'replay',
-      'pc-floating-speech-action pc-speech-replay-action'
-    );
+    const current = floatingIconButton('speech-floating-current', '重听', 'replay');
+    current.classList.add('pc-speech-replay-action');
     current.dataset.speechControl = '';
     current.setAttribute('aria-label', '重新朗读当前句');
     const action = speechAction(true);
-    const toggle = actionButton('speech-floating-toggle', action.label, 'pc-floating-speech-action');
+    const toggle = floatingIconButton('speech-floating-toggle', action.label, action.icon);
     toggle.dataset.role = 'floating-speech-toggle';
     toggle.setAttribute('aria-label', action.ariaLabel);
     toggle.disabled = !Boolean((tts || speech)?.isSupported);
-    const timer = actionButton('speech-floating-timer', '定时', 'pc-floating-speech-action');
+    const timer = floatingIconButton('speech-floating-timer', '定时', 'timer');
     timer.dataset.speechControl = '';
     timer.setAttribute('aria-label', '设置停止朗读定时器');
     timer.setAttribute('aria-expanded', 'false');
     timer.disabled = !Boolean((tts || speech)?.isSupported);
-    const divider = () => element('span', 'pc-floating-speech-divider');
-    capsule.append(previous, divider(), current, divider(), toggle, divider(), timer);
+    const rate = actionButton('speech-rate-cycle', '', 'pc-floating-speech-action pc-floating-speech-rate');
+    rate.dataset.role = 'floating-speech-rate';
+    rate.dataset.speechControl = '';
+    rate.disabled = !Boolean((tts || speech)?.isSupported);
+    capsule.append(previous, current, toggle, timer, rate);
     return capsule;
   }
 
@@ -696,20 +700,20 @@ export function createReaderView({
 
   function speechAction(selectableStart = false) {
     if (speechState === 'speaking') {
-      return { label: '暂停', ariaLabel: '暂停全文朗读' };
+      return { label: '暂停', ariaLabel: '暂停全文朗读', icon: 'pause' };
     }
     if (
       speechState === 'paused' ||
       (speechState === 'idle' && Number.isInteger(savedAloudSentenceIndex))
     ) {
-      return { label: '继续', ariaLabel: '继续全文朗读' };
+      return { label: '继续', ariaLabel: '继续全文朗读', icon: 'play' };
     }
     if (selectableStart && startSelectionMode) {
-      return { label: '取消选择', ariaLabel: '取消选择全文朗读起点' };
+      return { label: '取消选择', ariaLabel: '取消选择全文朗读起点', icon: 'close' };
     }
     return selectableStart
-      ? { label: '选择起点', ariaLabel: '选择全文朗读起点' }
-      : { label: '播放', ariaLabel: '从头播放全文' };
+      ? { label: '选择起点', ariaLabel: '选择全文朗读起点', icon: 'target' }
+      : { label: '播放', ariaLabel: '从头播放全文', icon: 'play' };
   }
 
   function syncSpeechControls() {
@@ -719,10 +723,18 @@ export function createReaderView({
     const topOutput = root.querySelector('[data-role="speech-rate-value"]');
     if (topRate) topRate.value = String(rate);
     if (topOutput) topOutput.textContent = `${rate}×`;
+    const floatingRate = root.querySelector('[data-role="floating-speech-rate"]');
+    if (floatingRate) {
+      floatingRate.textContent = `${rate}×`;
+      floatingRate.setAttribute('aria-label', `切换朗读语速，当前 ${rate} 倍`);
+    }
     const toggle = root.querySelector('[data-role="floating-speech-toggle"]');
     if (toggle) {
       const action = speechAction(true);
-      toggle.textContent = action.label;
+      toggle.replaceChildren(
+        svgIcon(action.icon),
+        element('span', 'pc-floating-speech-label', action.label)
+      );
       toggle.setAttribute('aria-label', action.ariaLabel);
     }
     const primary = root.querySelector('[data-role="speech-primary"]');
@@ -992,7 +1004,9 @@ export function createReaderView({
           : '\u8bbe\u7f6e\u505c\u6b62\u6717\u8bfb\u5b9a\u65f6\u5668'
       );
       if (trigger.dataset.action === 'speech-floating-timer') {
-        trigger.textContent = timerState.active ? formattedRemaining : '\u5b9a\u65f6';
+        trigger.replaceChildren(...(timerState.active
+          ? [element('span', 'pc-floating-speech-timer-value', formattedRemaining)]
+          : [svgIcon('timer'), element('span', 'pc-floating-speech-label', '定时')]));
       }
     }
   }
