@@ -9,6 +9,11 @@ import {
   readerPreferenceStyles,
   saveReaderPreferences
 } from './lib/reader-preferences.js';
+import {
+  loadTtsPreferences,
+  saveTtsPreferences,
+  TTS_PROFILE_OPTIONS
+} from './lib/tts-preferences.js';
 import { renderInlineError, showToast } from './lib/dom.js';
 
 function element(tag, className, text) {
@@ -161,6 +166,11 @@ export function createReaderView({
   let article = null;
   let paragraphs = [];
   let sentences = [];
+  let articleTranslation = null;
+  let translationsVisible = true;
+  let translationBusy = false;
+  let articleTranslationGeneration = 0;
+  let selectionTranslationGeneration = 0;
   let loadVersion = 0;
   let conversionCleanup = null;
   let conversionBusy = false;
@@ -200,6 +210,7 @@ export function createReaderView({
   let timerBackgroundState = [];
   let timerControlState = [];
   let readerPreferences = loadReaderPreferences(storage);
+  let ttsPreferences = loadTtsPreferences(storage);
   const runtime = {
     now: progressRuntime.now || (() => Date.now()),
     randomUUID: progressRuntime.randomUUID || (() => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
@@ -281,6 +292,7 @@ export function createReaderView({
       pointAloudSentenceIndex = index;
       tts.speakArticleSentence(articleId, index, sentenceNode.textContent, {
         rate: (tts || speech).getRate?.() || 1,
+        profile: ttsPreferences.articleProfile,
         nextIndex: index + 1 < sentences.length ? index + 1 : null
       });
     } else {
@@ -301,7 +313,7 @@ export function createReaderView({
         articleId,
         sentences.map(sentence => sentence.text),
         index,
-        { offsetSeconds }
+        { offsetSeconds, profile: ttsPreferences.articleProfile }
       );
     } else {
       speech.startAt(index);
@@ -467,8 +479,95 @@ export function createReaderView({
         paragraphNode.append(renderSentence(sentence, candidates));
       }
       body.append(paragraphNode);
+      const translated = articleTranslation?.paragraphs?.find(
+        item => Number(item.index) === paragraph.index
+      );
+      if (translated) {
+        const translationNode = element(
+          'div', 'pc-reader-translation', translated.translation
+        );
+        translationNode.dataset.role = 'paragraph-translation';
+        translationNode.dataset.paragraphIndex = String(paragraph.index);
+        translationNode.hidden = !translationsVisible;
+        body.append(translationNode);
+      }
     }
     container.append(body);
+  }
+
+  function translationControls() {
+    const group = element('div', 'pc-reader-translation-controls');
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', '文章翻译');
+    const generate = actionButton(
+      'translate-article',
+      articleTranslation ? '重新翻译' : '翻译全文',
+      articleTranslation ? 'pc-btn-ghost' : 'pc-btn-primary'
+    );
+    generate.disabled = translationBusy;
+    group.append(generate);
+    if (articleTranslation) {
+      const toggle = actionButton(
+        'toggle-article-translation', translationsVisible ? '隐藏译文' : '显示译文'
+      );
+      toggle.setAttribute('aria-pressed', String(translationsVisible));
+      group.append(toggle);
+      const title = element(
+        'div', 'pc-reader-translation-title', `译文标题：${articleTranslation.titleZh}`
+      );
+      title.dataset.role = 'article-translation-title';
+      title.hidden = !translationsVisible;
+      group.append(title);
+    }
+    return group;
+  }
+
+  async function loadArticleTranslation(version) {
+    try {
+      const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`);
+      if (!isCurrent(version)) return;
+      articleTranslation = result?.status === 'fresh' ? result : null;
+    } catch {
+      if (isCurrent(version)) articleTranslation = null;
+    }
+  }
+
+  async function translateArticle(button) {
+    if (translationBusy) return;
+    translationBusy = true;
+    const generation = ++articleTranslationGeneration;
+    button.disabled = true;
+    button.textContent = '翻译中…';
+    try {
+      const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`, {
+        method: 'PUT', body: '{}'
+      });
+      if (!mounted || generation !== articleTranslationGeneration) return;
+      articleTranslation = result?.status === 'fresh' ? result : null;
+      translationsVisible = true;
+      translationBusy = false;
+      render();
+    } catch (error) {
+      if (mounted && generation === articleTranslationGeneration) {
+        renderInlineError(root, error.message || '文章翻译暂不可用，请稍后重试');
+        button.disabled = false;
+        button.textContent = articleTranslation ? '重新翻译' : '翻译全文';
+      }
+    } finally {
+      if (generation === articleTranslationGeneration) translationBusy = false;
+    }
+  }
+
+  function toggleArticleTranslation() {
+    translationsVisible = !translationsVisible;
+    for (const node of root.querySelectorAll(
+      '[data-role="paragraph-translation"], [data-role="article-translation-title"]'
+    )) node.hidden = !translationsVisible;
+    const button = root.querySelector('[data-action="toggle-article-translation"]');
+    if (button) {
+      button.textContent = translationsVisible ? '隐藏译文' : '显示译文';
+      button.setAttribute('aria-pressed', String(translationsVisible));
+    }
   }
 
   function applyReaderPreferences() {
@@ -513,6 +612,17 @@ export function createReaderView({
     panel.dataset.role = 'reader-settings-panel';
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-label', '阅读设置');
+    const voiceLabel = element('label', 'pc-reader-settings-voice');
+    voiceLabel.append(element('span', '', '朗读角色'));
+    const voiceSelect = element('select', 'pc-input');
+    voiceSelect.dataset.action = 'article-tts-profile';
+    for (const [value, label] of Object.entries(TTS_PROFILE_OPTIONS)) {
+      const node = element('option', '', label);
+      node.value = value;
+      node.selected = value === ttsPreferences.articleProfile;
+      voiceSelect.append(node);
+    }
+    voiceLabel.append(voiceSelect);
     panel.append(
       element('h2', 'pc-reader-settings-title', '阅读设置'),
       readerSettingGroup({
@@ -526,7 +636,8 @@ export function createReaderView({
       readerSettingGroup({
         preference: 'measure', label: '版心',
         options: [['narrow', '窄'], ['medium', '中'], ['wide', '宽']]
-      })
+      }),
+      voiceLabel
     );
     root.append(panel);
     positionAnchoredPanel(panel, trigger, '--reader-settings-left', '--reader-settings-top');
@@ -628,7 +739,7 @@ export function createReaderView({
     const fallbackWarning = element(
       'div',
       'pc-speech-fallback-warning',
-      '锁屏后台播放可能受限'
+      '已回退到设备语音；音色由当前设备决定，锁屏后台播放可能受限'
     );
     fallbackWarning.dataset.role = 'speech-fallback-warning';
     fallbackWarning.setAttribute('role', 'status');
@@ -1331,6 +1442,7 @@ export function createReaderView({
     if (article.source) meta.append(element('span', '', `来源：${article.source}`));
     header.append(meta);
     header.append(speechToolbar());
+    header.append(translationControls());
     header.append(resumeEntry());
     const content = element('article', 'pc-reader-content');
     const startHint = element(
@@ -1368,6 +1480,8 @@ export function createReaderView({
       const parsedBody = splitArticleParagraphs(article.body);
       paragraphs = parsedBody.paragraphs;
       sentences = parsedBody.sentences;
+      await loadArticleTranslation(version);
+      if (!isCurrent(version)) return;
       const resumeState = resolveResumeState();
       setSavedAloudPosition(
         resumeState.position.sentenceIndex,
@@ -1633,6 +1747,44 @@ export function createReaderView({
     window.getSelection?.()?.removeAllRanges?.();
   }
 
+  async function translateSelection(panel, button) {
+    if (!panel || button.disabled) return;
+    button.disabled = true;
+    const generation = ++selectionTranslationGeneration;
+    panel.querySelector('[data-role="selection-translation"]')?.remove();
+    try {
+      const result = await api('/api/translations/selection', {
+        method: 'POST',
+        body: JSON.stringify({
+          text: panel.dataset.selectedText || '',
+          context: panel.dataset.contextSentence || ''
+        })
+      });
+      if (!mounted || generation !== selectionTranslationGeneration || !panel.isConnected) return;
+      const translated = element(
+        'div', 'pc-selection-translation', String(result?.translation || '')
+      );
+      translated.dataset.role = 'selection-translation';
+      translated.setAttribute('role', 'status');
+      panel.querySelector('[data-role="reader-popover-body"]')?.append(translated);
+      positionOpenPanels();
+    } catch (error) {
+      if (mounted && generation === selectionTranslationGeneration && panel.isConnected) {
+        const translated = element(
+          'div', 'pc-selection-translation pc-inline-error',
+          error.message || '翻译暂不可用，请稍后重试'
+        );
+        translated.dataset.role = 'selection-translation';
+        translated.setAttribute('role', 'alert');
+        panel.querySelector('[data-role="reader-popover-body"]')?.append(translated);
+      }
+    } finally {
+      if (mounted && generation === selectionTranslationGeneration && panel.isConnected) {
+        button.disabled = false;
+      }
+    }
+  }
+
   function handleSelection() {
     if (!article) return;
     const selection = window.getSelection?.();
@@ -1661,6 +1813,7 @@ export function createReaderView({
     const rangeRect = selection.getRangeAt(0)?.getBoundingClientRect?.();
     const body = element('div');
     body.append(readerStatus('unmarked', '未标记', '标记后进入待整理'));
+    body.append(actionButton('translate-selection', '翻译所选内容', 'pc-btn-ghost'));
     body.append(actionButton('mark-selection', '标记为生词', 'pc-btn-primary pc-reader-popover-primary-action'));
     const panel = buildReaderPopover({
       role: 'selection-action',
@@ -1818,6 +1971,8 @@ export function createReaderView({
       else openReaderSettings(target);
     }
     if (action === 'reader-preference') updateReaderPreference(target);
+    if (action === 'translate-article') translateArticle(target);
+    if (action === 'toggle-article-translation') toggleArticleTranslation();
     if (action === 'speech-timer-set') {
       setSleepTimer(target);
     }
@@ -1883,6 +2038,9 @@ export function createReaderView({
     }
     if (action === 'unmark-local') unmarkLocal(target.dataset.markingId, target);
     if (action === 'mark-selection') markSelection(target.closest('[data-role="selection-action"]'), target);
+    if (action === 'translate-selection') {
+      translateSelection(target.closest('[data-role="selection-action"]'), target);
+    }
     if (action === 'mark-popover') markSelection(target.closest('[data-role="term-popover"]'), target);
   }
 
@@ -1907,6 +2065,11 @@ export function createReaderView({
   }
 
   function onInput(event) {
+    if (event.target.matches('[data-action="article-tts-profile"]')) {
+      const next = { ...ttsPreferences, articleProfile: event.target.value };
+      if (saveTtsPreferences(storage, next)) ttsPreferences = next;
+      return;
+    }
     if (event.target.matches('[data-action="speech-rate"]')) {
       readingSession.interact();
       if (checkSleepTimer()) return;
@@ -2091,6 +2254,7 @@ export function createReaderView({
             sentences[index].text.trim(),
             {
               rate: audioController.getRate?.() || 1,
+              profile: ttsPreferences.articleProfile,
               nextIndex: index + 1 < sentences.length ? index + 1 : null
             }
           );
@@ -2122,6 +2286,8 @@ export function createReaderView({
     saveAloudCheckpoint({ immediate: true, state: 'paused' });
     saveProgress();
     mounted = false;
+    articleTranslationGeneration += 1;
+    selectionTranslationGeneration += 1;
     closeTimerPanel({ restoreFocus: false });
     closeReaderSettings({ restoreFocus: false });
     document.removeEventListener('selectionchange', onSelectionChange);

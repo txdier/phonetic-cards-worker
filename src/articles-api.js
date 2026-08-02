@@ -167,6 +167,13 @@ export async function handleArticlesApi(request, env, path, userId) {
       `).bind(pendingId, userId, pendingId, userId));
     }
 
+    if (updated.title !== current.title || updated.body !== current.body) {
+      statements.push(env.DB.prepare(`
+        DELETE FROM article_translations
+        WHERE article_id = ? AND user_id = ?
+      `).bind(articleId, userId));
+    }
+
     const resetProgress = body.resetProgress === true;
     if (resetProgress) {
       statements.push(

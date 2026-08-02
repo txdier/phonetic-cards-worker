@@ -198,11 +198,13 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
         return () => { listener = null; };
       },
       startArticle(nextArticleId, sentences, startIndex, options = {}) {
-        starts.push({
+        const started = {
           articleId: nextArticleId,
           startIndex,
           offsetSeconds: Number(options.offsetSeconds || 0)
-        });
+        };
+        if (options.profile) started.profile = options.profile;
+        starts.push(started);
         if (!publishStart) return;
         publish({
           state: 'speaking',
@@ -224,8 +226,8 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
       previousSentence() { calls.push('previous'); },
       replayCurrentSentence() { calls.push('current'); },
       nextSentence() { calls.push('next'); },
-      speakArticleSentence(nextArticleId, index, text) {
-        calls.push(['point', nextArticleId, index, text]);
+      speakArticleSentence(nextArticleId, index, text, options = {}) {
+        calls.push(['point', nextArticleId, index, text, options.profile]);
         publish({
           state: 'once',
           mode: 'once',
@@ -261,7 +263,8 @@ function setupReader({
   liveSnapshot = {},
   publishStart = true,
   timerDeadline = null,
-  now: initialNow = 0
+  now: initialNow = 0,
+  apiImpl = null
 } = {}) {
   const env = installDom();
   let currentNow = initialNow;
@@ -329,10 +332,10 @@ function setupReader({
   const intervals = [];
   const cleanup = createReaderView({
     root: env.root,
-    api: async () => articleDetail({
+    api: apiImpl || (async () => articleDetail({
       body,
       progress: articleProgress
-    }),
+    })),
     articleId: 'a1',
     navigate() {},
     speech: speech.controller,
@@ -377,6 +380,140 @@ function setupReader({
   };
 }
 
+test('reader generates, renders, and toggles complete paragraph translations', async () => {
+  const calls = [];
+  const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
+  const translation = {
+    status: 'fresh', titleZh: '测试文章', model: '@cf/zai-org/glm-4.7-flash',
+    updatedAt: 2,
+    paragraphs: [
+      { index: 0, translation: '第一段。' },
+      { index: 1, translation: '第二段。' }
+    ]
+  };
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      calls.push({ path, init });
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') return translation;
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+    await env.ready();
+
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')]
+        .map(node => node.textContent),
+      ['第一段。', '第二段。']
+    );
+    assert.match(env.root.querySelector('[data-role="article-translation-title"]').textContent, /测试文章/);
+    click(env.window, env.root.querySelector('[data-action="toggle-article-translation"]'));
+    assert.ok(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')]
+        .every(node => node.hidden)
+    );
+    assert.ok(calls.some(call => call.path === '/api/articles/a1/translation' && initMethod(call) === 'PUT'));
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('selection panel translates only the selection with its complete sentence context', async () => {
+  const requests = [];
+  const detail = articleDetail({
+    body: 'After three failed attempts, she finally nailed it.',
+    markings: [], pending_terms: [], words: []
+  });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/translations/selection') {
+        requests.push(JSON.parse(init.body));
+        return { translation: '搞定了' };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    const sentence = env.root.querySelector('[data-sentence-index="0"]');
+    env.window.getSelection = () => validSelection(sentence, { text: 'nailed it' });
+    sentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
+    click(env.window, env.root.querySelector('[data-action="translate-selection"]'));
+    await env.ready();
+
+    assert.deepEqual(requests, [{
+      text: 'nailed it',
+      context: 'After three failed attempts, she finally nailed it.'
+    }]);
+    assert.equal(
+      env.root.querySelector('[data-role="selection-translation"]').textContent,
+      '搞定了'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('selection translation cannot supersede an in-flight article translation', async () => {
+  const articleRequest = deferred();
+  const detail = articleDetail({
+    body: 'First sentence. Second sentence.', markings: [], pending_terms: [], words: []
+  });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      if (path === '/api/translations/selection') return { translation: '第一句。' };
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    const articleButton = env.root.querySelector('[data-action="translate-article"]');
+    click(env.window, articleButton);
+    assert.equal(articleButton.disabled, true);
+
+    const sentence = env.root.querySelector('[data-sentence-index="0"]');
+    env.window.getSelection = () => validSelection(sentence, { text: 'First sentence.' });
+    sentence.dispatchEvent(new env.window.Event('pointerup', { bubbles: true }));
+    click(env.window, env.root.querySelector('[data-action="translate-selection"]'));
+    await flush();
+
+    articleRequest.resolve({
+      status: 'fresh', titleZh: '测试', model: '@cf/zai-org/glm-4.7-flash', updatedAt: 2,
+      paragraphs: [{ index: 0, translation: '第一句。第二句。' }]
+    });
+    await env.ready();
+
+    assert.equal(env.root.querySelector('[data-action="translate-article"]').disabled, false);
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation"]').textContent,
+      '第一句。第二句。'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+function initMethod(call) {
+  return call.init?.method || 'GET';
+}
+
 test('reader prefers a matching local offset and resumes it on user action', async () => {
   const env = setupReader({
     articleProgress: {
@@ -398,7 +535,7 @@ test('reader prefers a matching local offset and resumes it on user action', asy
     );
     click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
     assert.deepEqual(env.tts.starts.at(-1), {
-      articleId: 'a1', startIndex: 1, offsetSeconds: 2.5
+      articleId: 'a1', startIndex: 1, offsetSeconds: 2.5, profile: 'aria-narration'
     });
   } finally {
     env.cleanup();
@@ -562,7 +699,7 @@ test('full-reading start synchronously checkpoints the requested target without 
     click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
 
     assert.deepEqual(env.tts.starts.at(-1), {
-      articleId: 'a1', startIndex: 0, offsetSeconds: 0
+      articleId: 'a1', startIndex: 0, offsetSeconds: 0, profile: 'aria-narration'
     });
     assert.deepEqual(env.checkpointStore.lastSaved, {
       sentenceIndex: 0, offsetSeconds: 0, state: 'paused'
@@ -603,7 +740,7 @@ test('pagehide preserves a different pending full-reading target over the old au
       env.root.querySelector('[data-action="speech-start-selection"]')
     );
     assert.deepEqual(env.tts.starts.at(-1), {
-      articleId: 'a1', startIndex: 2, offsetSeconds: 0
+      articleId: 'a1', startIndex: 2, offsetSeconds: 0, profile: 'aria-narration'
     });
     assert.equal(env.tts.controller.getSnapshot().currentIndex, 0);
 
@@ -1059,6 +1196,26 @@ test('reader settings apply global typography preferences and restore focus on d
   }
 });
 
+test('reader settings persist the article voice and use it for full reading', async () => {
+  const env = setupReader();
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="reader-settings"]'));
+    const select = env.root.querySelector('[data-action="article-tts-profile"]');
+    assert.equal(select.value, 'aria-narration');
+    select.value = 'guy-news';
+    select.dispatchEvent(new env.window.Event('input', { bubbles: true }));
+    click(env.window, env.root.querySelector('[data-action="reader-settings"]'));
+    click(env.window, env.root.querySelector('[data-action="speech-primary"]'));
+
+    assert.equal(env.tts.starts.at(-1).profile, 'guy-news');
+    assert.match(env.window.localStorage.getItem('pc-tts-preferences'), /"articleProfile":"guy-news"/);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('opening reader settings exits sentence-start selection so one Escape closes the panel', async () => {
   const env = setupReader({ articleProgress: { last_position_ratio: 0 } });
   try {
@@ -1486,7 +1643,7 @@ test('one-off sentence playback publishes its own metadata and coherent Media Se
     env.mediaSession.handlers.get('seekbackward')();
     assert.deepEqual(
       env.tts.calls.filter(call => Array.isArray(call) && call[0] === 'point').at(-1),
-      ['point', 'a1', 0, 'First sentence.']
+      ['point', 'a1', 0, 'First sentence.', 'aria-narration']
     );
   } finally {
     env.cleanup();

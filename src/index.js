@@ -6,6 +6,7 @@ import { handleProgressApi } from './progress-api.js';
 import { handleReviewsApi } from './reviews-api.js';
 import { handleStatsApi } from './stats-api.js';
 import { handleTtsApi } from './tts-api.js';
+import { handleTranslationApi } from './translation-api.js';
 import { handleWordLibraryApi } from './word-library-api.js';
 import { handleWordsApi } from './words-api.js';
 
@@ -50,6 +51,13 @@ export default {
           /^\/api\/tts\/articles\/[a-zA-Z0-9-]+\/sentences\/\d+$/.test(path)
         ) {
           return await handleTtsApi(request, env, path, userId);
+        }
+        if (
+          path === '/api/translations/word' ||
+          path === '/api/translations/selection' ||
+          /^\/api\/articles\/[a-zA-Z0-9-]+\/translation$/.test(path)
+        ) {
+          return await handleTranslationApi(request, env, path, userId);
         }
         if (
           path === '/api/tags' ||

@@ -11,6 +11,15 @@ test('index loads external application assets', async () => {
   assert.match(html, /<meta\s+name="viewport"\s+content="width=device-width, initial-scale=1\.0">/);
 });
 
+test('app registers the service worker and renders a dedicated offline shell', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /registerServiceWorker/);
+  assert.match(app, /data-role['"]?,\s*['"]offline-shell/);
+  assert.match(app, /window\.addEventListener\(['"]online['"]/);
+  assert.match(app, /安装应用/);
+  assert.match(app, /Safari 分享 → 添加到主屏幕/);
+});
+
 test('styles protect small screens, touch targets, focus, and reduced motion', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);

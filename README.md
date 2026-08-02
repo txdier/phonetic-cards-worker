@@ -11,6 +11,8 @@
 - 使用 FSRS 四档评分（忘记、困难、良好、简单）安排复习。
 - 支持 Markdown、CSV 和 JSON 导出。
 - 单词、例句和文章句子优先使用 Azure TTS，并以 R2 缓存；不可用时自动回退 Web Speech API。
+- 词卡可结合完整例句调用 Workers AI 生成 1–3 个语境义项，只填入表单并由用户确认保存。
+- 词卡和文章分别记忆朗读角色，可选择 Jenny 轻松口语、Jenny 亲切通用、Aria 专业叙事和 Guy 沉稳新闻。
 - PC 端筛选栏与词卡内容列对齐；手机端使用账户操作在上、模块导航在下的两行顶栏。
 - 词间关系表单和已有关系保持在词卡边界内，宽屏两列、手机单列显示。
 
@@ -29,11 +31,19 @@
 - 在待整理页将标记收录为词卡或移除标记；同原形词卡可选择合并或独立创建。
 - 统计页按文章显示阅读、朗读、标记、待整理和已转换数量。
 - 阅读进度或统计事件提交临时失败时保存在当前浏览器并按顺序重试。
+- 可翻译选中文本或全文；全文译文按原自然段对应显示，正文变化会清除旧译文。
+
+### PWA
+
+- 支持 Android Chromium 的系统安装提示和 iPhone Safari“添加到主屏幕”说明。
+- 静态应用壳、脚本、样式、Manifest 和图标可离线启动；认证、翻译、音频和用户数据 API 始终只走网络。
+- 离线启动显示独立联网提示，不会误报为登录失效。
 
 ## 技术栈
 
 - Cloudflare Workers + Worker Assets
 - Cloudflare D1
+- Cloudflare Workers AI（`@cf/zai-org/glm-4.7-flash`）
 - Cloudflare R2 + Azure AI Speech
 - ts-fsrs
 - 原生 HTML / CSS / JavaScript ES modules
@@ -47,7 +57,7 @@
 ```text
 phonetic-cards-worker/
 ├── package.json                         # npm 测试脚本与 JSDOM 开发依赖
-├── wrangler.toml                        # Worker、Assets、D1 和 AUTH_USERNAME 配置
+├── wrangler.example.toml                # Worker、Assets、D1、R2 与 Workers AI 配置模板
 ├── migrations/
 │   ├── 0001_create_words_table.sql      # 初始词卡表
 │   ├── 0002_add_users.sql               # users 表与 words.user_id
@@ -56,7 +66,8 @@ phonetic-cards-worker/
 │   ├── 0005_word_learning_fsrs.sql      # FSRS、标签和词间关系
 │   ├── 0006_tts_cache_usage.sql         # TTS 用量和生成租约
 │   ├── 0007_add_article_aloud_position.sql # 全文朗读句子断点
-│   └── 0008_add_article_aloud_offset.sql # 全文朗读句内偏移
+│   ├── 0008_add_article_aloud_offset.sql # 全文朗读句内偏移
+│   └── 0009_article_translations.sql     # 按用户隔离的文章译文
 ├── src/
 │   ├── index.js                         # Worker 入口与 API 路由
 │   ├── auth.js                          # 登录、会话签名与用户校验
@@ -65,6 +76,7 @@ phonetic-cards-worker/
 │   ├── reviews-api.js                   # FSRS 到期卡和幂等评分
 │   ├── word-library-api.js              # 标签、关系、统计和导出
 │   ├── tts-api.js                       # Azure TTS、R2 缓存和用量限制
+│   ├── translation-api.js               # Workers AI 词语、选段和全文翻译
 │   ├── articles-api.js                  # 文章 CRUD 与阅读详情
 │   ├── markings-api.js                  # 标记、移除与收录转换
 │   ├── progress-api.js                  # 阅读位置和幂等统计事件
@@ -80,6 +92,9 @@ phonetic-cards-worker/
 │   ├── pending-view.js                  # 待整理词条与收录表单
 │   ├── stats-view.js                    # 文章统计视图
 │   ├── styles.css                       # 全局、响应式和明暗主题样式
+│   ├── manifest.webmanifest             # PWA 名称、颜色与图标
+│   ├── sw.js                            # 静态离线壳与 network-only API 策略
+│   ├── icons/                           # 三款 SVG 方案与默认 PNG 图标
 │   └── lib/                             # 文本、DOM、语音和阅读会话模块
 ├── tests/                               # 单元、API、DOM 和应用协调测试
 └── docs/superpowers/                    # 已确认的设计规格与实施计划
@@ -109,6 +124,15 @@ AZURE_TTS_KEY=<Azure Speech 密钥>
 ```
 
 用户名来自 `wrangler.toml` 的 `[vars].AUTH_USERNAME`。不要把真实密码或签名密钥写进 README、`wrangler.toml` 或其他已跟踪文件。
+
+先复制 `wrangler.example.toml` 为不会提交到 Git 的 `wrangler.toml`，填入现有 D1、R2 和用户名配置。Workers AI 绑定必须保留：
+
+```toml
+[ai]
+binding = "AI"
+```
+
+Workers AI 不需要额外 API 密钥；调用会计入当前 Cloudflare 账号的 Workers AI 用量，Free 计划会先使用其每日免费额度。
 
 ### 3. 确认 D1 配置
 
@@ -207,7 +231,7 @@ wrangler secret put AUTH_PASSWORD
 wrangler secret put AUTH_SECRET
 ```
 
-`AUTH_USERNAME`、`AZURE_TTS_REGION`、`AZURE_TTS_VOICE` 和
+`AUTH_USERNAME`、`AZURE_TTS_REGION` 和
 `TTS_MONTHLY_CHAR_BUDGET` 是 `wrangler.toml` 中的普通变量。创建一次音频桶：
 
 ```powershell
@@ -242,6 +266,8 @@ wrangler deploy
 ## 关键行为与维护注意事项
 
 - 文章、标记、转换和统计需要联网；进度暂存与自动重试不是完整离线模式，也不处理跨设备离线冲突。
+- PWA 只缓存静态应用壳；`/api/*`、认证、译文、音频和用户数据从不进入 Service Worker 缓存。
+- Workers AI 免费额度耗尽、模型不可用、超时或返回格式异常时会保留已有全文译文，用户可稍后重试。
 - Azure 或 R2 不可用、达到月度额度或持续限流时会回退 Web Speech API，不影响词库、复习和阅读。
 - `words.familiarity` 与 `words.last_tested_at` 仅为旧数据兼容保留，当前代码不读取或更新。
 - 只有用户主动标记的文章才计为词条来源；其他文章中的自动高亮不增加来源或统计。

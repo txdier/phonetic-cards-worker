@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">语音卡片图标方案 A</title>
+  <desc id="desc">深蓝背景上的单张琥珀色圆角音标卡，中央是 ə，右下为青绿色声波。</desc>
+  <rect width="512" height="512" rx="112" fill="#10151c"/>
+  <rect x="76" y="70" width="360" height="372" rx="62" fill="#182330" stroke="#e8a33d" stroke-width="18"/>
+  <path d="M126 129h72" stroke="#e8a33d" stroke-width="14" stroke-linecap="round" opacity=".72"/>
+  <text x="256" y="309" text-anchor="middle" fill="#f7efe1" font-family="Georgia, 'Times New Roman', serif" font-size="174" font-weight="700">/ə/</text>
+  <g fill="none" stroke="#42c7b4" stroke-width="16" stroke-linecap="round">
+    <path d="M298 378v-22"/>
+    <path d="M334 392v-50"/>
+    <path d="M370 405v-76"/>
+    <path d="M406 390v-46"/>
+  </g>
+</svg>

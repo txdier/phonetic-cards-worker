@@ -93,6 +93,53 @@ test('TTS charges successful Azure synthesis even when R2 storage fails', async 
   ).used_chars, 'confirm'.length);
 });
 
+test('TTS applies allowlisted Azure voice styles and isolates profile caches', async t => {
+  const DB = seededDb();
+  t.after(() => DB.close());
+  const AUDIO = memoryBucket();
+  const bodies = [];
+  const runtime = {
+    fetch: async (_url, init) => {
+      bodies.push(init.body);
+      return new Response(new Uint8Array([1]), { status: 200 });
+    }
+  };
+  const env = configuredEnv(DB, AUDIO);
+
+  const chat = await handleTtsApi(
+    new Request('https://app/api/tts/words/w1?mode=word&profile=jenny-chat'),
+    env, '/api/tts/words/w1', 'u1', runtime
+  );
+  const narration = await handleTtsApi(
+    new Request('https://app/api/tts/words/w1?mode=word&profile=aria-narration'),
+    env, '/api/tts/words/w1', 'u1', runtime
+  );
+
+  assert.equal(chat.status, 200);
+  assert.equal(narration.status, 200);
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[0], /name="en-US-JennyNeural"/);
+  assert.match(bodies[0], /mstts:express-as style="chat"/);
+  assert.match(bodies[1], /name="en-US-AriaNeural"/);
+  assert.match(bodies[1], /mstts:express-as style="narration-professional"/);
+  assert.match(bodies[1], /xmlns:mstts="https:\/\/www\.w3\.org\/2001\/mstts"/);
+});
+
+test('TTS rejects a profile outside the server allowlist before generation', async t => {
+  const DB = seededDb();
+  t.after(() => DB.close());
+  let calls = 0;
+  const response = await handleTtsApi(
+    new Request('https://app/api/tts/words/w1?mode=word&profile=custom-voice'),
+    configuredEnv(DB, memoryBucket()), '/api/tts/words/w1', 'u1',
+    { fetch: async () => { calls += 1; return new Response('audio'); } }
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'INVALID_TTS_PROFILE');
+  assert.equal(calls, 0);
+});
+
 function seededDb() {
   const DB = createSqliteDb();
   DB.exec(`

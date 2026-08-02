@@ -86,6 +86,7 @@
   .pc-form input:not([type="checkbox"]):focus, .pc-form textarea:focus { outline: none; border-color: var(--teal); }
   .pc-form .pc-full { grid-column: 1 / -1; }
   .pc-form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .pc-translate-word { width: 100%; margin-top: 7px; }
   .pc-form-hint { font-size: 11.5px; color: var(--ink-dim); grid-column: 1/-1; margin-top: -4px; }
   .pc-btn-ghost {
     background: none; border: 1px solid var(--line); color: var(--ink-dim);
@@ -406,6 +407,36 @@
   .pc-reader-settings-choice[aria-pressed="true"] {
     border-color: var(--teal); background: color-mix(in srgb, var(--teal) 16%, var(--bg-panel)); color: var(--teal);
   }
+  .pc-reader-settings-voice, .pc-settings-field { display: grid; gap: 6px; color: var(--ink-dim); font-size: 12px; }
+  .pc-reader-settings-voice select, .pc-settings-field select {
+    min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg-deep); color: var(--ink); font: inherit;
+  }
+  .pc-reader-translation-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pc-reader-translation-title { flex-basis: 100%; color: var(--ink-dim); font-size: 14px; }
+  .pc-reader-translation {
+    margin: 8px 0 18px; padding: 12px 14px; border-left: 3px solid var(--teal);
+    border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--teal) 8%, var(--bg-panel));
+    color: var(--ink-dim); font-family: 'Noto Sans SC', sans-serif; line-height: 1.75; white-space: pre-line;
+  }
+  .pc-selection-translation {
+    margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+    background: color-mix(in srgb, var(--teal) 10%, var(--bg-deep)); color: var(--ink);
+    white-space: pre-line;
+  }
+  .pc-offline-shell {
+    width: min(520px, 100%); margin: 12vh auto 0; padding: 28px;
+    border: 1px solid var(--line); border-radius: 14px; background: var(--bg-panel); text-align: center;
+  }
+  .pc-offline-shell h1 { margin: 0 0 10px; color: var(--amber); }
+  .pc-offline-shell p { margin: 0; color: var(--ink-dim); line-height: 1.7; }
+  .pc-install-dialog {
+    width: min(420px, calc(100vw - 28px)); padding: 22px; border: 1px solid var(--line);
+    border-radius: 14px; background: var(--bg-panel); color: var(--ink);
+  }
+  .pc-install-dialog::backdrop { background: rgba(0, 0, 0, .58); }
+  .pc-install-dialog h2 { margin-top: 0; }
+  .pc-install-dialog p { color: var(--ink-dim); line-height: 1.7; }
   .pc-term {
     appearance: none; border: 0; border-radius: 4px; padding: 1px 2px;
     font: inherit; line-height: inherit; color: inherit; cursor: pointer;
@@ -694,6 +725,7 @@
     .pc-testcard { padding: 18px; }
     .pc-topnav { align-items: stretch; flex-direction: column; }
     .pc-account-actions { order: -1; width: 100%; flex-wrap: nowrap; }
+    .pc-install-button { white-space: nowrap; }
     .pc-username {
       min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       margin-right: auto;

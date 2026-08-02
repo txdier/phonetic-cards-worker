@@ -1,5 +1,10 @@
 import { distinctForms, maskWordForms, primaryWord } from './lib/word-display.js';
-import { renderInlineError, showToast } from './lib/dom.js';
+import { renderInlineError, requestConfirmation, showToast } from './lib/dom.js';
+import {
+  loadTtsPreferences,
+  saveTtsPreferences,
+  TTS_PROFILE_OPTIONS
+} from './lib/tts-preferences.js';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重新学习'];
 const REVIEW_LABELS = ['忘记', '困难', '良好', '简单'];
@@ -33,6 +38,7 @@ export function createWordsView({
   api,
   speech,
   tts = null,
+  storage = null,
   page = 'library',
   deleteUndoMs = 4000
 }) {
@@ -51,6 +57,7 @@ export function createWordsView({
   let stats = null;
   let tagLoadError = '';
   let wordFormGeneration = 0;
+  let ttsPreferences = loadTtsPreferences(storage);
   const reviewAttempts = new Map();
   let filters = { keyword: '', tag: '', state: '', due: false };
   const player = tts || {
@@ -155,7 +162,9 @@ export function createWordsView({
       data-tag-options-loaded="${tagLoadError ? 'false' : 'true'}">
       <div class="pc-full pc-conversion-title" data-role="word-form-title">${word ? '编辑单词' : '添加新词'}</div>
       <div><label for="f-en">单词（原形）</label><input id="f-en" value="${escapeHtml(word ? primaryWord(word) : '')}" placeholder="confirm"></div>
-      <div><label for="f-zh">中文含义</label><input id="f-zh" value="${escapeHtml(word?.zh || '')}" placeholder="确认"></div>
+      <div><label for="f-zh">中文含义</label><input id="f-zh" value="${escapeHtml(word?.zh || '')}" placeholder="确认">
+        <button type="button" class="pc-btn-ghost pc-translate-word" data-action="translate-word">AI 翻译</button>
+      </div>
       <div class="pc-full"><label for="f-stress">重音标注</label><input id="f-stress" value="${escapeHtml(word?.stress || '')}" placeholder="con-FIRM"></div>
       <div class="pc-full"><label for="f-example">例句</label><textarea id="f-example" rows="2">${escapeHtml(word?.example || '')}</textarea></div>
       <fieldset class="pc-full pc-tag-field"><legend>标签</legend>
@@ -514,9 +523,14 @@ export function createWordsView({
         <a class="pc-btn-ghost" href="/api/export?format=json">JSON</a>
       </div></section>
       <section class="pc-settings-card"><h3>Azure TTS 月度用量</h3>
+        <label class="pc-settings-field">词卡与例句朗读角色
+          <select data-action="word-tts-profile">${Object.entries(TTS_PROFILE_OPTIONS).map(([value, label]) =>
+            `<option value="${escapeHtml(value)}" ${ttsPreferences.wordProfile === value ? 'selected' : ''}>${escapeHtml(label)}</option>`
+          ).join('')}</select>
+        </label>
         <p>${used.toLocaleString()} / ${budget.toLocaleString()} 字符</p>
         <progress max="${budget}" value="${Math.min(used, budget)}"></progress>
-        <p class="pc-muted">${usage?.configured ? 'Azure 与 R2 已配置；失败时自动使用浏览器语音。' : 'Azure 未配置，当前使用浏览器语音。'}</p>
+        <p class="pc-muted">${usage?.configured ? 'Azure 与 R2 已配置；失败时自动使用浏览器语音，回退音色由设备决定。' : 'Azure 未配置，当前使用浏览器语音，音色由设备决定。'}</p>
       </section>
       <section class="pc-settings-card"><h3>FSRS 状态</h3>
         <p>总计 ${Number(stats?.total || 0)} · 到期 ${Number(stats?.due || 0)} · 新卡 ${Number(stats?.new || 0)} · 学习中 ${Number(stats?.learning || 0)} · 复习中 ${Number(stats?.review || 0)}</p>
@@ -640,6 +654,48 @@ export function createWordsView({
       render();
     } catch (error) {
       if (mounted) renderInlineError(form, error.message || '保存失败');
+    }
+  }
+
+  async function translateWord(button) {
+    const form = button.closest('#pc-word-form');
+    const english = form?.querySelector('#f-en');
+    const chinese = form?.querySelector('#f-zh');
+    const example = form?.querySelector('#f-example');
+    const text = String(english?.value || '').trim();
+    if (!form || !chinese || !text) {
+      renderInlineError(form || root, '请先填写要翻译的英语单词或短语');
+      english?.focus();
+      return;
+    }
+    if (chinese.value.trim()) {
+      const confirmed = await requestConfirmation({
+        root,
+        title: '替换中文含义？',
+        message: 'AI 翻译会替换当前填写的中文含义，但不会自动保存词卡。',
+        confirmLabel: '继续翻译',
+        trigger: button
+      });
+      if (!confirmed || !mounted || !form.isConnected) return;
+    }
+    const generation = Number(form.dataset.generation);
+    button.disabled = true;
+    try {
+      const result = await api('/api/translations/word', {
+        method: 'POST',
+        body: JSON.stringify({ text, example: String(example?.value || '').trim() })
+      });
+      if (!mounted || !form.isConnected || generation !== wordFormGeneration) return;
+      chinese.value = String(result?.translation || '');
+      chinese.focus();
+    } catch (error) {
+      if (mounted && form.isConnected && generation === wordFormGeneration) {
+        renderInlineError(form, error.message || 'AI 翻译暂不可用，请稍后重试');
+      }
+    } finally {
+      if (mounted && form.isConnected && generation === wordFormGeneration) {
+        button.disabled = false;
+      }
     }
   }
 
@@ -797,6 +853,7 @@ export function createWordsView({
     }
     if (action === 'cancel-form') { editingId = null; render(); }
     if (action === 'submit-form') saveWord();
+    if (action === 'translate-word') translateWord(target);
     if (action === 'create-word-tag') createWordTag(target);
     if (action === 'retry-word-tags') retryWordTags(target);
     if (action === 'edit') { editingId = target.dataset.id; render(); }
@@ -816,7 +873,8 @@ export function createWordsView({
     if (action === 'play') {
       event.stopPropagation();
       player.speakWord(target.dataset.id, target.dataset.mode, target.dataset.text, {
-        rate: speech?.getRate?.() || 1
+        rate: speech?.getRate?.() || 1,
+        profile: ttsPreferences.wordProfile
       });
     }
     if (action === 'reveal' && !event.target.closest('[data-action="play"], [data-action="judge"]')) {
@@ -857,6 +915,13 @@ export function createWordsView({
     }
   }
 
+  function onChange(event) {
+    if (!event.target.matches('[data-action="word-tts-profile"]')) return;
+    const next = { ...ttsPreferences, wordProfile: event.target.value };
+    if (saveTtsPreferences(storage, next)) ttsPreferences = next;
+    else event.target.value = ttsPreferences.wordProfile;
+  }
+
   function onKeydown(event) {
     const menu = event.target.closest('[data-role="card-action-menu"]');
     if (menu) {
@@ -890,6 +955,7 @@ export function createWordsView({
 
   root.addEventListener('click', onClick);
   root.addEventListener('submit', onSubmit);
+  root.addEventListener('change', onChange);
   root.addEventListener('keydown', onKeydown);
   root.ownerDocument.addEventListener('pointerdown', onDocumentPointerDown);
   root.innerHTML = '<div class="pc-empty">加载中…</div>';
@@ -903,6 +969,7 @@ export function createWordsView({
     relationDialogCleanup?.();
     root.removeEventListener('click', onClick);
     root.removeEventListener('submit', onSubmit);
+    root.removeEventListener('change', onChange);
     root.removeEventListener('keydown', onKeydown);
     root.ownerDocument.removeEventListener('pointerdown', onDocumentPointerDown);
     player.stop?.();

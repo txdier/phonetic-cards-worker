@@ -1,0 +1,25 @@
+name = "phonetic-cards"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "phonetic_cards_db"
+database_id = "<your-d1-database-id>"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "phonetic-cards-audio"
+
+[ai]
+binding = "AI"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[vars]
+AUTH_USERNAME = "<your-username>"
+AZURE_TTS_REGION = "eastus"
+TTS_MONTHLY_CHAR_BUDGET = "450000"

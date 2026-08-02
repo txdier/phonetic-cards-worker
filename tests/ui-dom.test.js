@@ -909,6 +909,42 @@ test('words view uses inline errors and supports undo before delayed deletion', 
   }
 });
 
+test('word form translates with the complete example without saving the card', async () => {
+  const env = installDom();
+  const calls = [];
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async (path, init = {}) => {
+      calls.push({ path, init });
+      if (path === '/api/words' && !init.method) return [];
+      if (path === '/api/tags') return { tags: [] };
+      if (path === '/api/translations/word' && init.method === 'POST') {
+        return { translation: '部署；调配' };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="toggle-form"]'));
+    env.root.querySelector('#f-en').value = 'deploy';
+    env.root.querySelector('#f-example').value = 'They deployed the service before dawn.';
+    click(env.window, env.root.querySelector('[data-action="translate-word"]'));
+    await flush();
+
+    assert.equal(env.root.querySelector('#f-zh').value, '部署；调配');
+    const translationCall = calls.find(call => call.path === '/api/translations/word');
+    assert.deepEqual(JSON.parse(translationCall.init.body), {
+      text: 'deploy', example: 'They deployed the service before dawn.'
+    });
+    assert.equal(calls.some(call => call.path === '/api/words' && call.init.method === 'POST'), false);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('words view retains failed additions and restores failed delayed deletions', async () => {
   const env = installDom();
   const word = {
@@ -961,6 +997,48 @@ test('words view disables pronunciation with an explanation when speech is unava
     await flush();
     assert.equal(env.root.querySelector('[data-action="play"]').disabled, true);
     assert.match(env.root.querySelector('[data-role="speech-unavailable"]').textContent, /浏览器.*语音/);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word settings persist a voice profile that is used by word playback', async () => {
+  const env = installDom();
+  const played = [];
+  const api = async path => {
+    if (path === '/api/tts/usage') return { usedChars: 0, budget: 450000, configured: true };
+    if (path === '/api/word-stats') return { total: 0 };
+    if (path === '/api/tags') return { tags: [] };
+    if (path === '/api/words') return [{
+      id: 'w1', lemma: 'deploy', en: 'deploy', zh: '部署', example: '', stress: '', forms: []
+    }];
+    throw new Error(`unexpected request GET ${path}`);
+  };
+  const tts = {
+    isSupported: true,
+    speakWord(...args) { played.push(args); },
+    stop() {}
+  };
+  let cleanup = createWordsView({
+    root: env.root, api, tts, storage: env.window.localStorage,
+    speech: { isSupported: true, getRate: () => 1, stop() {} }, page: 'settings'
+  });
+  try {
+    await flush();
+    const select = env.root.querySelector('[data-action="word-tts-profile"]');
+    assert.equal(select.value, 'jenny-chat');
+    select.value = 'jenny-friendly';
+    select.dispatchEvent(new env.window.Event('change', { bubbles: true }));
+    cleanup();
+
+    cleanup = createWordsView({
+      root: env.root, api, tts, storage: env.window.localStorage,
+      speech: { isSupported: true, getRate: () => 1, stop() {} }
+    });
+    await flush();
+    click(env.window, env.root.querySelector('[data-action="play"]'));
+    assert.equal(played[0][3].profile, 'jenny-friendly');
   } finally {
     cleanup();
     env.restore();
@@ -1410,6 +1488,52 @@ test('app coordinator replaces the authenticated shell with login after a real w
     assert.equal(progressRetries, 1);
   } finally {
     globalThis.fetch = originalFetch;
+    env.restore();
+  }
+});
+
+test('offline boot renders a network notice and retries after connectivity returns', async () => {
+  const env = installDom();
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(env.window.navigator, 'onLine', {
+    configurable: true, value: false
+  });
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true, value: env.window.navigator
+  });
+  const originalFetch = globalThis.fetch;
+  let online = false;
+  globalThis.fetch = async path => {
+    if (!online) throw new TypeError('Failed to fetch');
+    if (path === '/api/me') {
+      return new Response(JSON.stringify({ username: 'joe' }), { status: 200 });
+    }
+    if (path === '/api/words') {
+      return new Response(JSON.stringify({ words: [], total: 0, page: 1, pageSize: 24 }), { status: 200 });
+    }
+    if (path === '/api/tags') {
+      return new Response(JSON.stringify({ tags: [] }), { status: 200 });
+    }
+    throw new Error(`unexpected fetch ${path}`);
+  };
+  try {
+    await import(`../public/app.js?offline-test=${Date.now()}`);
+    await flush();
+    assert.ok(env.root.querySelector('[data-role="offline-shell"]'));
+    assert.equal(env.root.querySelector('.pc-login-card'), null);
+
+    online = true;
+    Object.defineProperty(env.window.navigator, 'onLine', {
+      configurable: true, value: true
+    });
+    env.window.dispatchEvent(new env.window.Event('online'));
+    await flush();
+    assert.ok(env.root.querySelector('.pc-app-shell'));
+    assert.equal(env.root.querySelector('[data-role="offline-shell"]'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+    else delete globalThis.navigator;
     env.restore();
   }
 });

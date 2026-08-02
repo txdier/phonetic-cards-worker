@@ -9,12 +9,16 @@ import { createAloudCheckpointStore } from './lib/aloud-checkpoint.js';
 import { createProgressQueue, progressQueueKey, sendProgressItem } from './lib/reading-session.js';
 import { createWordsView } from './words-view.js';
 import { createStatsView } from './stats-view.js';
+import { isConnectivityFailure } from './lib/connectivity.js';
+import { createPwaInstallController, registerServiceWorker } from './lib/pwa-install.js';
 
 const root = document.getElementById('pc-root');
 let currentUsername = null;
 let unmountView = null;
 let progressQueue = null;
 let aloudCheckpointStore = null;
+let installButton = null;
+let waitingForConnectivity = false;
 let lightMode = false;
 try { lightMode = localStorage.getItem('pc-theme') === 'light'; } catch { /* storage may be disabled */ }
 root.classList.toggle('pc-light', lightMode);
@@ -34,7 +38,17 @@ const tts = createTtsPlayer({
 let progressStorage = null;
 try { progressStorage = globalThis.localStorage; } catch { /* storage may be disabled */ }
 window.addEventListener('beforeunload', () => speech.cleanup());
-window.addEventListener('online', () => progressQueue?.retry());
+window.addEventListener('online', () => {
+  progressQueue?.retry();
+  if (waitingForConnectivity) boot();
+});
+
+function syncInstallButton() {
+  if (installButton) installButton.hidden = pwaInstall.mode() === 'hidden';
+}
+
+const pwaInstall = createPwaInstallController({ onChange: syncInstallButton });
+registerServiceWorker();
 
 function navigate(route) {
   const hash = hashForRoute(route);
@@ -43,6 +57,7 @@ function navigate(route) {
 }
 
 function renderLogin(message = '') {
+  waitingForConnectivity = false;
   unmountView?.();
   unmountView = null;
   root.replaceChildren();
@@ -73,6 +88,40 @@ function renderLogin(message = '') {
   wrap.append(form); root.append(header, wrap);
 }
 
+function renderOffline() {
+  waitingForConnectivity = true;
+  unmountView?.();
+  unmountView = null;
+  root.replaceChildren();
+  const shell = document.createElement('main');
+  shell.className = 'pc-offline-shell';
+  shell.setAttribute('data-role', 'offline-shell');
+  const title = document.createElement('h1');
+  title.textContent = '当前无法联网';
+  const message = document.createElement('p');
+  message.textContent = '应用外壳已离线打开。连接网络后会自动重试，登录状态并未失效。';
+  shell.append(title, message);
+  root.append(shell);
+}
+
+function showIosInstallInstructions() {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'pc-install-dialog';
+  const title = document.createElement('h2');
+  title.textContent = '安装语音卡片';
+  const instructions = document.createElement('p');
+  instructions.textContent = '请在 Safari 中依次选择：Safari 分享 → 添加到主屏幕。';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'pc-btn-primary';
+  close.textContent = '知道了';
+  close.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', () => dialog.remove());
+  dialog.append(title, instructions, close);
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
 function disconnectProgressAndRenderLogin(message = '') {
   const previousQueue = progressQueue;
   progressQueue = null;
@@ -101,6 +150,15 @@ function mountRoute() {
   }
   const account = document.createElement('div'); account.className = 'pc-account-actions';
   const username = document.createElement('span'); username.className = 'pc-username'; username.textContent = currentUsername;
+  installButton = document.createElement('button');
+  installButton.className = 'pc-theme-toggle pc-install-button';
+  installButton.textContent = '安装应用';
+  installButton.addEventListener('click', async () => {
+    const result = await pwaInstall.install();
+    if (result.outcome === 'instructions') showIosInstallInstructions();
+    syncInstallButton();
+  });
+  syncInstallButton();
   const theme = document.createElement('button'); theme.className = 'pc-theme-toggle'; theme.textContent = lightMode ? '深色' : '浅色'; theme.setAttribute('aria-label', '切换主题');
   theme.addEventListener('click', () => {
     lightMode = !lightMode; root.classList.toggle('pc-light', lightMode);
@@ -118,7 +176,7 @@ function mountRoute() {
     aloudCheckpointStore = null;
     renderLogin();
   });
-  account.append(username, theme, logout); top.append(modules, account); shell.append(top);
+  account.append(username, installButton, theme, logout); top.append(modules, account); shell.append(top);
   if (route.module === 'words') {
     const subnav = document.createElement('nav'); subnav.className = 'pc-article-nav'; subnav.setAttribute('aria-label', '词库页面');
     for (const item of [{ page: 'library', label: '词库' }, { page: 'review', label: '复习' }, { page: 'settings', label: '设置' }]) {
@@ -146,7 +204,9 @@ function mountRoute() {
   }
   const viewRoot = document.createElement('main'); viewRoot.className = 'pc-view-root'; shell.append(viewRoot); root.append(shell);
   if (route.module === 'words') {
-    unmountView = createWordsView({ root: viewRoot, api, speech, tts, page: route.page });
+    unmountView = createWordsView({
+      root: viewRoot, api, speech, tts, page: route.page, storage: progressStorage
+    });
   } else if (route.page === 'reader') {
     unmountView = createReaderView({
       root: viewRoot,
@@ -180,6 +240,7 @@ async function boot() {
     const user = await api('/api/me');
     if (!user.username) throw new Error('unauthorized');
     currentUsername = user.username;
+    waitingForConnectivity = false;
     progressQueue = createProgressQueue({
       storage: progressStorage,
       key: progressQueueKey(currentUsername),
@@ -192,10 +253,11 @@ async function boot() {
     progressQueue.retry();
     if (!location.hash) history.replaceState(null, '', '#/words');
     mountRoute();
-  } catch {
+  } catch (error) {
     currentUsername = null;
     aloudCheckpointStore = null;
-    disconnectProgressAndRenderLogin();
+    if (isConnectivityFailure(error)) renderOffline();
+    else disconnectProgressAndRenderLogin();
   }
 }
 

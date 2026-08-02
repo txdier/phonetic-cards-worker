@@ -296,7 +296,9 @@ export function createTtsPlayer({
     updateCompletion(false);
     publish();
 
-    const objectUrl = await fetchObjectUrl(articlePath(session.articleId, index), token);
+    const objectUrl = await fetchObjectUrl(
+      articlePath(session.articleId, index, session.profile), token
+    );
     if (!objectUrl) {
       if (token === generation && articleSession === session) {
         if (!session.playIntent) {
@@ -366,7 +368,7 @@ export function createTtsPlayer({
       state = 'speaking';
       publishMediaPosition();
       if (index + 1 < session.texts.length) {
-        prefetch(articlePath(session.articleId, index + 1));
+        prefetch(articlePath(session.articleId, index + 1, session.profile));
       }
     };
     audio.onpause = () => {
@@ -477,6 +479,7 @@ export function createTtsPlayer({
       playIntent: true,
       heldIndex: nextIndex,
       heldOffsetSeconds: Math.max(0, Number(options.offsetSeconds) || 0),
+      profile: options.profile || '',
       resolve: resolveSession,
       legacyUnsubscribe: null
     };
@@ -511,17 +514,20 @@ export function createTtsPlayer({
       return snapshot();
     },
     speakWord(wordId, wordMode, text, options) {
+      const profile = options?.profile
+        ? `&profile=${encodeURIComponent(options.profile)}`
+        : '';
       return playPoint(
-        `/api/tts/words/${encodeURIComponent(wordId)}?mode=${encodeURIComponent(wordMode)}`,
+        `/api/tts/words/${encodeURIComponent(wordId)}?mode=${encodeURIComponent(wordMode)}${profile}`,
         text,
         options
       );
     },
     speakArticleSentence(nextArticleId, index, text, options = {}) {
-      return playPoint(articlePath(nextArticleId, index), text, {
+      return playPoint(articlePath(nextArticleId, index, options.profile), text, {
         ...options,
         nextPath: options.nextIndex != null
-          ? articlePath(nextArticleId, options.nextIndex)
+          ? articlePath(nextArticleId, options.nextIndex, options.profile)
           : null
       });
     },
@@ -630,8 +636,9 @@ function emptyCompletion() {
   return { reachedEnd: false, coverage: 0, counted: false };
 }
 
-function articlePath(articleId, index) {
-  return `/api/tts/articles/${encodeURIComponent(articleId)}/sentences/${index}`;
+function articlePath(articleId, index, profile = '') {
+  const query = profile ? `?profile=${encodeURIComponent(profile)}` : '';
+  return `/api/tts/articles/${encodeURIComponent(articleId)}/sentences/${index}${query}`;
 }
 
 function clampRate(value) {

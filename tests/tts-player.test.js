@@ -142,6 +142,30 @@ test('article playback reuses one audio and changes current only on play', async
   assert.equal(constructions, 1);
 });
 
+test('cloud TTS requests carry independent word and article profiles across sequencing', async () => {
+  const audio = new ControlledAudio();
+  const paths = [];
+  const player = createTtsPlayer({
+    fetch: async path => { paths.push(path); return cloudResponse(); },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.speakWord('w1', 'word', 'Deploy', { profile: 'jenny-friendly' });
+  await audio.waitForSource();
+  assert.match(paths[0], /mode=word&profile=jenny-friendly$/);
+  player.stop();
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0, { profile: 'guy-news' });
+  await audio.waitForSource(2);
+  assert.match(paths[1], /sentences\/0\?profile=guy-news$/);
+  await audio.begin();
+  await audio.finish();
+  await audio.waitForSource(3);
+  assert.match(paths[2], /sentences\/1\?profile=guy-news$/);
+});
+
 test('natural media-end pause event does not publish a paused state', async () => {
   const audio = new ControlledAudio();
   const states = [];

@@ -9,7 +9,8 @@ const MIGRATIONS = [
   new URL('../../migrations/0005_word_learning_fsrs.sql', import.meta.url),
   new URL('../../migrations/0006_tts_cache_usage.sql', import.meta.url),
   new URL('../../migrations/0007_add_article_aloud_position.sql', import.meta.url),
-  new URL('../../migrations/0008_add_article_aloud_offset.sql', import.meta.url)
+  new URL('../../migrations/0008_add_article_aloud_offset.sql', import.meta.url),
+  new URL('../../migrations/0009_article_translations.sql', import.meta.url)
 ];
 
 export function createSqliteDb() {

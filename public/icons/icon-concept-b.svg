@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">语音卡片图标方案 B</title>
+  <desc id="desc">深蓝背景上叠放的两张音标卡与青绿色声波。</desc>
+  <rect width="512" height="512" rx="112" fill="#10151c"/>
+  <rect x="116" y="77" width="294" height="335" rx="48" fill="#223344" stroke="#42c7b4" stroke-width="13" transform="rotate(8 263 245)"/>
+  <rect x="80" y="96" width="310" height="336" rx="50" fill="#182330" stroke="#e8a33d" stroke-width="17"/>
+  <text x="235" y="303" text-anchor="middle" fill="#f7efe1" font-family="Georgia, 'Times New Roman', serif" font-size="150" font-weight="700">/ə/</text>
+  <g fill="none" stroke="#42c7b4" stroke-width="15" stroke-linecap="round">
+    <path d="M320 372v-26"/><path d="M354 390v-62"/><path d="M388 377v-36"/><path d="M422 397v-76"/>
+  </g>
+</svg>

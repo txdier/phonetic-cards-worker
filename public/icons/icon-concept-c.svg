@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">语音卡片图标方案 C</title>
+  <desc id="desc">音标与连续波形左右分区的深蓝、琥珀和青绿图标。</desc>
+  <rect width="512" height="512" rx="112" fill="#10151c"/>
+  <rect x="66" y="91" width="380" height="330" rx="64" fill="#182330" stroke="#e8a33d" stroke-width="16"/>
+  <path d="M269 117v278" stroke="#e8a33d" stroke-width="10" opacity=".55"/>
+  <text x="170" y="301" text-anchor="middle" fill="#f7efe1" font-family="Georgia, 'Times New Roman', serif" font-size="130" font-weight="700">/ə/</text>
+  <path d="M303 260c14 0 14-62 28-62s14 120 28 120 14-155 28-155 14 108 28 108 14-45 28-45" fill="none" stroke="#42c7b4" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

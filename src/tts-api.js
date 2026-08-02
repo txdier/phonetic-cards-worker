@@ -2,7 +2,13 @@ import { jsonResponse } from './http.js';
 import { splitSentences } from '../public/lib/text.js';
 
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
+const TTS_PROFILES = Object.freeze({
+  'jenny-chat': Object.freeze({ voice: 'en-US-JennyNeural', style: 'chat' }),
+  'jenny-friendly': Object.freeze({ voice: 'en-US-JennyNeural', style: 'friendly' }),
+  'aria-narration': Object.freeze({ voice: 'en-US-AriaNeural', style: 'narration-professional' }),
+  'guy-news': Object.freeze({ voice: 'en-US-GuyNeural', style: 'newscast' })
+});
 
 export async function handleTtsApi(
   request,
@@ -27,8 +33,17 @@ export async function handleTtsApi(
     );
   }
 
-  const voice = env.AZURE_TTS_VOICE || 'en-US-JennyNeural';
-  const cacheKey = await audioCacheKey(resource.mode, text, voice);
+  const url = new URL(request.url);
+  const profileName = url.searchParams.get('profile')
+    || (resource.mode === 'sentence' ? 'aria-narration' : 'jenny-chat');
+  const profile = TTS_PROFILES[profileName];
+  if (!profile) {
+    return jsonResponse(
+      { error: 'invalid TTS profile', code: 'INVALID_TTS_PROFILE' },
+      { status: 400 }
+    );
+  }
+  const cacheKey = await audioCacheKey(resource.mode, text, profileName, profile);
   const cached = await env.AUDIO?.get(cacheKey);
   if (cached) return cachedAudio(cached, 'hit');
 
@@ -46,7 +61,7 @@ export async function handleTtsApi(
 
   let audio;
   try {
-    audio = await synthesizeAzure(text, env, runtime.fetch || fetch);
+    audio = await synthesizeAzure(text, profile, env, runtime.fetch || fetch);
   } catch (error) {
     await releaseLease(env.DB, lease, reviewedAt.getTime());
     return unavailable(error.code || 'TTS_GENERATION_FAILED');
@@ -217,9 +232,9 @@ async function releaseLease(DB, lease, now) {
   ]);
 }
 
-async function synthesizeAzure(text, env, fetchImpl) {
+async function synthesizeAzure(text, profile, env, fetchImpl) {
   const endpoint = `https://${env.AZURE_TTS_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`;
-  const ssml = `<speak version="1.0" xml:lang="en-US"><voice name="${escapeXml(env.AZURE_TTS_VOICE || 'en-US-JennyNeural')}">${escapeXml(text)}</voice></speak>`;
+  const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US"><voice name="${escapeXml(profile.voice)}"><mstts:express-as style="${escapeXml(profile.style)}">${escapeXml(text)}</mstts:express-as></voice></speak>`;
   let response;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     response = await fetchImpl(endpoint, {
@@ -302,12 +317,14 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;');
 }
 
-async function audioCacheKey(mode, text, voice) {
+async function audioCacheKey(mode, text, profileName, profile) {
   const input = JSON.stringify({
     cacheVersion: CACHE_VERSION,
     mode,
     text,
-    voice,
+    profileName,
+    voice: profile.voice,
+    style: profile.style,
     outputFormat: OUTPUT_FORMAT
   });
   const digest = await crypto.subtle.digest(

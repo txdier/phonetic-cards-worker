@@ -109,10 +109,11 @@ test('resetProgress zeroes every aggregate and removes progress events', async t
   ).count, 0);
 });
 
-test('metadata-only changes preserve the aloud sentence in real storage', async t => {
+test('metadata-only changes preserve the aloud sentence and article translation', async t => {
   const DB = createSeededDb();
   t.after(() => DB.close());
   insertArticle(DB, 'a1', 'Body');
+  insertTranslation(DB, 'a1');
   DB.prepare(`
     UPDATE article_progress
     SET last_aloud_sentence_index = 2, last_aloud_offset_seconds = 2.75
@@ -120,7 +121,7 @@ test('metadata-only changes preserve the aloud sentence in real storage', async 
   `).run();
 
   const response = await handleArticlesApi(jsonRequest('PATCH', {
-    title: 'Renamed', author: 'Writer'
+    author: 'Writer', source: 'Source', notes: 'Notes'
   }), { DB }, '/api/articles/a1', 'u1');
 
   assert.equal(response.status, 200);
@@ -131,6 +132,41 @@ test('metadata-only changes preserve the aloud sentence in real storage', async 
     last_aloud_sentence_index: 2,
     last_aloud_offset_seconds: 2.75
   });
+  assert.deepEqual(DB.get(
+    'SELECT title_zh FROM article_translations WHERE article_id = ?', 'a1'
+  ), { title_zh: '旧译文标题' });
+});
+
+test('changing the article title deletes its saved translation', async t => {
+  const DB = createSeededDb();
+  t.after(() => DB.close());
+  insertArticle(DB, 'a1', 'Body');
+  insertTranslation(DB, 'a1');
+
+  const response = await handleArticlesApi(jsonRequest('PATCH', {
+    title: 'Renamed'
+  }), { DB }, '/api/articles/a1', 'u1');
+
+  assert.equal(response.status, 200);
+  assert.equal(DB.get(
+    'SELECT article_id FROM article_translations WHERE article_id = ?', 'a1'
+  ), null);
+});
+
+test('changing the article body deletes its saved translation', async t => {
+  const DB = createSeededDb();
+  t.after(() => DB.close());
+  insertArticle(DB, 'a1', 'Body');
+  insertTranslation(DB, 'a1');
+
+  const response = await handleArticlesApi(jsonRequest('PATCH', {
+    body: 'Changed body'
+  }), { DB }, '/api/articles/a1', 'u1');
+
+  assert.equal(response.status, 200);
+  assert.equal(DB.get(
+    'SELECT article_id FROM article_translations WHERE article_id = ?', 'a1'
+  ), null);
 });
 
 function createSeededDb() {
@@ -173,6 +209,15 @@ function insertMarking(DB, id, articleId, normalizedText, pendingId) {
     id, articleId, 'u1', normalizedText, normalizedText,
     `${normalizedText} context`, pendingId, 1
   ).run();
+}
+
+function insertTranslation(DB, articleId) {
+  DB.prepare(`
+    INSERT INTO article_translations
+      (article_id, user_id, title_zh, paragraphs_json, source_hash,
+       model, created_at, updated_at)
+    VALUES (?, 'u1', '旧译文标题', '[]', 'hash', 'model', 1, 1)
+  `).bind(articleId).run();
 }
 
 function jsonRequest(method, body) {
