@@ -32,6 +32,11 @@ function formatRemaining(milliseconds) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+function formatFloatingRemaining(milliseconds) {
+  const formatted = formatRemaining(milliseconds);
+  return Number(formatted.split(':', 1)[0]) >= 100 ? '99m+' : formatted;
+}
+
 function wordCandidates(words) {
   const candidates = [];
   for (const word of words || []) {
@@ -97,6 +102,7 @@ const POPOVER_ICONS = {
 
 function svgIcon(name, { filled = false } = {}) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.dataset.icon = name;
   svg.setAttribute('viewBox', '0 0 24 24');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
@@ -979,6 +985,9 @@ export function createReaderView({
     const formattedRemaining = timerState.active
       ? formatRemaining(timerState.remainingMs)
       : '';
+    const floatingFormattedRemaining = timerState.active
+      ? formatFloatingRemaining(timerState.remainingMs)
+      : '';
     const remaining = root.querySelector('[data-role="sleep-timer-remaining"]');
     if (remaining) {
       if (timerState.expired) {
@@ -1005,7 +1014,7 @@ export function createReaderView({
       );
       if (trigger.dataset.action === 'speech-floating-timer') {
         trigger.replaceChildren(...(timerState.active
-          ? [element('span', 'pc-floating-speech-timer-value', formattedRemaining)]
+          ? [element('span', 'pc-floating-speech-timer-value', floatingFormattedRemaining)]
           : [svgIcon('timer'), element('span', 'pc-floating-speech-label', '定时')]));
       }
     }

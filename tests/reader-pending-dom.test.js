@@ -826,6 +826,7 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     const current = env.root.querySelector('[data-action="speech-current"]');
     const timer = env.root.querySelector('[data-action="speech-timer"]');
     const remaining = env.root.querySelector('[data-role="sleep-timer-remaining"]');
+    const topRateOutput = env.root.querySelector('[data-role="speech-rate-value"]');
 
     assert.equal(previous.disabled, true);
     assert.equal(current.disabled, false);
@@ -869,7 +870,9 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
       click(env.window, floatingRate);
       assert.equal(env.tts.controller.getRate(), expected);
       assert.equal(env.root.querySelector('[data-action="speech-rate"]').value, String(expected));
+      assert.equal(topRateOutput.textContent, `${expected}×`);
       assert.equal(floatingRate.textContent.trim(), `${expected}×`);
+      assert.equal(floatingRate.getAttribute('aria-label'), `切换朗读语速，当前 ${expected} 倍`);
     }
 
     env.tts.emit({
@@ -919,6 +922,14 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
 
     click(env.window, timer);
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    panel.querySelector('[data-role="sleep-timer-custom"]').value = '10000';
+    click(env.window, panel.querySelector('.pc-sleep-timer-custom-label + [data-action="speech-timer-set"]'));
+    assert.equal(remaining.textContent, '10000:00');
+    assert.equal(floatingTimer.textContent, '99m+');
+    assert.match(floatingTimer.getAttribute('aria-label'), /10000:00/);
+
+    click(env.window, timer);
+    panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
     panel.querySelector('[data-role="sleep-timer-custom"]').value = '7';
     click(env.window, panel.querySelector('.pc-sleep-timer-custom-label + [data-action="speech-timer-set"]'));
     assert.equal(remaining.textContent, '7:00');
@@ -954,6 +965,40 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     for (const interval of env.intervals) interval.callback();
     assert.equal(remaining.textContent, '定时结束');
     assert.match(env.root.querySelector('[data-role="speech-status"]').textContent, /定时结束/);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader identifies each floating primary-action icon across speech states', async () => {
+  const env = setupReader({
+    articleProgress: {
+      last_position_ratio: 0,
+      last_aloud_sentence_index: null,
+      last_aloud_offset_seconds: 0
+    }
+  });
+  try {
+    await env.ready();
+    const toggle = env.root.querySelector('[data-action="speech-floating-toggle"]');
+    const iconName = () => toggle.querySelector('svg').dataset.icon;
+
+    assert.equal(iconName(), 'target');
+    click(env.window, toggle);
+    assert.equal(iconName(), 'close');
+
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1', currentIndex: 1,
+      currentTime: 0, completion: { reachedEnd: false, coverage: 0, counted: false }
+    });
+    assert.equal(iconName(), 'pause');
+
+    env.tts.emit({
+      state: 'paused', mode: 'article', articleId: 'a1', currentIndex: 1,
+      currentTime: 0, completion: { reachedEnd: false, coverage: 0, counted: false }
+    });
+    assert.equal(iconName(), 'play');
   } finally {
     env.cleanup();
     env.restore();
