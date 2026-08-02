@@ -172,6 +172,23 @@ test('article translation migration creates owned cascading storage', () => {
   }
 });
 
+test('sentence translation migration creates a user-scoped reusable cache', () => {
+  const DB = createSqliteDb();
+  try {
+    assert.deepEqual(
+      DB.all('PRAGMA table_info(sentence_translation_cache)').map(row => row.name),
+      [
+        'user_id', 'cache_key', 'source_hash', 'context_hash', 'sentence_text',
+        'translation_zh', 'model', 'rules_version', 'created_at', 'updated_at'
+      ]
+    );
+    const foreignKeys = DB.all('PRAGMA foreign_key_list(sentence_translation_cache)');
+    assert.ok(foreignKeys.some(key => key.table === 'users' && key.on_delete === 'CASCADE'));
+  } finally {
+    DB.close();
+  }
+});
+
 test('article translation preserves complete paragraphs and persists only a valid full result', async t => {
   const DB = seededArticleDb('First line.\nStill first paragraph.\n\nSecond paragraph!');
   t.after(() => DB.close());
