@@ -84,7 +84,15 @@ export default {
         }
         return await handleWordsApi(request, env, path, userId);
       } catch (error) {
-        return jsonResponse({ error: error.message }, { status: error.status || 500 });
+        const status = Number(error?.status);
+        if (Number.isInteger(status) && status >= 400 && status < 500) {
+          return jsonResponse({ error: error.message }, { status });
+        }
+        return jsonResponse({
+          error: 'service is temporarily unavailable',
+          code: 'INTERNAL_ERROR',
+          retryable: true
+        }, { status: 500 });
       }
     }
 

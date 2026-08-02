@@ -10,15 +10,21 @@ import {
 const SENTENCE_LIMIT = 2000;
 const CONTEXT_LIMIT = 30000;
 const LOOKUP_BATCH_SIZE = 50;
+const LOOKUP_ITEM_LIMIT = 500;
+const LOOKUP_AGGREGATE_LIMIT = 30000;
 
 export async function handleSentenceTranslationsApi(request, env, path, userId) {
   const match = path.match(/^\/api\/articles\/([a-zA-Z0-9-]+)\/sentence-translations$/);
   if (!match) return notFound();
-  if (request.method === 'GET') return getSentenceTranslations(env.DB, match[1], userId);
-  if (request.method === 'POST') {
-    return postSentenceTranslation(request, env, match[1], userId);
+  try {
+    if (request.method === 'GET') return await getSentenceTranslations(env.DB, match[1], userId);
+    if (request.method === 'POST') {
+      return await postSentenceTranslation(request, env, match[1], userId);
+    }
+    return notFound();
+  } catch {
+    return cacheUnavailable();
   }
-  return notFound();
 }
 
 async function getSentenceTranslations(DB, articleId, userId) {
@@ -26,6 +32,7 @@ async function getSentenceTranslations(DB, articleId, userId) {
   if (!article) return articleNotFound();
   const paragraphs = splitArticleParagraphs(article.body).paragraphs;
   if (!descriptorsWithinLimits(paragraphs)) return tooLong();
+  if (!lookupWithinLimits(paragraphs)) return lookupTooLarge();
   const items = await sentenceDescriptors(userId, paragraphs);
   const cached = await readCachedTranslations(DB, userId, items);
   return jsonResponse({
@@ -34,6 +41,7 @@ async function getSentenceTranslations(DB, articleId, userId) {
       .map(item => ({
         sentenceIndex: item.sentenceIndex,
         sourceHash: item.identity.sourceHash,
+        contextHash: item.identity.contextHash,
         translation: cached.get(item.identity.cacheKey)
       }))
   });
@@ -136,6 +144,17 @@ function descriptorsWithinLimits(paragraphs) {
   ));
 }
 
+function lookupWithinLimits(paragraphs) {
+  let itemCount = 0;
+  let aggregateLength = 0;
+  for (const paragraph of paragraphs) {
+    aggregateLength += Array.from(normalizeSource(paragraph.text)).length;
+    itemCount += paragraph.sentences.length;
+    if (itemCount > LOOKUP_ITEM_LIMIT || aggregateLength > LOOKUP_AGGREGATE_LIMIT) return false;
+  }
+  return true;
+}
+
 async function sentenceDescriptor(userId, articleBody, sentenceIndex) {
   const paragraphs = splitArticleParagraphs(articleBody).paragraphs;
   for (const paragraph of paragraphs) {
@@ -214,6 +233,7 @@ function sentenceResponse(item, translation, cached) {
   return jsonResponse({
     sentenceIndex: item.sentenceIndex,
     sourceHash: item.identity.sourceHash,
+    contextHash: item.identity.contextHash,
     translation,
     cached
   });
@@ -231,6 +251,21 @@ function tooLong() {
     { error: 'translation input is too long', code: 'TRANSLATION_TOO_LONG' },
     { status: 413 }
   );
+}
+
+function lookupTooLarge() {
+  return jsonResponse(
+    { error: 'sentence translation lookup is too large', code: 'TRANSLATION_LOOKUP_TOO_LARGE' },
+    { status: 413 }
+  );
+}
+
+function cacheUnavailable() {
+  return jsonResponse({
+    error: 'sentence translation cache is temporarily unavailable',
+    code: 'TRANSLATION_CACHE_UNAVAILABLE',
+    retryable: true
+  }, { status: 503 });
 }
 
 function sourceChanged() {

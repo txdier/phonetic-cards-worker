@@ -1,4 +1,4 @@
-const CACHE_NAME = 'phonetic-cards-shell-v1';
+const CACHE_NAME = 'phonetic-cards-shell-v2';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -24,6 +24,7 @@ const SHELL_ASSETS = [
   '/lib/text.js',
   '/lib/tts-player.js',
   '/lib/tts-preferences.js',
+  '/lib/translation-preferences.js',
   '/lib/word-display.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',

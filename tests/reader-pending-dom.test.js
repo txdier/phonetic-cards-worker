@@ -52,6 +52,13 @@ async function waitFor(predicate, message = 'condition was not reached') {
   assert.fail(message);
 }
 
+async function translationSourceHash(value) {
+  const normalized = String(value ?? '').normalize('NFKC').replace(/\r\n?/g, '\n').trim();
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+  return [...new Uint8Array(digest)]
+    .map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function click(window, node) {
   node.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
 }
@@ -483,6 +490,7 @@ test('translation panel restores focus and persists sentence mode without render
 
     click(env.window, panel.querySelector('[data-action="translation-mode"][data-mode="sentence"]'));
     trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(env.window.document.activeElement, trigger);
     assert.equal(trigger.getAttribute('aria-pressed'), 'true');
     assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'sentence');
     assert.equal(env.root.querySelector('[data-role="article-translation-title"]'), null);
@@ -785,8 +793,13 @@ test('sentence translation slot renders immediately and keeps sentence speech se
       '[data-role="sentence-translation-slot"][data-sentence-index="0"]'
     );
     const slotHeightBefore = slot.getBoundingClientRect().height;
+    slot.querySelector('[data-action="translate-sentence"]').focus();
     click(env.window, slot.querySelector('[data-action="translate-sentence"]'));
     assert.equal(slot.dataset.state, 'loading');
+    assert.equal(
+      env.window.document.activeElement,
+      slot.querySelector('[data-role="sentence-translation-status"]')
+    );
     await waitFor(
       () => posts.length === 1 && slot.dataset.state === 'translated',
       'sentence POST should reach translated state'
@@ -804,7 +817,15 @@ test('sentence translation slot renders immediately and keeps sentence speech se
     const translated = slot.querySelector('[data-role="sentence-translation"]');
     assert.equal(translated.textContent, '第一句。');
     assert.equal(translated.tagName, 'SPAN');
-    assert.equal(translated.parentElement.dataset.action, 'refresh-sentence-translation');
+    assert.notEqual(translated.parentElement.tagName, 'BUTTON');
+    assert.equal(
+      env.window.document.activeElement,
+      slot.querySelector('[data-action="refresh-sentence-translation"]')
+    );
+    assert.equal(
+      slot.querySelector('[data-action="refresh-sentence-translation"]').getAttribute('aria-label'),
+      '重新翻译'
+    );
     assert.equal(slot.querySelector('button p'), null);
     assert.equal(slot.querySelectorAll('button').length, 1);
   } finally {
@@ -823,6 +844,8 @@ test('sentence translation restore hydrates returned indexes once and survives f
     status: 'fresh', titleZh: '全文', model: 'model', updatedAt: 2,
     paragraphs: [{ index: 0, translation: '全文译文。' }]
   };
+  const secondSourceHash = await translationSourceHash('Second sentence.');
+  const paragraphContextHash = await translationSourceHash(detail.body);
   const env = setupReader({
     body: detail.body,
     translationMode: 'sentence',
@@ -832,7 +855,12 @@ test('sentence translation restore hydrates returned indexes once and survives f
       if (path === '/api/articles/a1/sentence-translations' && !init.method) {
         sentenceGets += 1;
         return {
-          sentences: [{ sentenceIndex: 1, sourceHash: 'b'.repeat(64), translation: '第二句。' }]
+          sentences: [{
+            sentenceIndex: 1,
+            sourceHash: secondSourceHash,
+            contextHash: paragraphContextHash,
+            translation: '第二句。'
+          }]
         };
       }
       if (path === '/api/articles/a1/sentence-translations' && init.method === 'POST') {
@@ -843,6 +871,10 @@ test('sentence translation restore hydrates returned indexes once and survives f
   });
   try {
     await env.ready();
+    await waitFor(
+      () => env.root.querySelector('[data-role="sentence-translation"]'),
+      'matching sentence cache should hydrate'
+    );
     assert.equal(sentenceGets, 1);
     assert.equal(sentencePosts, 0);
     assert.equal(env.root.querySelectorAll('[data-role="sentence-translation-slot"]').length, 2);
@@ -948,8 +980,13 @@ test('sentence translation slot isolates loading, errors, and retries', async ()
   try {
     await env.ready();
     let slots = env.root.querySelectorAll('[data-role="sentence-translation-slot"]');
+    slots[0].querySelector('[data-action="translate-sentence"]').focus();
     click(env.window, slots[0].querySelector('[data-action="translate-sentence"]'));
     assert.equal(slots[0].dataset.state, 'loading');
+    assert.equal(
+      env.window.document.activeElement,
+      slots[0].querySelector('[data-role="sentence-translation-status"]')
+    );
     assert.equal(slots[1].dataset.state, 'idle');
     assert.equal(slots[1].querySelector('[data-action="translate-sentence"]').disabled, false);
 
@@ -969,6 +1006,10 @@ test('sentence translation slot isolates loading, errors, and retries', async ()
     assert.equal(slots[0].dataset.state, 'error');
     assert.match(slots[0].textContent, /first sentence failed/);
     assert.ok(slots[0].querySelector('[data-action="translate-sentence"]'));
+    assert.equal(
+      env.window.document.activeElement,
+      slots[0].querySelector('[data-action="translate-sentence"]')
+    );
     assert.equal(slots[1].querySelector('[data-role="sentence-translation"]').textContent, '第二句。');
 
     click(env.window, slots[0].querySelector('[data-action="translate-sentence"]'));
@@ -992,6 +1033,7 @@ test('sentence translation refresh preserves the old value on failure', async ()
   const detail = articleDetail({
     body: 'First sentence.', markings: [], pending_terms: [], words: []
   });
+  const sourceHash = await translationSourceHash(detail.body);
   const env = setupReader({
     body: detail.body,
     translationMode: 'sentence',
@@ -999,7 +1041,12 @@ test('sentence translation refresh preserves the old value on failure', async ()
       if (path === '/api/articles/a1' && !init.method) return detail;
       if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
       if (path === '/api/articles/a1/sentence-translations' && !init.method) return {
-        sentences: [{ sentenceIndex: 0, sourceHash: 'a'.repeat(64), translation: '旧译文。' }]
+        sentences: [{
+          sentenceIndex: 0,
+          sourceHash,
+          contextHash: sourceHash,
+          translation: '旧译文。'
+        }]
       };
       if (path === '/api/articles/a1/sentence-translations' && init.method === 'POST') {
         const body = JSON.parse(init.body);
@@ -1012,11 +1059,20 @@ test('sentence translation refresh preserves the old value on failure', async ()
   });
   try {
     await env.ready();
+    await waitFor(
+      () => env.root.querySelector('[data-action="refresh-sentence-translation"]'),
+      'cached sentence should hydrate before refresh'
+    );
     let slot = env.root.querySelector('[data-role="sentence-translation-slot"]');
+    slot.querySelector('[data-action="refresh-sentence-translation"]').focus();
     click(env.window, slot.querySelector('[data-action="refresh-sentence-translation"]'));
     slot = env.root.querySelector('[data-role="sentence-translation-slot"]');
     assert.equal(slot.dataset.state, 'loading');
     assert.equal(slot.querySelector('[data-role="sentence-translation"]').textContent, '旧译文。');
+    assert.equal(
+      env.window.document.activeElement,
+      slot.querySelector('[data-role="sentence-translation-status"]')
+    );
     await waitFor(() => bodies.length === 1, 'refresh POST should start before rejection');
     failedRefresh.reject(new Error('refresh failed'));
     await waitFor(
@@ -1029,6 +1085,10 @@ test('sentence translation refresh preserves the old value on failure', async ()
     assert.equal(slot.dataset.state, 'error');
     assert.equal(slot.querySelector('[data-role="sentence-translation"]').textContent, '旧译文。');
     assert.match(slot.textContent, /refresh failed/);
+    assert.equal(
+      env.window.document.activeElement,
+      slot.querySelector('[data-action="refresh-sentence-translation"]')
+    );
     click(env.window, slot.querySelector('[data-action="refresh-sentence-translation"]'));
     await waitFor(
       () => bodies.length === 2 && slot.dataset.state === 'translated',
@@ -1049,11 +1109,17 @@ test('sentence translation stale responses cannot replace newer state or mutate 
   const detail = articleDetail({
     body: 'First sentence.', markings: [], pending_terms: [], words: []
   });
+  const cachedSourceHash = await translationSourceHash(detail.body);
   const apiImpl = async (path, init = {}) => {
     if (path === '/api/articles/a1' && !init.method) return detail;
     if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
     if (path === '/api/articles/a1/sentence-translations' && !init.method) return {
-      sentences: [{ sentenceIndex: 0, sourceHash: 'a'.repeat(64), translation: 'cached' }]
+      sentences: [{
+        sentenceIndex: 0,
+        sourceHash: cachedSourceHash,
+        contextHash: cachedSourceHash,
+        translation: 'cached'
+      }]
     };
     if (path === '/api/articles/a1/sentence-translations' && init.method === 'POST') {
       postCount += 1;
@@ -1063,7 +1129,10 @@ test('sentence translation stale responses cannot replace newer state or mutate 
   };
   const env = setupReader({ body: detail.body, translationMode: 'sentence', apiImpl });
   try {
-    await env.ready();
+    await waitFor(
+      () => env.root.querySelector('[data-action="refresh-sentence-translation"]'),
+      'cached sentence should hydrate before stale-response checks'
+    );
     click(env.window, env.root.querySelector('[data-action="refresh-sentence-translation"]'));
     await waitFor(() => postCount === 1, 'older refresh POST should start before mode switch');
     click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
@@ -1122,6 +1191,198 @@ test('sentence translation stale responses cannot replace newer state or mutate 
   } finally {
     cleanupEnv.cleanup();
     cleanupEnv.restore();
+  }
+});
+
+test('sentence translation restore rejects sentence or paragraph hash mismatches', async () => {
+  const detail = articleDetail({
+    body: 'First sentence. Second sentence.', markings: [], pending_terms: [], words: []
+  });
+  const paragraphHash = await translationSourceHash(detail.body);
+  const secondHash = await translationSourceHash('Second sentence.');
+  const wrongContextHash = await translationSourceHash('Different paragraph.');
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'sentence',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/sentence-translations' && !init.method) return {
+        sentences: [
+          {
+            sentenceIndex: 0,
+            sourceHash: secondHash,
+            contextHash: paragraphHash,
+            translation: 'wrong sentence'
+          },
+          {
+            sentenceIndex: 1,
+            sourceHash: secondHash,
+            contextHash: wrongContextHash,
+            translation: 'wrong context'
+          }
+        ]
+      };
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await waitFor(
+      () => env.root.querySelectorAll('[data-role="sentence-translation-slot"]').length === 2,
+      'sentence slots should render'
+    );
+    await env.ready();
+    const slots = env.root.querySelectorAll('[data-role="sentence-translation-slot"]');
+    assert.deepEqual([...slots].map(slot => slot.dataset.state), ['idle', 'idle']);
+    assert.equal(env.root.querySelector('[data-role="sentence-translation"]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('sentence translation restore discards hashing that finishes after leaving sentence mode', async () => {
+  const detail = articleDetail({
+    body: 'First sentence.', markings: [], pending_terms: [], words: []
+  });
+  const sourceHash = await translationSourceHash(detail.body);
+  const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const nativeCrypto = globalThis.crypto;
+  const gate = deferred();
+  let gets = 0;
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      ...nativeCrypto,
+      subtle: {
+        digest: async (...args) => {
+          await gate.promise;
+          return nativeCrypto.subtle.digest(...args);
+        }
+      }
+    }
+  });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'sentence',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/sentence-translations' && !init.method) {
+        gets += 1;
+        return gets === 1 ? {
+          sentences: [{
+            sentenceIndex: 0, sourceHash, contextHash: sourceHash, translation: 'stale restore'
+          }]
+        } : { sentences: [] };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="original"]'
+    ));
+    gate.resolve();
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="sentence"]'
+    ));
+    await waitFor(() => gets === 2, 'returning to sentence mode should reload discarded cache');
+    assert.equal(env.root.querySelector('[data-role="sentence-translation"]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+    if (originalCryptoDescriptor) {
+      Object.defineProperty(globalThis, 'crypto', originalCryptoDescriptor);
+    } else {
+      delete globalThis.crypto;
+    }
+  }
+});
+
+test('sentence translation restore failure stays silent after leaving sentence mode', async () => {
+  const restoreRequest = deferred();
+  let restoreStarted = false;
+  const detail = articleDetail({
+    body: 'First sentence.', markings: [], pending_terms: [], words: []
+  });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'sentence',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/sentence-translations' && !init.method) {
+        restoreStarted = true;
+        return restoreRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await waitFor(() => restoreStarted, 'sentence cache restore should start');
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="original"]'
+    ));
+    restoreRequest.reject(new Error('late cache failure'));
+    await env.ready();
+    assert.equal(env.root.querySelector('[data-role="reader-error"]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('sentence translation shows an immediate offline state without hashing or fetching', async () => {
+  const detail = articleDetail({ body: 'First sentence.', markings: [], pending_terms: [], words: [] });
+  const sourceHash = await translationSourceHash(detail.body);
+  let posts = 0;
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'sentence',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/sentence-translations' && !init.method) return {
+        sentences: [{
+          sentenceIndex: 0,
+          sourceHash,
+          contextHash: sourceHash,
+          translation: '保留的旧译文。'
+        }]
+      };
+      if (path === '/api/articles/a1/sentence-translations' && init.method === 'POST') {
+        posts += 1;
+        throw new Error('must not fetch offline');
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await waitFor(
+      () => env.root.querySelector('[data-action="refresh-sentence-translation"]'),
+      'cached translation should hydrate before going offline'
+    );
+    Object.defineProperty(env.window.navigator, 'onLine', { configurable: true, value: false });
+    const slot = env.root.querySelector('[data-role="sentence-translation-slot"]');
+    slot.querySelector('[data-action="refresh-sentence-translation"]').focus();
+    click(env.window, slot.querySelector('[data-action="refresh-sentence-translation"]'));
+    assert.equal(posts, 0);
+    assert.equal(slot.dataset.state, 'offline');
+    assert.match(slot.textContent, /需要联网/);
+    assert.equal(slot.querySelector('[data-role="sentence-translation"]').textContent, '保留的旧译文。');
+    assert.equal(
+      env.window.document.activeElement,
+      slot.querySelector('[data-action="refresh-sentence-translation"]')
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
   }
 });
 

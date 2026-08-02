@@ -279,17 +279,27 @@
   .pc-reader-paragraph-sentence-mode { display: grid; gap: .55em; }
   .pc-reader-sentence-unit { display: grid; gap: 4px; }
   .pc-sentence-translation-slot {
-    min-height: calc(2 * 1.75em + 12px); padding: 6px 10px; border-radius: 8px;
+    position: relative; min-height: calc(2 * 1.75em + 12px); padding: 6px 10px; border-radius: 8px;
     color: var(--ink-dim); background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
   }
   .pc-sentence-translation-action {
     width: 100%; min-height: 44px; border: 0; background: transparent;
-    color: inherit; text-align: left; cursor: pointer; font: inherit;
+    color: var(--teal); text-align: left; cursor: pointer; font: inherit;
   }
+  .pc-sentence-translation-controls { display: flex; align-items: center; justify-content: flex-end; }
+  .pc-sentence-translation-controls-cached { position: absolute; inset: 0; }
+  .pc-sentence-translation-controls-cached .pc-sentence-translation-action {
+    position: relative; height: 100%; align-self: stretch; color: transparent;
+  }
+  .pc-sentence-translation-controls-cached .pc-sentence-translation-action::after {
+    content: '↻'; position: absolute; top: 8px; right: 8px;
+    color: var(--teal); opacity: .72; font-size: 16px; line-height: 1;
+  }
+  .pc-sentence-translation-status:focus { outline: 3px solid var(--teal); outline-offset: 2px; }
   .pc-sentence-translation-action:disabled { cursor: wait; opacity: .7; }
   .pc-sentence-translation-action:focus-visible { outline: 3px solid var(--teal); outline-offset: -3px; }
   .pc-sentence-translation-text {
-    display: block; margin: 0; color: var(--ink-dim); line-height: 1.75;
+    display: block; margin: 0; padding-inline-end: 24px; color: var(--ink-dim); line-height: 1.75;
     font-family: 'Noto Sans SC', sans-serif;
   }
   .pc-sentence-translation-error { color: var(--coral); font-size: 12px; }

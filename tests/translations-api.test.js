@@ -603,7 +603,7 @@ test('sentence translation source change during AI leaves the cache empty', asyn
   assert.equal(DB.get('SELECT cache_key FROM sentence_translation_cache'), null);
 });
 
-test('sentence translation cache read failure returns 500 without calling AI', async t => {
+test('sentence translation cache failures are retryable and do not expose D1 details', async t => {
   const actualDb = seededArticleDb('Fine.');
   t.after(() => actualDb.close());
   let calls = 0;
@@ -613,7 +613,7 @@ test('sentence translation cache read failure returns 500 without calling AI', a
       return actualDb.prepare(sql);
     }
   };
-  const response = await worker.fetch(await authenticatedRequest(
+  const postResponse = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'POST',
     { sentenceIndex: 0, sourceHash: await sentenceHash('Fine.') }
   ), {
@@ -622,8 +622,63 @@ test('sentence translation cache read failure returns 500 without calling AI', a
     AI: { async run() { calls += 1; return { response: '{"translation":"意外调用"}' }; } }
   });
 
-  assert.equal(response.status, 500);
+  assert.equal(postResponse.status, 503);
+  assert.deepEqual(await postResponse.json(), {
+    error: 'sentence translation cache is temporarily unavailable',
+    code: 'TRANSLATION_CACHE_UNAVAILABLE',
+    retryable: true
+  });
   assert.equal(calls, 0);
+
+  const getResponse = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'GET'
+  ), { AUTH_SECRET: SECRET, DB });
+  assert.equal(getResponse.status, 503);
+  const getBody = await getResponse.json();
+  assert.equal(getBody.code, 'TRANSLATION_CACHE_UNAVAILABLE');
+  assert.equal(getBody.retryable, true);
+  assert.doesNotMatch(JSON.stringify(getBody), /cache unavailable/);
+});
+
+test('unexpected API failures use a stable sanitized internal error', async () => {
+  const response = await worker.fetch(await authenticatedRequest(
+    '/api/words', 'GET'
+  ), {
+    AUTH_SECRET: SECRET,
+    DB: { prepare() { throw new Error('private table name and SQL details'); } }
+  });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), {
+    error: 'service is temporarily unavailable',
+    code: 'INTERNAL_ERROR',
+    retryable: true
+  });
+});
+
+test('sentence translation cache GET rejects excessive lookup work before hashing or D1 reads', async t => {
+  const actualDb = seededArticleDb(
+    Array.from({ length: 501 }, (_, index) => `S${index}.`).join('\n\n')
+  );
+  t.after(() => actualDb.close());
+  let cacheReads = 0;
+  const DB = {
+    prepare(sql) {
+      if (/FROM sentence_translation_cache/.test(sql)) cacheReads += 1;
+      return actualDb.prepare(sql);
+    }
+  };
+
+  const response = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/sentence-translations', 'GET'
+  ), { AUTH_SECRET: SECRET, DB });
+
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), {
+    error: 'sentence translation lookup is too large',
+    code: 'TRANSLATION_LOOKUP_TOO_LARGE'
+  });
+  assert.equal(cacheReads, 0);
 });
 
 test('sentence translation cache GET reads D1 in batches of at most fifty keys', async t => {

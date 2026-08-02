@@ -491,6 +491,7 @@ export function createReaderView({
     const cached = sentenceTranslations.get(sentenceIndex);
     const state = sentenceTranslationStates.get(sentenceIndex);
     const status = sentenceTranslationStatus(sentenceIndex);
+    const restoreFocus = slot.contains(document.activeElement);
     slot.dataset.state = status;
     slot.replaceChildren();
 
@@ -499,28 +500,50 @@ export function createReaderView({
       ? (cached ? '正在重新翻译…' : '翻译中…')
       : status === 'error'
         ? (cached ? '重试重新翻译' : '重试翻译')
+        : status === 'offline'
+          ? (cached ? '联网后重新翻译' : '联网后重试翻译')
         : (cached ? '重新翻译' : '翻译本句');
-    const button = actionButton(action, label, 'pc-sentence-translation-action');
-    button.disabled = status === 'loading';
 
     if (cached) {
-      button.replaceChildren();
-      button.setAttribute('aria-label', label);
       const translated = element('span', 'pc-sentence-translation-text', cached.translation);
       translated.dataset.role = 'sentence-translation';
-      button.append(translated);
+      slot.append(translated);
     }
 
-    if (status === 'error') {
-      const error = element(
-        'span', 'pc-sentence-translation-error', state?.error || '本句翻译暂不可用，请重试'
-      );
-      error.dataset.role = 'sentence-translation-error';
-      error.setAttribute('role', 'alert');
-      if (cached) button.append(error);
-      else slot.append(error);
+    let statusNode = null;
+    if (status === 'loading') {
+      statusNode = element('span', 'pc-sentence-translation-status', label);
+      statusNode.dataset.role = 'sentence-translation-status';
+      statusNode.setAttribute('role', 'status');
+      slot.append(statusNode);
+    } else if (status === 'error' || status === 'offline') {
+      const message = status === 'offline'
+        ? '需要联网后才能翻译本句'
+        : state?.error || '本句翻译暂不可用，请重试';
+      statusNode = element('span', 'pc-sentence-translation-error', message);
+      statusNode.dataset.role = status === 'offline'
+        ? 'sentence-translation-status'
+        : 'sentence-translation-error';
+      statusNode.setAttribute('role', status === 'error' ? 'alert' : 'status');
+      slot.append(statusNode);
     }
-    slot.append(button);
+
+    const controls = element('div', 'pc-sentence-translation-controls');
+    if (cached) controls.classList.add('pc-sentence-translation-controls-cached');
+    const button = actionButton(action, label, 'pc-sentence-translation-action');
+    button.setAttribute('aria-label', label);
+    button.disabled = status === 'loading';
+    controls.append(button);
+    slot.append(controls);
+
+    if (restoreFocus) {
+      if (status === 'loading' && statusNode) {
+        statusNode.tabIndex = -1;
+        statusNode.focus();
+      } else {
+        button.focus();
+      }
+    }
   }
 
   function renderSentenceTranslationSlot(sentence) {
@@ -548,11 +571,31 @@ export function createReaderView({
     }
   }
 
+  function normalizeTranslationSource(text) {
+    return String(text ?? '').normalize('NFKC').replace(/\r\n?/g, '\n').trim();
+  }
+
   async function sentenceSourceHash(text) {
-    const normalized = String(text ?? '').normalize('NFKC').trim();
+    const normalized = normalizeTranslationSource(text);
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
     return [...new Uint8Array(digest)]
       .map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function sentenceContext(sentenceIndex) {
+    return paragraphs.find(paragraph => (
+      paragraph.sentences.some(sentence => sentence.index === sentenceIndex)
+    ))?.text || '';
+  }
+
+  async function localSentenceIdentity(sentenceIndex) {
+    const sentence = sentences[sentenceIndex];
+    if (!sentence) return null;
+    const [sourceHash, contextHash] = await Promise.all([
+      sentenceSourceHash(sentence.text),
+      sentenceSourceHash(sentenceContext(sentenceIndex))
+    ]);
+    return { sourceHash, contextHash };
   }
 
   async function loadSentenceTranslations() {
@@ -564,17 +607,35 @@ export function createReaderView({
         `/api/articles/${encodeURIComponent(articleId)}/sentence-translations`
       );
       if (!mounted || generation !== sentenceTranslationsLoadGeneration) return;
-      const restored = new Map((result?.sentences || [])
-        .filter(item => Number.isInteger(item?.sentenceIndex))
-        .map(item => [item.sentenceIndex, {
+      const candidates = await Promise.all((result?.sentences || []).map(async item => {
+        if (!Number.isInteger(item?.sentenceIndex)) return null;
+        const localIdentity = await localSentenceIdentity(item.sentenceIndex);
+        if (
+          !localIdentity
+          || item.sourceHash !== localIdentity.sourceHash
+          || item.contextHash !== localIdentity.contextHash
+        ) return null;
+        return [item.sentenceIndex, {
           sourceHash: item.sourceHash,
-          translation: item.translation
-        }]));
+          contextHash: item.contextHash,
+          translation: String(item.translation ?? '')
+        }];
+      }));
+      if (
+        !mounted
+        || generation !== sentenceTranslationsLoadGeneration
+        || translationMode !== 'sentence'
+      ) return;
+      const restored = new Map(candidates.filter(Boolean));
       sentenceTranslations = new Map([...restored, ...sentenceTranslations]);
       sentenceTranslationsLoaded = true;
       syncSentenceTranslationSlots();
     } catch (error) {
-      if (mounted && generation === sentenceTranslationsLoadGeneration) {
+      if (
+        mounted
+        && generation === sentenceTranslationsLoadGeneration
+        && translationMode === 'sentence'
+      ) {
         showError(error.message || '句子翻译缓存暂不可用');
       }
     } finally {
@@ -586,6 +647,11 @@ export function createReaderView({
 
   async function translateSentence(sentenceIndex, refresh) {
     if (!Number.isInteger(sentenceIndex) || !sentences[sentenceIndex]) return;
+    if (window.navigator?.onLine === false) {
+      sentenceTranslationStates.set(sentenceIndex, { status: 'offline', error: '' });
+      syncSentenceTranslationSlot(sentenceIndex);
+      return;
+    }
     const generation = (sentenceTranslationGenerations.get(sentenceIndex) || 0) + 1;
     sentenceTranslationGenerations.set(sentenceIndex, generation);
     sentenceTranslationStates.set(sentenceIndex, { status: 'loading', error: '' });
@@ -602,6 +668,7 @@ export function createReaderView({
       if (!mounted || sentenceTranslationGenerations.get(sentenceIndex) !== generation) return;
       sentenceTranslations.set(sentenceIndex, {
         sourceHash: result?.sourceHash || sourceHash,
+        contextHash: result?.contextHash || '',
         translation: String(result?.translation ?? '')
       });
       sentenceTranslationStates.set(sentenceIndex, { status: 'translated', error: '' });
@@ -830,8 +897,11 @@ export function createReaderView({
     }
     translationMode = mode;
     saveTranslationMode(storage, mode);
+    const restoreToolbarFocus = root.querySelector('[data-role="translation-panel"]')
+      ?.contains(document.activeElement) === true;
     closeTranslationPanel({ restoreFocus: false });
     render();
+    if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
     if (mode === 'sentence') void loadSentenceTranslations();
   }
 
@@ -840,8 +910,11 @@ export function createReaderView({
     if (!await translateArticle({ action: 'translate-article' })) return;
     translationMode = 'full';
     saveTranslationMode(storage, translationMode);
+    const restoreToolbarFocus = root.querySelector('[data-role="translation-panel"]')
+      ?.contains(document.activeElement) === true;
     closeTranslationPanel({ restoreFocus: false });
     render();
+    if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
   }
 
   function applyReaderPreferences() {

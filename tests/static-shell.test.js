@@ -78,6 +78,18 @@ test('reader settings use theme tokens, responsive measure, and accessible contr
   assert.match(css, /\.pc-reader-settings-choice\[aria-pressed="true"\]\s*\{[^}]*var\(--teal\)/);
 });
 
+test('service worker upgrades the shell with translation dependencies while APIs stay network-only', async () => {
+  const serviceWorker = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
+  assert.match(serviceWorker, /phonetic-cards-shell-v2/);
+  assert.match(serviceWorker, /['"]\/lib\/translation-preferences\.js['"]/);
+  assert.match(serviceWorker, /keys\.filter\(key => key !== CACHE_NAME\).*caches\.delete/s);
+  assert.match(
+    serviceWorker,
+    /url\.pathname\.startsWith\(['"]\/api\/['"]\)\) return/,
+    'API requests must bypass respondWith and all service-worker caches'
+  );
+});
+
 test('translation toolbar and panel reuse reader settings visual and mobile patterns', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const trigger = css.match(/\.pc-reader-translation-trigger\s*\{([^}]*)\}/)?.[1];
@@ -113,6 +125,16 @@ test('sentence translation slots reserve stable space without clamping long tran
   assert.match(translated || '', /display:\s*block/);
   assert.match(translated || '', /line-height:\s*1\.75/);
   assert.match(translated || '', /font-family:\s*'Noto Sans SC'/);
+  assert.match(css, /\.pc-sentence-translation-controls\s*\{/);
+  assert.match(css, /\.pc-sentence-translation-controls-cached\s*\{[^}]*position:\s*absolute/);
+  assert.match(
+    css,
+    /\.pc-sentence-translation-controls-cached \.pc-sentence-translation-action\s*\{[^}]*height:\s*100%/
+  );
+  assert.match(
+    css,
+    /\.pc-sentence-translation-controls-cached \.pc-sentence-translation-action::after\s*\{[^}]*content:/
+  );
   assert.doesNotMatch(slot || '', /(?:^|[;\s])height\s*:/);
   assert.doesNotMatch(translated || '', /line-clamp|overflow:\s*hidden|max-height/);
 });
