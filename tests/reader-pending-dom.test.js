@@ -554,6 +554,41 @@ test('translation restoration displays an existing full translation without an A
   }
 });
 
+test('translation panel keeps focus during and after a failed first-time full generation', async () => {
+  const articleRequest = deferred();
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    const full = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
+    full.focus();
+    click(env.window, full);
+
+    assert.equal(full.isConnected, true);
+    assert.equal(full.disabled, true);
+    assert.equal(env.window.document.activeElement, full);
+
+    articleRequest.reject(new Error('generation failed'));
+    await env.ready();
+    assert.equal(full.isConnected, true);
+    assert.equal(full.disabled, false);
+    assert.equal(full.textContent, '翻译全文');
+    assert.equal(env.window.document.activeElement, full);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('translation mode refresh failure preserves the existing full translation and display mode', async () => {
   const translation = {
     status: 'fresh', titleZh: '旧标题', model: 'model', updatedAt: 2,
@@ -573,7 +608,9 @@ test('translation mode refresh failure preserves the existing full translation a
   try {
     await env.ready();
     click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
-    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+    const refresh = env.root.querySelector('[data-action="translate-article"]');
+    refresh.focus();
+    click(env.window, refresh);
     await env.ready();
 
     assert.equal(env.root.querySelector('[data-role="article-translation-title"]').textContent, '旧标题');
@@ -581,6 +618,9 @@ test('translation mode refresh failure preserves the existing full translation a
     assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
     assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'true');
     assert.ok(env.root.querySelector('[data-role="translation-panel"]'));
+    assert.equal(refresh.isConnected, true);
+    assert.equal(refresh.disabled, false);
+    assert.equal(env.window.document.activeElement, refresh);
   } finally {
     env.cleanup();
     env.restore();

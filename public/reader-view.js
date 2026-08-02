@@ -527,6 +527,26 @@ export function createReaderView({
     translationPanelTrigger = null;
   }
 
+  function fullTranslationModeLabel() {
+    if (translationBusy) return '翻译中…';
+    return articleTranslation ? '全文译文' : '翻译全文';
+  }
+
+  function syncTranslationPanel() {
+    const panel = root.querySelector('[data-role="translation-panel"]');
+    if (!panel) return;
+    for (const choice of panel.querySelectorAll('[data-action="translation-mode"]')) {
+      choice.setAttribute('aria-pressed', String(translationMode === choice.dataset.mode));
+      choice.disabled = translationBusy;
+      if (choice.dataset.mode === 'full') choice.textContent = fullTranslationModeLabel();
+    }
+    const refresh = panel.querySelector('[data-action="translate-article"]');
+    if (refresh) {
+      refresh.textContent = translationBusy ? '翻译中…' : '重新翻译全文';
+      refresh.disabled = translationBusy;
+    }
+  }
+
   function renderTranslationPanel({ focusActive = false } = {}) {
     if (!translationPanelTrigger?.isConnected) return;
     root.querySelector('[data-role="translation-panel"]')?.remove();
@@ -540,7 +560,7 @@ export function createReaderView({
     for (const [mode, label] of [
       ['original', '原文'],
       ['sentence', '逐句翻译'],
-      ['full', articleTranslation ? '全文译文' : translationBusy ? '翻译中…' : '翻译全文']
+      ['full', fullTranslationModeLabel()]
     ]) {
       const choice = actionButton('translation-mode', label, 'pc-reader-settings-choice');
       choice.dataset.mode = mode;
@@ -578,7 +598,7 @@ export function createReaderView({
     if (translationBusy) return false;
     translationBusy = true;
     const generation = ++articleTranslationGeneration;
-    renderTranslationPanel();
+    syncTranslationPanel();
     try {
       const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`, {
         method: 'PUT', body: '{}'
@@ -595,7 +615,7 @@ export function createReaderView({
     } finally {
       if (generation === articleTranslationGeneration) {
         translationBusy = false;
-        renderTranslationPanel();
+        syncTranslationPanel();
       }
     }
   }
