@@ -200,15 +200,17 @@ test('long-reading capsule is fixed, safe-area aware, compact, and accessible', 
   assert.match(phoneAndCoarseTablet, /\.pc-aloud-resume-entry \.pc-btn-ghost\s*\{[^}]*white-space:\s*nowrap/);
 });
 
-test('mobile replay capsule keeps four labelled touch actions within narrow screens', async () => {
+test('mobile speech capsule keeps five complete controls on one row', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const capsule = css.match(/\.pc-floating-speech\s*\{([^}]*)\}/)?.[1];
   const action = css.match(/\.pc-floating-speech-action\s*\{([^}]*)\}/)?.[1];
-  const narrow = css.match(/@media\s*\(max-width:\s*380px\)\s*\{([\s\S]*?)\n\s*\}/)?.[1];
+  const phoneAndCoarseTablet = css.match(
+    /@media\s*\(max-width:\s*640px\)\s*,\s*\(max-width:\s*900px\)\s*and\s*\(pointer:\s*coarse\)\s*\{([\s\S]*?)\n\s*@media\s*\(max-width:\s*380px\)/
+  )?.[1];
 
   assert.ok(capsule);
   assert.match(capsule, /display:\s*grid/);
-  assert.match(capsule, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*auto\)\)/);
+  assert.match(capsule, /grid-template-columns:\s*repeat\(5,\s*minmax\(44px,\s*auto\)\)/);
   assert.match(capsule, /max-width:\s*calc\(100vw\s*-\s*24px\)/);
   assert.ok(action);
   assert.match(action, /min-width:\s*44px/);
@@ -216,10 +218,12 @@ test('mobile replay capsule keeps four labelled touch actions within narrow scre
   assert.match(action, /touch-action:\s*manipulation/);
   assert.match(action, /white-space:\s*nowrap/);
   assert.match(css, /\.pc-floating-speech-action:disabled\s*\{[^}]*opacity:\s*\.45/);
-  assert.ok(narrow);
-  assert.match(narrow, /\.pc-floating-speech-action\s*\{[^}]*padding-inline:\s*7px/);
-  assert.match(narrow, /\.pc-floating-speech-action\s*\{[^}]*font-size:\s*13px/);
-  assert.doesNotMatch(narrow, /\.pc-floating-speech-action\s*\{[^}]*min-width:\s*0/);
+  assert.ok(phoneAndCoarseTablet);
+  assert.match(phoneAndCoarseTablet, /\.pc-floating-speech\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(44px,\s*1fr\)\)/);
+  assert.match(phoneAndCoarseTablet, /\.pc-floating-speech-label\s*\{[^}]*display:\s*none/);
+  assert.match(phoneAndCoarseTablet, /\.pc-floating-speech-action\s*\{[^}]*min-width:\s*44px/);
+  assert.match(phoneAndCoarseTablet, /\.pc-floating-speech-action\s+svg\s*\{[^}]*width:\s*18px/);
+  assert.doesNotMatch(phoneAndCoarseTablet, /overflow-x:\s*(?:auto|scroll)/);
   const topSpeechActions = css.match(
     /\.pc-reader-speech\s+\[data-action="speech-primary"\][\s\S]*?\{([^}]*)\}/
   )?.[1];

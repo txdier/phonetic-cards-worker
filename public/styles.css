@@ -333,7 +333,7 @@
   .pc-floating-speech {
     position: fixed; z-index: 19; left: 50%;
     bottom: calc(12px + env(safe-area-inset-bottom));
-    transform: translateX(-50%); display: grid; grid-template-columns: repeat(4, minmax(0, auto));
+    transform: translateX(-50%); display: grid; grid-template-columns: repeat(5, minmax(44px, auto));
     align-items: center; gap: 8px; max-width: calc(100vw - 24px);
     min-height: 48px; padding: 2px 8px; border: 1px solid var(--line);
     border-radius: 999px; background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
@@ -344,9 +344,13 @@
   .pc-floating-speech-action {
     appearance: none; min-width: 44px; min-height: 44px; padding-inline: 10px;
     border: 0; border-radius: 999px; background: transparent; color: inherit;
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
     font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap;
     touch-action: manipulation; transition: background-color .15s ease, color .15s ease;
   }
+  .pc-floating-speech-action svg { width: 18px; height: 18px; flex: 0 0 18px; }
+  .pc-floating-speech-rate,
+  .pc-floating-speech-timer-value { font-variant-numeric: tabular-nums; }
   .pc-floating-speech-action:hover { color: var(--teal); }
   .pc-floating-speech-action:active { background: color-mix(in srgb, var(--teal) 14%, transparent); }
   .pc-floating-speech-action:disabled { cursor: not-allowed; opacity: .45; }
@@ -760,11 +764,22 @@
       padding-inline: 10px;
       white-space: nowrap;
     }
+    .pc-floating-speech {
+      width: calc(100vw - 24px);
+      grid-template-columns: repeat(5, minmax(44px, 1fr));
+      gap: 4px;
+      padding-inline: 4px;
+    }
+    .pc-floating-speech-action {
+      min-width: 44px;
+      padding-inline: 4px;
+    }
+    .pc-floating-speech-action svg { width: 18px; }
+    .pc-floating-speech-label { display: none; }
   }
   @media (max-width: 380px) {
     .pc-toolbar-right { flex-direction: column; align-items: stretch; }
     .pc-theme-toggle, .pc-slow-toggle { justify-content: center; }
-    .pc-floating-speech-action { padding-inline: 7px; font-size: 13px; }
   }
   @media (prefers-reduced-motion: reduce) {
     #pc-root, #pc-root *, #pc-root *::before, #pc-root *::after {
