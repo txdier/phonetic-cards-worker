@@ -218,6 +218,7 @@ export function createReaderView({
   let settingsPanelTrigger = null;
   let translationPanelTrigger = null;
   let translationPanelPendingFocus = null;
+  let translationOperationFocusTarget = null;
   let timerBackgroundState = [];
   let timerControlState = [];
   let readerPreferences = loadReaderPreferences(storage);
@@ -604,7 +605,12 @@ export function createReaderView({
       '--reader-settings-left',
       '--reader-settings-top'
     );
-    if (focusActive) panel.querySelector('[aria-pressed="true"]')?.focus();
+    if (translationBusy) {
+      translationPanelPendingFocus = translationOperationFocusTarget;
+      panel.focus();
+    } else if (focusActive) {
+      panel.querySelector('[aria-pressed="true"]')?.focus();
+    }
   }
 
   function openTranslationPanel(trigger) {
@@ -619,6 +625,7 @@ export function createReaderView({
 
   async function translateArticle(focusTarget) {
     if (translationBusy) return false;
+    translationOperationFocusTarget = focusTarget;
     translationBusy = true;
     const generation = ++articleTranslationGeneration;
     syncTranslationPanel({ focusTarget });
@@ -639,6 +646,7 @@ export function createReaderView({
       if (generation === articleTranslationGeneration) {
         translationBusy = false;
         syncTranslationPanel();
+        translationOperationFocusTarget = null;
       }
     }
   }
@@ -2421,6 +2429,7 @@ export function createReaderView({
     saveProgress();
     mounted = false;
     articleTranslationGeneration += 1;
+    translationOperationFocusTarget = null;
     selectionTranslationGeneration += 1;
     closeTimerPanel({ restoreFocus: false });
     closeReaderSettings({ restoreFocus: false });

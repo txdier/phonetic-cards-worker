@@ -637,6 +637,89 @@ test('translation mode refresh failure preserves the existing full translation a
   }
 });
 
+test('translation panel reopens safely during a failed first-time full generation', async () => {
+  const articleRequest = deferred();
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+    click(env.window, trigger);
+    const full = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
+    full.focus();
+    click(env.window, full);
+
+    click(env.window, trigger);
+    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    click(env.window, trigger);
+    const reopened = env.root.querySelector('[data-role="translation-panel"]');
+    assert.equal(env.window.document.activeElement, reopened);
+    assert.ok([...reopened.querySelectorAll('[data-action="translation-mode"]')].every(node => node.disabled));
+
+    articleRequest.reject(new Error('generation failed'));
+    await env.ready();
+    const restored = reopened.querySelector('[data-action="translation-mode"][data-mode="full"]');
+    assert.equal(restored.isConnected, true);
+    assert.equal(restored.disabled, false);
+    assert.equal(env.window.document.activeElement, restored);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('translation panel reopens safely during a failed full refresh', async () => {
+  const refreshRequest = deferred();
+  const translation = {
+    status: 'fresh', titleZh: '旧标题', model: 'model', updatedAt: 2,
+    paragraphs: [{ index: 0, translation: '旧译文。' }]
+  };
+  const env = setupReader({
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return translation;
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return refreshRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+    click(env.window, trigger);
+    const refresh = env.root.querySelector('[data-action="translate-article"]');
+    refresh.focus();
+    click(env.window, refresh);
+
+    click(env.window, trigger);
+    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    click(env.window, trigger);
+    const reopened = env.root.querySelector('[data-role="translation-panel"]');
+    assert.equal(env.window.document.activeElement, reopened);
+    assert.equal(reopened.querySelector('[data-action="translate-article"]').disabled, true);
+
+    refreshRequest.reject(new Error('refresh failed'));
+    await env.ready();
+    const restored = reopened.querySelector('[data-action="translate-article"]');
+    assert.equal(restored.isConnected, true);
+    assert.equal(restored.disabled, false);
+    assert.equal(env.window.document.activeElement, restored);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('selection panel translates only the selection with its complete sentence context', async () => {
   const requests = [];
   const detail = articleDetail({
