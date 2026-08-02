@@ -787,7 +787,10 @@ test('sentence translation slot renders immediately and keeps sentence speech se
     const slotHeightBefore = slot.getBoundingClientRect().height;
     click(env.window, slot.querySelector('[data-action="translate-sentence"]'));
     assert.equal(slot.dataset.state, 'loading');
-    await env.ready();
+    await waitFor(
+      () => posts.length === 1 && slot.dataset.state === 'translated',
+      'sentence POST should reach translated state'
+    );
 
     slot = env.root.querySelector(
       '[data-role="sentence-translation-slot"][data-sentence-index="0"]'
@@ -800,7 +803,9 @@ test('sentence translation slot renders immediately and keeps sentence speech se
     assert.equal(slot.getBoundingClientRect().height, slotHeightBefore);
     const translated = slot.querySelector('[data-role="sentence-translation"]');
     assert.equal(translated.textContent, '第一句。');
+    assert.equal(translated.tagName, 'SPAN');
     assert.equal(translated.parentElement.dataset.action, 'refresh-sentence-translation');
+    assert.equal(slot.querySelector('button p'), null);
     assert.equal(slot.querySelectorAll('button').length, 1);
   } finally {
     env.cleanup();
@@ -900,7 +905,10 @@ test('sentence translation restore failure leaves idle slots usable', async () =
     let slot = env.root.querySelector('[data-role="sentence-translation-slot"]');
     assert.equal(slot.dataset.state, 'idle');
     click(env.window, slot.querySelector('[data-action="translate-sentence"]'));
-    await env.ready();
+    await waitFor(
+      () => posts === 1 && slot.dataset.state === 'translated',
+      'translation after cache failure should reach translated state'
+    );
     slot = env.root.querySelector('[data-role="sentence-translation-slot"]');
     assert.equal(posts, 1);
     assert.equal(slot.dataset.state, 'translated');
@@ -946,9 +954,17 @@ test('sentence translation slot isolates loading, errors, and retries', async ()
     assert.equal(slots[1].querySelector('[data-action="translate-sentence"]').disabled, false);
 
     click(env.window, slots[1].querySelector('[data-action="translate-sentence"]'));
-    await env.ready();
+    await waitFor(
+      () => attempts.get(0) === 1
+        && attempts.get(1) === 1
+        && slots[1].dataset.state === 'translated',
+      'independent sentence POST should finish before rejecting the first request'
+    );
     firstRequest.reject(new Error('first sentence failed'));
-    await env.ready();
+    await waitFor(
+      () => slots[0].dataset.state === 'error',
+      'rejected sentence POST should reach error state'
+    );
     slots = env.root.querySelectorAll('[data-role="sentence-translation-slot"]');
     assert.equal(slots[0].dataset.state, 'error');
     assert.match(slots[0].textContent, /first sentence failed/);
@@ -956,7 +972,10 @@ test('sentence translation slot isolates loading, errors, and retries', async ()
     assert.equal(slots[1].querySelector('[data-role="sentence-translation"]').textContent, '第二句。');
 
     click(env.window, slots[0].querySelector('[data-action="translate-sentence"]'));
-    await env.ready();
+    await waitFor(
+      () => attempts.get(0) === 2 && slots[0].dataset.state === 'translated',
+      'sentence retry should reach translated state'
+    );
     assert.equal(env.root.querySelector(
       '[data-role="sentence-translation-slot"][data-sentence-index="0"] '
       + '[data-role="sentence-translation"]'
@@ -1000,7 +1019,10 @@ test('sentence translation refresh preserves the old value on failure', async ()
     assert.equal(slot.querySelector('[data-role="sentence-translation"]').textContent, '旧译文。');
     await waitFor(() => bodies.length === 1, 'refresh POST should start before rejection');
     failedRefresh.reject(new Error('refresh failed'));
-    await env.ready();
+    await waitFor(
+      () => slot.dataset.state === 'error',
+      'failed refresh should reach error state'
+    );
 
     slot = env.root.querySelector('[data-role="sentence-translation-slot"]');
     assert.equal(bodies[0].refresh, true);
@@ -1008,7 +1030,10 @@ test('sentence translation refresh preserves the old value on failure', async ()
     assert.equal(slot.querySelector('[data-role="sentence-translation"]').textContent, '旧译文。');
     assert.match(slot.textContent, /refresh failed/);
     click(env.window, slot.querySelector('[data-action="refresh-sentence-translation"]'));
-    await env.ready();
+    await waitFor(
+      () => bodies.length === 2 && slot.dataset.state === 'translated',
+      'refresh retry should reach translated state'
+    );
     assert.equal(bodies[1].refresh, true);
     assert.equal(env.root.querySelector('[data-role="sentence-translation"]').textContent, '新译文。');
   } finally {

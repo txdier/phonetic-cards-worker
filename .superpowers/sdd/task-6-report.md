@@ -58,3 +58,35 @@ The first full-suite attempt exposed timing-sensitive deferred test setup under 
 - Confirmed no fixed height, max height, overflow clipping, or line clamp on translation content.
 
 No known concerns remain.
+
+## Review Fixes
+
+Addressed the two Important findings from Task 6 review:
+
+- Replaced the translated `<p>` nested inside the refresh `<button>` with phrasing-content `<span>` markup, retaining block layout through `display: block`.
+- Replaced one-turn waits after WebCrypto-backed sentence actions with observable polling on POST counts and terminal slot states. No arbitrary sleeps were added.
+
+Review-fix RED:
+
+```text
+node --test --test-name-pattern="sentence translation slot renders|sentence translation slots reserve" tests/reader-pending-dom.test.js tests/static-shell.test.js
+tests 2, pass 0, fail 2
+```
+
+The DOM test reported `P !== SPAN`, and the style test reported the missing `display: block` declaration.
+
+Review-fix focused GREEN:
+
+```text
+node --test --test-name-pattern="sentence translation (slot|restore|refresh|stale|speech)|sentence translation slots reserve" tests/reader-pending-dom.test.js tests/static-shell.test.js
+tests 7, pass 7, fail 0
+```
+
+Requested final verification:
+
+```text
+node --test tests/reader-pending-dom.test.js tests/static-shell.test.js
+tests 124, pass 124, fail 0
+```
+
+Review-fix self-review confirmed that the sentence translation action contains no `<p>`, the translated role is carried by a block-styled `<span>`, and all reviewed post-digest paths wait for API invocation or an observable terminal slot state. Task 5 translation-panel code and focus handling were unchanged.

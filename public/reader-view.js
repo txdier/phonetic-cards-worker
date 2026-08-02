@@ -506,7 +506,7 @@ export function createReaderView({
     if (cached) {
       button.replaceChildren();
       button.setAttribute('aria-label', label);
-      const translated = element('p', 'pc-sentence-translation-text', cached.translation);
+      const translated = element('span', 'pc-sentence-translation-text', cached.translation);
       translated.dataset.role = 'sentence-translation';
       button.append(translated);
     }

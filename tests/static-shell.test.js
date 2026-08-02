@@ -110,6 +110,7 @@ test('sentence translation slots reserve stable space without clamping long tran
   assert.match(slot || '', /min-height:\s*calc\(2\s*\*\s*1\.75em\s*\+\s*12px\)/);
   assert.match(action || '', /width:\s*100%/);
   assert.match(action || '', /min-height:\s*44px/);
+  assert.match(translated || '', /display:\s*block/);
   assert.match(translated || '', /line-height:\s*1\.75/);
   assert.match(translated || '', /font-family:\s*'Noto Sans SC'/);
   assert.doesNotMatch(slot || '', /(?:^|[;\s])height\s*:/);
