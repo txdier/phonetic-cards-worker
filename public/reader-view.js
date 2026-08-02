@@ -217,6 +217,7 @@ export function createReaderView({
   let timerPanelTrigger = null;
   let settingsPanelTrigger = null;
   let translationPanelTrigger = null;
+  let translationPanelPendingFocus = null;
   let timerBackgroundState = [];
   let timerControlState = [];
   let readerPreferences = loadReaderPreferences(storage);
@@ -520,11 +521,15 @@ export function createReaderView({
 
   function closeTranslationPanel({ restoreFocus = true } = {}) {
     const panel = root.querySelector('[data-role="translation-panel"]');
-    if (!panel) return;
+    if (!panel) {
+      translationPanelPendingFocus = null;
+      return;
+    }
     panel.remove();
     if (translationPanelTrigger) translationPanelTrigger.setAttribute('aria-expanded', 'false');
     if (restoreFocus && translationPanelTrigger?.isConnected) translationPanelTrigger.focus();
     translationPanelTrigger = null;
+    translationPanelPendingFocus = null;
   }
 
   function fullTranslationModeLabel() {
@@ -532,9 +537,21 @@ export function createReaderView({
     return articleTranslation ? '全文译文' : '翻译全文';
   }
 
-  function syncTranslationPanel() {
+  function translationPanelControl(panel, target) {
+    if (!target?.action) return null;
+    return [...panel.querySelectorAll('[data-action]')].find(control => (
+      control.dataset.action === target.action
+      && (target.mode == null || control.dataset.mode === target.mode)
+    )) || null;
+  }
+
+  function syncTranslationPanel({ focusTarget = null } = {}) {
     const panel = root.querySelector('[data-role="translation-panel"]');
     if (!panel) return;
+    if (translationBusy && focusTarget && panel.contains(document.activeElement)) {
+      translationPanelPendingFocus = focusTarget;
+      panel.focus();
+    }
     for (const choice of panel.querySelectorAll('[data-action="translation-mode"]')) {
       choice.setAttribute('aria-pressed', String(translationMode === choice.dataset.mode));
       choice.disabled = translationBusy;
@@ -545,6 +562,11 @@ export function createReaderView({
       refresh.textContent = translationBusy ? '翻译中…' : '重新翻译全文';
       refresh.disabled = translationBusy;
     }
+    if (!translationBusy && translationPanelPendingFocus) {
+      const control = translationPanelControl(panel, translationPanelPendingFocus);
+      translationPanelPendingFocus = null;
+      if (control && !control.disabled) control.focus();
+    }
   }
 
   function renderTranslationPanel({ focusActive = false } = {}) {
@@ -552,6 +574,7 @@ export function createReaderView({
     root.querySelector('[data-role="translation-panel"]')?.remove();
     const panel = element('section', 'pc-reader-settings-panel pc-reader-translation-panel');
     panel.dataset.role = 'translation-panel';
+    panel.tabIndex = -1;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-label', '翻译显示');
     const choices = element('div', 'pc-reader-settings-choices');
@@ -594,11 +617,11 @@ export function createReaderView({
     renderTranslationPanel({ focusActive: true });
   }
 
-  async function translateArticle() {
+  async function translateArticle(focusTarget) {
     if (translationBusy) return false;
     translationBusy = true;
     const generation = ++articleTranslationGeneration;
-    syncTranslationPanel();
+    syncTranslationPanel({ focusTarget });
     try {
       const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`, {
         method: 'PUT', body: '{}'
@@ -623,7 +646,7 @@ export function createReaderView({
   async function setTranslationMode(mode) {
     if (!TRANSLATION_MODES.includes(mode) || translationBusy) return;
     if (mode === 'full' && !articleTranslation) {
-      await translateArticle();
+      await translateArticle({ action: 'translation-mode', mode: 'full' });
       if (!articleTranslation) return;
     }
     translationMode = mode;
@@ -634,7 +657,7 @@ export function createReaderView({
 
   async function refreshArticleTranslation() {
     if (!articleTranslation || translationBusy) return;
-    if (!await translateArticle()) return;
+    if (!await translateArticle({ action: 'translate-article' })) return;
     translationMode = 'full';
     saveTranslationMode(storage, translationMode);
     closeTranslationPanel({ restoreFocus: false });

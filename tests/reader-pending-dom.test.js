@@ -573,9 +573,11 @@ test('translation panel keeps focus during and after a failed first-time full ge
     full.focus();
     click(env.window, full);
 
+    const busyPanel = env.root.querySelector('[data-role="translation-panel"]');
     assert.equal(full.isConnected, true);
     assert.equal(full.disabled, true);
-    assert.equal(env.window.document.activeElement, full);
+    assert.equal(busyPanel.tabIndex, -1);
+    assert.equal(env.window.document.activeElement, busyPanel);
 
     articleRequest.reject(new Error('generation failed'));
     await env.ready();
@@ -590,6 +592,7 @@ test('translation panel keeps focus during and after a failed first-time full ge
 });
 
 test('translation mode refresh failure preserves the existing full translation and display mode', async () => {
+  const refreshRequest = deferred();
   const translation = {
     status: 'fresh', titleZh: '旧标题', model: 'model', updatedAt: 2,
     paragraphs: [{ index: 0, translation: '旧译文。' }]
@@ -600,7 +603,7 @@ test('translation mode refresh failure preserves the existing full translation a
       if (path === '/api/articles/a1' && !init.method) return articleDetail();
       if (path === '/api/articles/a1/translation' && !init.method) return translation;
       if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
-        throw new Error('refresh failed');
+        return refreshRequest.promise;
       }
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
     }
@@ -611,6 +614,13 @@ test('translation mode refresh failure preserves the existing full translation a
     const refresh = env.root.querySelector('[data-action="translate-article"]');
     refresh.focus();
     click(env.window, refresh);
+
+    const busyPanel = env.root.querySelector('[data-role="translation-panel"]');
+    assert.equal(refresh.disabled, true);
+    assert.equal(busyPanel.tabIndex, -1);
+    assert.equal(env.window.document.activeElement, busyPanel);
+
+    refreshRequest.reject(new Error('refresh failed'));
     await env.ready();
 
     assert.equal(env.root.querySelector('[data-role="article-translation-title"]').textContent, '旧标题');
