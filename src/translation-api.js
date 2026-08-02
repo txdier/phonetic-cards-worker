@@ -2,6 +2,7 @@ import { jsonResponse } from './http.js';
 import { splitArticleParagraphs } from '../public/lib/text.js';
 
 export const TRANSLATION_MODEL = '@cf/zai-org/glm-4.7-flash';
+export const TRANSLATION_RULES_VERSION = 'sentence-v1';
 
 const WORD_LIMIT = 200;
 const SELECTION_LIMIT = 2000;
@@ -153,8 +154,15 @@ async function putArticleTranslation(env, articleId, userId) {
   });
 }
 
-async function translatePlainText(env, prompt) {
-  if (!env.AI?.run) return aiFailure('TRANSLATION_NOT_CONFIGURED');
+function translationError(code, status = 503) {
+  return Object.assign(new Error('translation unavailable'), {
+    translationCode: code,
+    httpStatus: status
+  });
+}
+
+export async function generatePlainTranslation(env, prompt) {
+  if (!env.AI?.run) throw translationError('TRANSLATION_NOT_CONFIGURED');
   try {
     const result = await runTranslationModel(env, {
       messages: [
@@ -168,10 +176,28 @@ async function translatePlainText(env, prompt) {
       max_completion_tokens: 512
     });
     const translation = parsePlainResult(responseText(result));
-    if (!translation) return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
-    return jsonResponse({ translation });
+    if (!translation) throw translationError('TRANSLATION_FORMAT_INVALID', 502);
+    return translation;
   } catch (error) {
-    return mapAiError(error);
+    if (error?.translationCode) throw error;
+    const status = Number(error?.status || error?.cause?.status || 0);
+    if (status === 429) throw translationError('TRANSLATION_DAILY_LIMIT', 429);
+    if (error?.code === 'TRANSLATION_TIMEOUT') {
+      throw translationError('TRANSLATION_TIMEOUT', 504);
+    }
+    throw translationError('TRANSLATION_UNAVAILABLE');
+  }
+}
+
+export function translationFailureResponse(error) {
+  return aiFailure(error?.translationCode || 'TRANSLATION_UNAVAILABLE', error?.httpStatus || 503);
+}
+
+async function translatePlainText(env, prompt) {
+  try {
+    return jsonResponse({ translation: await generatePlainTranslation(env, prompt) });
+  } catch (error) {
+    return translationFailureResponse(error);
   }
 }
 

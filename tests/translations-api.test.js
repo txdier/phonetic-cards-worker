@@ -3,9 +3,37 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createSessionToken } from '../src/auth.js';
 import worker from '../src/index.js';
+import {
+  generatePlainTranslation,
+  TRANSLATION_RULES_VERSION,
+  translationFailureResponse
+} from '../src/translation-api.js';
 import { createSqliteDb } from './helpers/sqlite-db.js';
 
 const SECRET = 'translation-test-secret';
+
+test('strict translation service returns only a validated translation', async () => {
+  const value = await generatePlainTranslation({
+    AI: { async run() { return { response: '{"translation":"璇戞枃"}' }; } }
+  }, 'Translate this sentence.');
+  assert.equal(value, '璇戞枃');
+  assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v1');
+});
+
+test('strict translation service exposes stable format failures', async () => {
+  await assert.rejects(
+    generatePlainTranslation({
+      AI: { async run() { return { response: '瑙ｉ噴锛氳瘧鏂?' }; } }
+    }, 'Translate this sentence.'),
+    error => error.translationCode === 'TRANSLATION_FORMAT_INVALID'
+  );
+  assert.equal(
+    (await translationFailureResponse({
+      translationCode: 'TRANSLATION_FORMAT_INVALID', httpStatus: 502
+    }).json()).code,
+    'TRANSLATION_FORMAT_INVALID'
+  );
+});
 
 test('Wrangler example exposes the Workers AI binding', async () => {
   const config = await readFile(new URL('../wrangler.example.toml', import.meta.url), 'utf8');
