@@ -20,7 +20,8 @@
   --install-dialog-accent: #e8a33d;
 
   position: fixed;
-  inset: 0;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
   box-sizing: border-box;
   width: min(420px, calc(100vw - 28px));
   max-width: calc(100vw - 28px);
@@ -29,7 +30,7 @@
     - max(28px, env(safe-area-inset-top))
     - max(28px, env(safe-area-inset-bottom))
   );
-  margin: auto;
+  margin: 0;
   padding:
     max(22px, env(safe-area-inset-top))
     max(22px, env(safe-area-inset-right))
@@ -106,16 +107,21 @@ body:has(#pc-word-form.open) {
   }
 
   .pc-install-dialog {
+    inset:
+      50%
+      max(12px, env(safe-area-inset-right))
+      auto
+      max(12px, env(safe-area-inset-left));
+    transform: translateY(-50%);
     width: auto;
     max-width: none;
-    inset:
-      max(12px, env(safe-area-inset-top))
-      max(12px, env(safe-area-inset-right))
-      max(12px, env(safe-area-inset-bottom))
-      max(12px, env(safe-area-inset-left));
-    max-height: none;
-    margin: auto;
-    padding: 22px;
+    max-height: calc(
+      100dvh
+      - max(24px, env(safe-area-inset-top))
+      - max(24px, env(safe-area-inset-bottom))
+    );
+    margin: 0;
+    padding: 22px 22px max(22px, env(safe-area-inset-bottom));
   }
 
   #pc-word-form.open {
