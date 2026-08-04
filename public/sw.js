@@ -1,8 +1,9 @@
-const CACHE_NAME = 'phonetic-cards-shell-v2';
+const CACHE_NAME = 'phonetic-cards-shell-v3';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
+  '/mobile-fixes.css',
   '/app.js',
   '/api.js',
   '/articles-view.js',
