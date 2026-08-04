@@ -23,6 +23,10 @@ test('translation parser accepts Workers AI response objects', () => {
     parseTranslationResult({ result: { response: { translation: '保持住' } } }),
     '保持住'
   );
+  assert.equal(
+    parseTranslationResult({ response: 'Result: {"translatedText":"继续"}' }),
+    '继续'
+  );
 });
 
 test('translation parser accepts OpenAI choices and segmented content', () => {
