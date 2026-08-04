@@ -15,6 +15,7 @@ export const DEFAULT_TTS_PREFERENCES = Object.freeze({
 });
 
 let pendingPreferences = null;
+let pendingStorage = null;
 let syncPromise = null;
 
 export function loadTtsPreferences(storage) {
@@ -34,7 +35,8 @@ export function saveTtsPreferences(storage, preferences) {
     storage?.setItem?.(TTS_PREFERENCES_KEY, JSON.stringify(preferences));
     storage?.setItem?.(TTS_PREFERENCES_UPDATED_KEY, String(savedAt));
     pendingPreferences = { ...preferences };
-    void flushPendingPreferences();
+    pendingStorage = storage || pendingStorage;
+    if (canAutoSync()) void flushPendingPreferences();
     return Boolean(storage?.setItem);
   } catch {
     return false;
@@ -78,13 +80,17 @@ export async function syncTtsPreferences(storage = safeLocalStorage()) {
 
   if (local && (!remotePreferences || localUpdatedAt > remoteUpdatedAt)) {
     pendingPreferences = local;
+    pendingStorage = storage;
     return flushPendingPreferences();
   }
   if (!remotePreferences) return false;
 
   try {
     storage.setItem(TTS_PREFERENCES_KEY, JSON.stringify(remotePreferences));
-    storage.setItem(TTS_PREFERENCES_UPDATED_KEY, String(remoteUpdatedAt || Date.now()));
+    storage.setItem(
+      TTS_PREFERENCES_UPDATED_KEY,
+      String(remoteUpdatedAt || Date.now())
+    );
     return true;
   } catch {
     return false;
@@ -97,6 +103,7 @@ async function flushPendingPreferences() {
   syncPromise = (async () => {
     while (pendingPreferences) {
       const next = pendingPreferences;
+      const storage = pendingStorage;
       pendingPreferences = null;
       try {
         const response = await fetch(USER_PREFERENCES_PATH, {
@@ -107,18 +114,51 @@ async function flushPendingPreferences() {
         });
         if (!response.ok) {
           pendingPreferences = pendingPreferences || next;
+          pendingStorage = pendingStorage || storage;
           return false;
         }
+        const result = await response.json().catch(() => ({}));
+        updateServerTimestamp(storage, next, result?.updatedAt);
       } catch {
         pendingPreferences = pendingPreferences || next;
+        pendingStorage = pendingStorage || storage;
         return false;
       }
     }
+    pendingStorage = null;
     return true;
   })().finally(() => {
     syncPromise = null;
   });
   return syncPromise;
+}
+
+function updateServerTimestamp(storage, preferences, updatedAt) {
+  const timestamp = Number(updatedAt);
+  if (!storage || !Number.isFinite(timestamp) || timestamp <= 0) return;
+  try {
+    const current = JSON.parse(storage.getItem(TTS_PREFERENCES_KEY) || 'null');
+    if (!samePreferences(current, preferences)) return;
+    storage.setItem(TTS_PREFERENCES_UPDATED_KEY, String(timestamp));
+  } catch {
+    // A timestamp sync failure must not undo the saved preference.
+  }
+}
+
+function samePreferences(left, right) {
+  return Boolean(
+    isValid(left)
+    && isValid(right)
+    && left.wordProfile === right.wordProfile
+    && left.articleProfile === right.articleProfile
+  );
+}
+
+function canAutoSync() {
+  return Boolean(
+    typeof fetch === 'function'
+    && typeof globalThis.location?.origin === 'string'
+  );
 }
 
 function safeLocalStorage() {
@@ -131,7 +171,9 @@ function safeLocalStorage() {
 
 function isValid(value) {
   return Boolean(
-    value && typeof value === 'object'
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
     && Object.hasOwn(TTS_PROFILE_OPTIONS, value.wordProfile)
     && Object.hasOwn(TTS_PROFILE_OPTIONS, value.articleProfile)
   );
