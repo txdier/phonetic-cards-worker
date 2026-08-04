@@ -440,7 +440,7 @@ test('sentence translation context, cache reuse, and user isolation', async t =>
   assert.equal(first.status, 200);
   assert.equal((await first.json()).cached, false);
   assert.match(modelPrompt, /Target sentence: "Fine\."/);
-  assert.match(modelPrompt, /Complete paragraph context: "After a long argument, she said, Fine\."/);
+  assert.match(modelPrompt, /Relevant paragraph context: "After a long argument, she said, Fine\."/);
 
   const second = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'POST',
@@ -502,7 +502,7 @@ test('sentence translation refresh replaces cache only after valid AI output', a
     'SELECT translation_zh FROM sentence_translation_cache WHERE user_id = ?', 'u1'
   ).translation_zh, '新译文');
 
-  env.AI.run = async () => ({ response: '{"translation":"损坏","extra":true}' });
+  env.AI.run = async () => ({ response: '{"translation":' });
   const failedRefresh = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'POST', { ...requestBody, refresh: true }
   ), env);
@@ -513,14 +513,21 @@ test('sentence translation refresh replaces cache only after valid AI output', a
   ).translation_zh, '新译文');
 });
 
-test('sentence translation source validation rejects stale, invalid, and oversized input before AI', async t => {
+test('sentence translation validates stale invalid and oversized sentences while truncating long context', async t => {
   const DB = seededArticleDb('Fine.');
   t.after(() => DB.close());
   let calls = 0;
+  let lastPrompt = '';
   const env = {
     AUTH_SECRET: SECRET,
     DB,
-    AI: { async run() { calls += 1; return { response: '{"translation":"意外调用"}' }; } }
+    AI: {
+      async run(_model, input) {
+        calls += 1;
+        lastPrompt = input.messages.at(-1).content;
+        return { response: '{"translation":"意外调用"}' };
+      }
+    }
   };
 
   const staleResponse = await worker.fetch(await authenticatedRequest(
@@ -544,30 +551,36 @@ test('sentence translation source validation rejects stale, invalid, and oversiz
   }
 
   DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
-    .bind('x'.repeat(2001), 'a1').run();
+    .bind('x'.repeat(6001), 'a1').run();
   const oversizedResponse = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'POST',
-    { sentenceIndex: 0, sourceHash: await sentenceHash('x'.repeat(2001)) }
+    { sentenceIndex: 0, sourceHash: await sentenceHash('x'.repeat(6001)) }
   ), env);
   assert.equal(oversizedResponse.status, 413);
   assert.equal((await oversizedResponse.json()).code, 'TRANSLATION_TOO_LONG');
 
   DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
     .bind('Short. '.repeat(5001), 'a1').run();
-  const oversizedContext = await worker.fetch(await authenticatedRequest(
+  const longContext = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'POST',
     { sentenceIndex: 0, sourceHash: await sentenceHash('Short.') }
   ), env);
-  assert.equal(oversizedContext.status, 413);
-  assert.equal((await oversizedContext.json()).code, 'TRANSLATION_TOO_LONG');
+  assert.equal(longContext.status, 200);
+  assert.equal((await longContext.json()).translation, '意外调用');
+  assert.match(lastPrompt, /Relevant paragraph context:/);
+  assert.ok(lastPrompt.length < 6500);
 
   DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
     .bind('x'.repeat(30001), 'a1').run();
-  const oversizedGet = await worker.fetch(await authenticatedRequest(
+  const longGet = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'GET'
   ), env);
-  assert.equal(oversizedGet.status, 413);
-  assert.equal((await oversizedGet.json()).code, 'TRANSLATION_TOO_LONG');
+  assert.equal(longGet.status, 200);
+  assert.deepEqual(await longGet.json(), {
+    sentences: [],
+    nextCursor: null,
+    total: 1
+  });
 
   const missing = await worker.fetch(await authenticatedRequest(
     '/api/articles/missing/sentence-translations', 'POST',
@@ -575,7 +588,7 @@ test('sentence translation source validation rejects stale, invalid, and oversiz
   ), env);
   assert.equal(missing.status, 404);
   assert.equal((await missing.json()).code, 'ARTICLE_NOT_FOUND');
-  assert.equal(calls, 0);
+  assert.equal(calls, 1);
 });
 
 test('sentence translation source change during AI leaves the cache empty', async t => {
@@ -656,7 +669,7 @@ test('unexpected API failures use a stable sanitized internal error', async () =
   });
 });
 
-test('sentence translation cache GET rejects excessive lookup work before hashing or D1 reads', async t => {
+test('sentence translation cache GET supports long articles with bounded D1 batches', async t => {
   const actualDb = seededArticleDb(
     Array.from({ length: 501 }, (_, index) => `S${index}.`).join('\n\n')
   );
@@ -673,12 +686,13 @@ test('sentence translation cache GET rejects excessive lookup work before hashin
     '/api/articles/a1/sentence-translations', 'GET'
   ), { AUTH_SECRET: SECRET, DB });
 
-  assert.equal(response.status, 413);
+  assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
-    error: 'sentence translation lookup is too large',
-    code: 'TRANSLATION_LOOKUP_TOO_LARGE'
+    sentences: [],
+    nextCursor: null,
+    total: 501
   });
-  assert.equal(cacheReads, 0);
+  assert.equal(cacheReads, 11);
 });
 
 test('sentence translation cache GET reads D1 in batches of at most fifty keys', async t => {
@@ -707,7 +721,11 @@ test('sentence translation cache GET reads D1 in batches of at most fifty keys',
   ), { AUTH_SECRET: SECRET, DB });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { sentences: [] });
+  assert.deepEqual(await response.json(), {
+    sentences: [],
+    nextCursor: null,
+    total: 51
+  });
   assert.deepEqual(bindCounts, [51, 2]);
 });
 
