@@ -5,6 +5,7 @@ import { createReaderView } from './reader-view.js';
 import { hashForRoute, parseHashRoute } from './routes.js';
 import { createSpeechController } from './lib/speech.js';
 import { createTtsPlayer } from './lib/tts-player.js';
+import { syncTtsPreferences } from './lib/tts-preferences.js';
 import { createAloudCheckpointStore } from './lib/aloud-checkpoint.js';
 import { createProgressQueue, progressQueueKey, sendProgressItem } from './lib/reading-session.js';
 import { createWordsView } from './words-view.js';
@@ -27,11 +28,23 @@ const speech = createSpeechController({
   speechSynthesis: window.speechSynthesis,
   Utterance: window.SpeechSynthesisUtterance
 });
+
+function PwaAudio() {
+  const audio = new window.Audio();
+  audio.preload = 'auto';
+  audio.autoplay = false;
+  audio.playsInline = true;
+  audio.setAttribute?.('playsinline', '');
+  audio.setAttribute?.('webkit-playsinline', '');
+  audio.setAttribute?.('x-webkit-airplay', 'allow');
+  return audio;
+}
+
 const tts = createTtsPlayer({
   fetch: typeof window.fetch === 'function'
     ? window.fetch.bind(window)
     : globalThis.fetch?.bind(globalThis),
-  Audio: window.Audio,
+  Audio: PwaAudio,
   URL: window.URL,
   fallback: speech
 });
@@ -40,6 +53,7 @@ try { progressStorage = globalThis.localStorage; } catch { /* storage may be dis
 window.addEventListener('beforeunload', () => speech.cleanup());
 window.addEventListener('online', () => {
   progressQueue?.retry();
+  if (currentUsername) void syncTtsPreferences(progressStorage);
   if (waitingForConnectivity) boot();
 });
 
@@ -241,6 +255,7 @@ async function boot() {
     if (!user.username) throw new Error('unauthorized');
     currentUsername = user.username;
     waitingForConnectivity = false;
+    await syncTtsPreferences(progressStorage);
     progressQueue = createProgressQueue({
       storage: progressStorage,
       key: progressQueueKey(currentUsername),
