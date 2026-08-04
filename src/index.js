@@ -2,6 +2,7 @@ import { handleLogin, handleLogout, handleMe, requireUser } from './auth.js';
 import { handleArticlesApi } from './articles-api.js';
 import { jsonResponse } from './http.js';
 import { handleMarkingsApi } from './markings-api.js';
+import { handlePlainTranslationApi } from './plain-translation-api.js';
 import { handleProgressApi } from './progress-api.js';
 import { handleReviewsApi } from './reviews-api.js';
 import { handleSentenceTranslationsApi } from './sentence-translations-api.js';
@@ -62,9 +63,11 @@ export default {
         }
         if (
           path === '/api/translations/word' ||
-          path === '/api/translations/selection' ||
-          /^\/api\/articles\/[a-zA-Z0-9-]+\/translation$/.test(path)
+          path === '/api/translations/selection'
         ) {
+          return await handlePlainTranslationApi(request, env, path, userId);
+        }
+        if (/^\/api\/articles\/[a-zA-Z0-9-]+\/translation$/.test(path)) {
           return await handleTranslationApi(request, env, path, userId);
         }
         if (
