@@ -85,6 +85,10 @@ export async function syncTtsPreferences(storage = safeLocalStorage()) {
   }
   if (!remotePreferences) return false;
 
+  // The server won the timestamp comparison. Discard any older offline write
+  // still waiting in memory before applying the remote value locally.
+  pendingPreferences = null;
+  if (pendingStorage === storage) pendingStorage = null;
   try {
     storage.setItem(TTS_PREFERENCES_KEY, JSON.stringify(remotePreferences));
     storage.setItem(
