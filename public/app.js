@@ -32,11 +32,17 @@ const speech = createSpeechController({
 function PwaAudio() {
   const audio = new window.Audio();
   audio.preload = 'auto';
-  audio.autoplay = false;
   audio.playsInline = true;
   audio.setAttribute?.('playsinline', '');
   audio.setAttribute?.('webkit-playsinline', '');
   audio.setAttribute?.('x-webkit-airplay', 'allow');
+
+  const syncBackgroundAutoplay = () => {
+    audio.autoplay = document.visibilityState === 'hidden';
+  };
+  document.addEventListener('visibilitychange', syncBackgroundAutoplay);
+  audio.addEventListener?.('play', syncBackgroundAutoplay);
+  syncBackgroundAutoplay();
   return audio;
 }
 
