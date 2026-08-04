@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: phonetic-cards-production
@@ -23,71 +23,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
-
-      - name: Repair stale sentence DOM test once
-        if: github.event_name == 'pull_request' && github.head_ref == 'fix/translation-response-shapes'
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('tests/reader-pending-dom.test.js')
-          text = path.read_text(encoding='utf-8')
-          replacements = [
-              (
-                  "&& slots[1].dataset.state === 'translated',",
-                  """&& env.root.querySelectorAll(
-                    '[data-role=\"sentence-translation-slot\"]'
-                  )[1]?.dataset.state === 'translated',"""
-              ),
-              (
-                  """    assert.equal(attempts.get(0), 1);
-    assert.equal(attempts.get(1), 1);
-    assert.equal(slots[1].dataset.state, 'translated');""",
-                  """    slots = env.root.querySelectorAll('[data-role=\"sentence-translation-slot\"]');
-    assert.equal(attempts.get(0), 1);
-    assert.equal(attempts.get(1), 1);
-    assert.equal(slots[1].dataset.state, 'translated');"""
-              ),
-              (
-                  "() => slots[0].dataset.state === 'error',",
-                  """() => env.root.querySelectorAll(
-                '[data-role=\"sentence-translation-slot\"]'
-              )[0]?.dataset.state === 'error',"""
-              ),
-              (
-                  "() => attempts.get(0) === 2 && slots[0].dataset.state === 'translated',",
-                  """() => attempts.get(0) === 2 && env.root.querySelectorAll(
-                '[data-role=\"sentence-translation-slot\"]'
-              )[0]?.dataset.state === 'translated',"""
-              ),
-          ]
-          changed = False
-          for old, new in replacements:
-              count = text.count(old)
-              if count == 1:
-                  text = text.replace(old, new, 1)
-                  changed = True
-              elif count != 0:
-                  raise SystemExit(f'unexpected match count {count}: {old!r}')
-          if changed:
-              path.write_text(text, encoding='utf-8')
-          PY
-
-          git fetch origin main
-          git show origin/main:.github/workflows/deploy-worker.yml > .github/workflows/deploy-worker.yml
-          rm -f .github/workflows/patch-stale-sentence-dom-test.yml
-
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add tests/reader-pending-dom.test.js .github/workflows/deploy-worker.yml
-            git add -u .github/workflows
-            git commit -m "Stabilize sentence translation DOM test"
-            git push origin HEAD:fix/translation-response-shapes
-          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
