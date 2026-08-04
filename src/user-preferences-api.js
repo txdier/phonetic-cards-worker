@@ -1,5 +1,12 @@
 import { jsonResponse } from './http.js';
 
+const TTS_PROFILES = new Set([
+  'jenny-chat',
+  'jenny-friendly',
+  'aria-narration',
+  'guy-news'
+]);
+
 export async function handleUserPreferencesApi(request, env, path, userId) {
   if (path !== '/api/user-preferences') {
     return jsonResponse({ error: 'not found' }, { status: 404 });
@@ -19,8 +26,12 @@ export async function handleUserPreferencesApi(request, env, path, userId) {
   if (request.method === 'PUT') {
     let body;
     try { body = await request.json(); } catch { body = null; }
-    if (!body || typeof body.ttsPreferences !== 'object') {
-      return jsonResponse({ error: 'invalid preferences' }, { status: 400 });
+    const preferences = body?.ttsPreferences;
+    if (!validPreferences(preferences)) {
+      return jsonResponse(
+        { error: 'invalid TTS preferences', code: 'INVALID_TTS_PREFERENCES' },
+        { status: 400 }
+      );
     }
     const now = Date.now();
     await env.DB.prepare(`
@@ -29,8 +40,11 @@ export async function handleUserPreferencesApi(request, env, path, userId) {
       ON CONFLICT(user_id) DO UPDATE SET
         tts_preferences_json = excluded.tts_preferences_json,
         updated_at = excluded.updated_at
-    `).bind(userId, JSON.stringify(body.ttsPreferences), now).run();
-    return jsonResponse({ updatedAt: now });
+    `).bind(userId, JSON.stringify(preferences), now).run();
+    return jsonResponse({
+      ttsPreferences: { ...preferences },
+      updatedAt: now
+    });
   }
 
   return jsonResponse({ error: 'method not allowed' }, { status: 405 });
@@ -38,8 +52,20 @@ export async function handleUserPreferencesApi(request, env, path, userId) {
 
 function parsePreferences(value) {
   try {
-    return value ? JSON.parse(value) : {};
+    const parsed = value ? JSON.parse(value) : null;
+    return validPreferences(parsed) ? parsed : {};
   } catch {
     return {};
   }
+}
+
+function validPreferences(value) {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.keys(value).length === 2
+    && TTS_PROFILES.has(value.wordProfile)
+    && TTS_PROFILES.has(value.articleProfile)
+  );
 }
