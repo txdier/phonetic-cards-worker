@@ -7,17 +7,19 @@ import {
   translationFailureResponse
 } from './translation-api.js';
 
-const SENTENCE_LIMIT = 2000;
-const CONTEXT_LIMIT = 30000;
+const SENTENCE_LIMIT = 6000;
+const PROMPT_CONTEXT_LIMIT = 6000;
 const LOOKUP_BATCH_SIZE = 50;
-const LOOKUP_ITEM_LIMIT = 500;
-const LOOKUP_AGGREGATE_LIMIT = 30000;
+const DEFAULT_LOOKUP_LIMIT = 200;
+const MAX_LOOKUP_LIMIT = 500;
 
 export async function handleSentenceTranslationsApi(request, env, path, userId) {
   const match = path.match(/^\/api\/articles\/([a-zA-Z0-9-]+)\/sentence-translations$/);
   if (!match) return notFound();
   try {
-    if (request.method === 'GET') return await getSentenceTranslations(env.DB, match[1], userId);
+    if (request.method === 'GET') {
+      return await getSentenceTranslations(request, env.DB, match[1], userId);
+    }
     if (request.method === 'POST') {
       return await postSentenceTranslation(request, env, match[1], userId);
     }
@@ -27,14 +29,19 @@ export async function handleSentenceTranslationsApi(request, env, path, userId) 
   }
 }
 
-async function getSentenceTranslations(DB, articleId, userId) {
+async function getSentenceTranslations(request, DB, articleId, userId) {
   const article = await ownedArticle(DB, articleId, userId);
   if (!article) return articleNotFound();
-  const paragraphs = splitArticleParagraphs(article.body).paragraphs;
-  if (!descriptorsWithinLimits(paragraphs)) return tooLong();
-  if (!lookupWithinLimits(paragraphs)) return lookupTooLarge();
-  const items = await sentenceDescriptors(userId, paragraphs);
+
+  const sources = sentenceSources(splitArticleParagraphs(article.body).paragraphs);
+  const { cursor, limit } = lookupPage(request, sources.length);
+  const selected = sources.slice(cursor, cursor + limit);
+  const items = await sentenceDescriptors(userId, selected);
   const cached = await readCachedTranslations(DB, userId, items);
+  const nextCursor = cursor + selected.length < sources.length
+    ? cursor + selected.length
+    : null;
+
   return jsonResponse({
     sentences: items
       .filter(item => cached.has(item.identity.cacheKey))
@@ -43,7 +50,9 @@ async function getSentenceTranslations(DB, articleId, userId) {
         sourceHash: item.identity.sourceHash,
         contextHash: item.identity.contextHash,
         translation: cached.get(item.identity.cacheKey)
-      }))
+      })),
+    nextCursor,
+    total: sources.length
   });
 }
 
@@ -54,12 +63,8 @@ async function postSentenceTranslation(request, env, articleId, userId) {
   const article = await ownedArticle(env.DB, articleId, userId);
   if (!article) return articleNotFound();
   const item = await sentenceDescriptor(userId, article.body, body.sentenceIndex);
-  if (!item) return invalidInput();
-  if (!item.identity.sentence) return invalidInput();
-  if (
-    Array.from(item.identity.sentence).length > SENTENCE_LIMIT
-    || Array.from(item.identity.paragraph).length > CONTEXT_LIMIT
-  ) return tooLong();
+  if (!item || !item.identity.sentence) return invalidInput();
+  if (Array.from(item.identity.sentence).length > SENTENCE_LIMIT) return tooLong();
   if (body.sourceHash !== item.identity.sourceHash) return sourceChanged();
 
   if (body.refresh !== true) {
@@ -69,10 +74,15 @@ async function postSentenceTranslation(request, env, articleId, userId) {
     }
   }
 
+  const promptContext = contextWindow(
+    item.identity.paragraph,
+    item.identity.sentence,
+    PROMPT_CONTEXT_LIMIT
+  );
   const prompt = [
     `Target sentence: ${JSON.stringify(item.identity.sentence)}`,
-    `Complete paragraph context: ${JSON.stringify(item.identity.paragraph)}`,
-    'Use the complete paragraph only to resolve context. Translate only the target sentence into natural Simplified Chinese.'
+    `Relevant paragraph context: ${JSON.stringify(promptContext)}`,
+    'Use the context only to resolve meaning. Translate only the target sentence into natural Simplified Chinese.'
   ].join('\n');
   let translation;
   try {
@@ -112,7 +122,7 @@ async function ownedArticle(DB, articleId, userId) {
   `).bind(articleId, userId).first();
 }
 
-async function sentenceDescriptors(userId, paragraphs) {
+function sentenceSources(paragraphs) {
   const sources = [];
   for (const paragraph of paragraphs) {
     for (const sentence of paragraph.sentences) {
@@ -123,6 +133,10 @@ async function sentenceDescriptors(userId, paragraphs) {
       });
     }
   }
+  return sources;
+}
+
+async function sentenceDescriptors(userId, sources) {
   const items = [];
   for (let start = 0; start < sources.length; start += LOOKUP_BATCH_SIZE) {
     const batch = sources.slice(start, start + LOOKUP_BATCH_SIZE);
@@ -132,27 +146,6 @@ async function sentenceDescriptors(userId, paragraphs) {
     }))));
   }
   return items;
-}
-
-function descriptorsWithinLimits(paragraphs) {
-  return paragraphs.every(paragraph => (
-    Array.from(normalizeSource(paragraph.text)).length <= CONTEXT_LIMIT
-    && paragraph.sentences.every(sentence => {
-      const normalized = normalizeSource(sentence.text);
-      return normalized && Array.from(normalized).length <= SENTENCE_LIMIT;
-    })
-  ));
-}
-
-function lookupWithinLimits(paragraphs) {
-  let itemCount = 0;
-  let aggregateLength = 0;
-  for (const paragraph of paragraphs) {
-    aggregateLength += Array.from(normalizeSource(paragraph.text)).length;
-    itemCount += paragraph.sentences.length;
-    if (itemCount > LOOKUP_ITEM_LIMIT || aggregateLength > LOOKUP_AGGREGATE_LIMIT) return false;
-  }
-  return true;
 }
 
 async function sentenceDescriptor(userId, articleBody, sentenceIndex) {
@@ -173,6 +166,7 @@ async function readCachedTranslations(DB, userId, items) {
   const cached = new Map();
   for (let start = 0; start < items.length; start += LOOKUP_BATCH_SIZE) {
     const batch = items.slice(start, start + LOOKUP_BATCH_SIZE);
+    if (!batch.length) continue;
     const placeholders = batch.map(() => '?').join(', ');
     const result = await DB.prepare(`
       SELECT cache_key, translation_zh
@@ -182,6 +176,40 @@ async function readCachedTranslations(DB, userId, items) {
     for (const row of result.results || []) cached.set(row.cache_key, row.translation_zh);
   }
   return cached;
+}
+
+function lookupPage(request, total) {
+  const url = new URL(request.url);
+  const requestedCursor = Number.parseInt(url.searchParams.get('cursor') || '0', 10);
+  const requestedLimit = Number.parseInt(
+    url.searchParams.get('limit') || String(DEFAULT_LOOKUP_LIMIT),
+    10
+  );
+  const cursor = Number.isInteger(requestedCursor)
+    ? Math.min(Math.max(0, requestedCursor), total)
+    : 0;
+  const limit = Number.isInteger(requestedLimit)
+    ? Math.min(MAX_LOOKUP_LIMIT, Math.max(1, requestedLimit))
+    : DEFAULT_LOOKUP_LIMIT;
+  return { cursor, limit };
+}
+
+function contextWindow(paragraph, sentence, limit) {
+  const normalizedParagraph = normalizeSource(paragraph);
+  if (Array.from(normalizedParagraph).length <= limit) return normalizedParagraph;
+
+  const normalizedSentence = normalizeSource(sentence);
+  const index = normalizedParagraph.indexOf(normalizedSentence);
+  if (index < 0) return Array.from(normalizedParagraph).slice(0, limit).join('');
+
+  const codePoints = Array.from(normalizedParagraph);
+  const before = Array.from(normalizedParagraph.slice(0, index)).length;
+  const sentenceLength = Array.from(normalizedSentence).length;
+  const remaining = Math.max(0, limit - sentenceLength);
+  const start = Math.max(0, before - Math.floor(remaining / 2));
+  const end = Math.min(codePoints.length, start + limit);
+  const adjustedStart = Math.max(0, end - limit);
+  return codePoints.slice(adjustedStart, end).join('');
 }
 
 function normalizeSource(value) {
@@ -248,14 +276,10 @@ function invalidInput() {
 
 function tooLong() {
   return jsonResponse(
-    { error: 'translation input is too long', code: 'TRANSLATION_TOO_LONG' },
-    { status: 413 }
-  );
-}
-
-function lookupTooLarge() {
-  return jsonResponse(
-    { error: 'sentence translation lookup is too large', code: 'TRANSLATION_LOOKUP_TOO_LARGE' },
+    {
+      error: 'This sentence is too long to translate in one request.',
+      code: 'TRANSLATION_TOO_LONG'
+    },
     { status: 413 }
   );
 }
