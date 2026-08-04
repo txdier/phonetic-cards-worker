@@ -80,7 +80,7 @@ test('reader settings use theme tokens, responsive measure, and accessible contr
 
 test('service worker upgrades the shell with translation dependencies while APIs stay network-only', async () => {
   const serviceWorker = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
-  assert.match(serviceWorker, /phonetic-cards-shell-v2/);
+  assert.match(serviceWorker, /phonetic-cards-shell-v4/);
   assert.match(serviceWorker, /['"]\/lib\/translation-preferences\.js['"]/);
   assert.match(serviceWorker, /keys\.filter\(key => key !== CACHE_NAME\).*caches\.delete/s);
   assert.match(
