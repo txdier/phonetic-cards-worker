@@ -8,12 +8,13 @@ import {
 const WORD_LIMIT = 200;
 const SELECTION_LIMIT = 2000;
 const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。必须遵守以下规则：
-1. 根据完整上下文理解词义，不要逐字直译。
+1. 根据整段上下文翻译，不要逐字直译。
 2. 英语中省略但中文必须表达的成分可以合理补全。
-3. 保留原文语气、强调、重复、称呼和说话风格。
+3. 保留原文的语气、强调、重复、称呼和说话风格。
 4. 不增加原文没有的信息。
-5. 使用自然的简体中文表达，避免翻译腔。
-6. 返回 translation 字段，不提供解释、分析、总结或备选答案。`;
+5. 使用自然的中文表达，避免翻译腔。
+6. 只输出译文，不提供解释、分析、总结或备选答案。
+7. 将唯一译文放入 translation 字段。`;
 
 export async function handlePlainTranslationApi(request, env, path) {
   if (request.method !== 'POST') return notFound();
