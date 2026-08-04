@@ -5,6 +5,8 @@ import {
   TRANSLATION_RESPONSE_FORMAT
 } from './translation-result.js';
 
+export { parseTranslationResult } from './translation-result.js';
+
 const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。必须遵守以下规则：
 1. 根据提供的上下文理解目标句，但只翻译目标句。
 2. 使用自然的简体中文，避免逐字直译。
