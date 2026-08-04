@@ -22,6 +22,11 @@
     0 22px 60px rgb(0 0 0 / 42%);
 }
 
+/* Confirmation dialogs must sit above the word editor modal. */
+#pc-root > .pc-dialog-backdrop {
+  z-index: 1400;
+}
+
 body:has(#pc-word-form.open) {
   overflow: hidden;
 }
