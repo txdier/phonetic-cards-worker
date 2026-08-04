@@ -1,0 +1,32 @@
+name = "phonetic-cards"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "phonetic_cards_db"
+database_id = "3569abaa-31c4-4822-a14d-f6f6476e6e8f"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "phonetic-cards-audio"
+
+[ai]
+binding = "AI"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# 用户名可以直接明文写在这里（不算敏感信息）。
+# 密码和签名密钥不要写在这个文件里，用 `wrangler secret put` 单独设置：
+#   wrangler secret put AUTH_PASSWORD
+#   wrangler secret put AUTH_SECRET
+#   wrangler secret put AZURE_TTS_KEY
+
+[vars]
+AUTH_USERNAME = "joe"
+AZURE_TTS_REGION = "eastus"
+AZURE_TTS_VOICE = "en-US-JennyNeural"
+TTS_MONTHLY_CHAR_BUDGET = "450000"
