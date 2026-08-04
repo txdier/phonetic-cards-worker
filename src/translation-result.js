@@ -79,7 +79,7 @@ function collectText(value, candidates, depth) {
 }
 
 function parseTranslationText(value) {
-  let text = stripReasoning(stripCodeFence(String(value || '').normalize('NFKC').trim()));
+  let text = stripReasoning(stripCodeFence(String(value || '').trim()));
   if (!text) return '';
 
   try {
@@ -114,6 +114,6 @@ function stripReasoning(value) {
 }
 
 function sanitize(value) {
-  const text = String(value || '').normalize('NFKC').trim();
+  const text = String(value || '').trim();
   return text && Array.from(text).length <= MAX_TRANSLATION_LENGTH ? text : '';
 }
