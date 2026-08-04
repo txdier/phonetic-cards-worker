@@ -14,29 +14,18 @@ const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。必�
 
 export async function generateSentenceTranslation(env, prompt) {
   if (!env.AI?.run) throw translationError('TRANSLATION_NOT_CONFIGURED', 503);
-  const configured = Number(env.TRANSLATION_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(configured) && configured > 0 ? configured : 30000;
-  const controller = new AbortController();
-  let timer;
+  const input = {
+    messages: [
+      { role: 'system', content: TRANSLATION_RULES },
+      { role: 'user', content: prompt }
+    ],
+    response_format: TRANSLATION_RESPONSE_FORMAT,
+    temperature: 0,
+    max_completion_tokens: 768
+  };
 
   try {
-    const result = await Promise.race([
-      env.AI.run(TRANSLATION_MODEL, {
-        messages: [
-          { role: 'system', content: TRANSLATION_RULES },
-          { role: 'user', content: prompt }
-        ],
-        response_format: TRANSLATION_RESPONSE_FORMAT,
-        temperature: 0,
-        max_completion_tokens: 768
-      }, { signal: controller.signal }),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(translationError('TRANSLATION_TIMEOUT', 504));
-        }, timeoutMs);
-      })
-    ]);
+    const result = await runModel(env, input);
     const translation = parseTranslationResult(result);
     if (!translation) throw translationError('TRANSLATION_FORMAT_INVALID', 502);
     return translation;
@@ -44,9 +33,10 @@ export async function generateSentenceTranslation(env, prompt) {
     if (error?.translationCode) throw error;
     const status = Number(error?.status || error?.cause?.status || 0);
     if (status === 429) throw translationError('TRANSLATION_DAILY_LIMIT', 429);
+    if (error?.code === 'TRANSLATION_TIMEOUT') {
+      throw translationError('TRANSLATION_TIMEOUT', 504);
+    }
     throw translationError('TRANSLATION_UNAVAILABLE', 503);
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -63,6 +53,44 @@ export function sentenceTranslationFailureResponse(error) {
     { error: messages[code] || messages.TRANSLATION_UNAVAILABLE, code },
     { status: error?.httpStatus || 503 }
   );
+}
+
+async function runModel(env, input) {
+  try {
+    return await runWithTimeout(env, input);
+  } catch (error) {
+    if (!isResponseFormatError(error)) throw error;
+    const fallback = { ...input };
+    delete fallback.response_format;
+    return runWithTimeout(env, fallback);
+  }
+}
+
+async function runWithTimeout(env, input) {
+  const configured = Number(env.TRANSLATION_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configured) && configured > 0 ? configured : 30000;
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      env.AI.run(TRANSLATION_MODEL, input, { signal: controller.signal }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(Object.assign(new Error('translation timed out'), {
+            code: 'TRANSLATION_TIMEOUT'
+          }));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isResponseFormatError(error) {
+  const message = String(error?.message || error?.cause?.message || '');
+  return /response[_ -]?format|json mode|json schema|structured output/i.test(message);
 }
 
 function translationError(code, status) {
