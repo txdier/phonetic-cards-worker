@@ -1,5 +1,5 @@
 import { jsonResponse } from './http.js';
-import { splitSentences } from '../public/lib/text.js';
+import { splitArticleParagraphs } from '../public/lib/text.js';
 
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
 const CACHE_VERSION = 'v2';
@@ -9,6 +9,22 @@ const TTS_PROFILES = Object.freeze({
   'aria-narration': Object.freeze({ voice: 'en-US-AriaNeural', style: 'narration-professional' }),
   'guy-news': Object.freeze({ voice: 'en-US-GuyNeural', style: 'newscast' })
 });
+const DIALOGUE_PROFILE_ORDER = Object.freeze([
+  'jenny-friendly',
+  'guy-news',
+  'aria-narration',
+  'jenny-chat'
+]);
+const SPEAKER_LABEL = String.raw`[\p{L}][\p{L}\p{N} .’'_-]{0,39}`;
+const SPEAKER_PATTERNS = Object.freeze([
+  new RegExp(`^(?:\\*\\*|__)(${SPEAKER_LABEL})[:：](?:\\*\\*|__)[ \\t]*(?:\\n[ \\t]*)?`, 'u'),
+  new RegExp(`^(?:\\*\\*|__)(${SPEAKER_LABEL})(?:\\*\\*|__)[:：][ \\t]*(?:\\n[ \\t]*)?`, 'u'),
+  new RegExp(`^(${SPEAKER_LABEL})[:：][ \\t]*(?:\\n[ \\t]*)?`, 'u')
+]);
+const NON_SPEAKER_LABELS = new Set([
+  'answer', 'chapter', 'definition', 'example', 'important', 'lesson',
+  'note', 'part', 'question', 'section', 'summary', 'tip', 'warning'
+]);
 
 export async function handleTtsApi(
   request,
@@ -34,15 +50,19 @@ export async function handleTtsApi(
   }
 
   const url = new URL(request.url);
-  const profileName = url.searchParams.get('profile')
+  const requestedProfileName = url.searchParams.get('profile')
     || (resource.mode === 'sentence' ? 'aria-narration' : 'jenny-chat');
-  const profile = TTS_PROFILES[profileName];
-  if (!profile) {
+  if (!TTS_PROFILES[requestedProfileName]) {
     return jsonResponse(
       { error: 'invalid TTS profile', code: 'INVALID_TTS_PROFILE' },
       { status: 400 }
     );
   }
+  const dialogueProfileName = Number.isInteger(resource.speakerIndex)
+    ? DIALOGUE_PROFILE_ORDER[resource.speakerIndex]
+    : null;
+  const profileName = dialogueProfileName || requestedProfileName;
+  const profile = TTS_PROFILES[profileName];
   const cacheKey = await audioCacheKey(resource.mode, text, profileName, profile);
   const cached = await env.AUDIO?.get(cacheKey);
   if (cached) return cachedAudio(cached, 'hit');
@@ -113,9 +133,83 @@ async function resolveResource(request, DB, path, userId) {
     SELECT body FROM articles WHERE id = ? AND user_id = ?
   `).bind(articleMatch[1], userId).first();
   if (!article) return notFound('ARTICLE_NOT_FOUND');
-  const sentence = splitSentences(article.body)[Number(articleMatch[2])];
+
+  const parsed = splitArticleParagraphs(article.body);
+  const sentenceIndex = Number(articleMatch[2]);
+  const sentence = parsed.sentences[sentenceIndex];
   if (!sentence) return notFound('SENTENCE_NOT_FOUND');
-  return { mode: 'sentence', text: sentence.text };
+
+  const dialogue = detectDialogue(parsed.paragraphs);
+  const turn = dialogue?.turns.get(sentenceIndex);
+  return {
+    mode: 'sentence',
+    text: turn?.text || sentence.text,
+    speakerIndex: turn?.speakerIndex
+  };
+}
+
+function detectDialogue(paragraphs) {
+  const candidates = [];
+  const speakers = new Map();
+
+  for (const paragraph of paragraphs) {
+    const prefix = parseSpeakerPrefix(paragraph.text);
+    if (!prefix || !paragraph.sentences.length) continue;
+    const normalized = normalizeSpeaker(prefix.speaker);
+    if (!normalized || isGenericLabel(normalized)) continue;
+    if (!speakers.has(normalized)) {
+      speakers.set(normalized, speakers.size);
+    }
+    candidates.push({ paragraph, prefix, normalized });
+  }
+
+  if (
+    speakers.size < 2
+    || candidates.length < 2
+    || candidates.length / Math.max(1, paragraphs.length) < 0.6
+  ) return null;
+
+  const turns = new Map();
+  for (const candidate of candidates) {
+    const speakerIndex = speakers.get(candidate.normalized);
+    for (let offset = 0; offset < candidate.paragraph.sentences.length; offset += 1) {
+      const sentence = candidate.paragraph.sentences[offset];
+      turns.set(sentence.index, {
+        speakerIndex,
+        text: offset === 0
+          ? sentence.text.slice(candidate.prefix.length)
+          : sentence.text
+      });
+    }
+  }
+  return { turns };
+}
+
+function parseSpeakerPrefix(value) {
+  const text = String(value || '');
+  for (const pattern of SPEAKER_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      return {
+        speaker: match[1].trim(),
+        length: match[0].length
+      };
+    }
+  }
+  return null;
+}
+
+function normalizeSpeaker(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function isGenericLabel(value) {
+  if (NON_SPEAKER_LABELS.has(value)) return true;
+  return /^(?:chapter|lesson|part|section)\s+\d+$/i.test(value);
 }
 
 async function acquireLease(DB, userId, cacheKey, characterCount, budget, date) {
