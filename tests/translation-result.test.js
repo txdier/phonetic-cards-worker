@@ -5,6 +5,7 @@ import {
   TRANSLATION_RESPONSE_FORMAT
 } from '../src/translation-result.js';
 
+// Cover the response envelopes returned by current and legacy Workers AI runtimes.
 test('translation response format requests a single translation field', () => {
   assert.equal(TRANSLATION_RESPONSE_FORMAT.type, 'json_schema');
   assert.deepEqual(TRANSLATION_RESPONSE_FORMAT.json_schema.required, ['translation']);
