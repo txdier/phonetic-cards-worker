@@ -35,8 +35,9 @@ function translationFromValue(value, depth) {
   }
   if (typeof value !== 'object') return '';
 
-  if (typeof value.translation === 'string') {
-    const translation = sanitize(value.translation);
+  for (const key of ['translation', 'translatedText']) {
+    if (typeof value[key] !== 'string') continue;
+    const translation = sanitize(value[key]);
     if (translation) return translation;
   }
 
@@ -82,6 +83,9 @@ function parseTranslationText(value) {
   let text = stripReasoning(stripCodeFence(String(value || '').trim()));
   if (!text) return '';
 
+  const legacyResult = text.match(/^result\s*:\s*([\s\S]+)$/i);
+  if (legacyResult) text = legacyResult[1].trim();
+
   try {
     const parsed = JSON.parse(text);
     const translation = translationFromValue(parsed, 0);
@@ -90,7 +94,9 @@ function parseTranslationText(value) {
     // Use the plain-text fallback below.
   }
 
-  if (/^\s*[\[{]/.test(text) || /["']translation["']\s*:/i.test(text)) return '';
+  if (/^\s*[\[{]/.test(text) || /["'](?:translation|translatedText)["']\s*:/i.test(text)) {
+    return '';
+  }
   if (/^(?:explanation|reasoning|解释|说明)\s*[:：]/i.test(text)) return '';
 
   text = text
