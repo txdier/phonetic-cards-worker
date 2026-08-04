@@ -1,9 +1,12 @@
 /* Focused mobile/PWA interaction fixes kept separate from the main design sheet. */
 
-/* SVG children must never become the effective click target inside action buttons. */
-#pc-root button svg,
-#pc-root button svg * {
-  pointer-events: none;
+/*
+ * Delegated controls read data-action from the button. SVG and path nodes must
+ * never become the effective pointer target. This applies on desktop and mobile.
+ */
+#pc-root [data-action] svg,
+#pc-root [data-action] svg * {
+  pointer-events: none !important;
 }
 
 /*
