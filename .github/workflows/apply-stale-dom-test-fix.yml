@@ -1,0 +1,63 @@
+name: Apply stale DOM test fix
+
+on:
+  push:
+    branches:
+      - fix/translation-response-shapes
+    paths:
+      - .github/workflows/apply-stale-dom-test-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/translation-response-shapes
+
+      - name: Replace stale DOM assertions
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('tests/reader-pending-dom.test.js')
+          content = path.read_text(encoding='utf-8')
+          replacements = {
+              """      () => attempts.get(0) === 1
+                && attempts.get(1) === 1
+                && slots[1].dataset.state === 'translated',
+""": """      () => attempts.get(0) === 1
+                && attempts.get(1) === 1
+                && env.root.querySelector(
+                  '[data-role=\"sentence-translation-slot\"][data-sentence-index=\"1\"]'
+                )?.dataset.state === 'translated',
+""",
+              """      () => slots[0].dataset.state === 'error',
+""": """      () => env.root.querySelector(
+                '[data-role=\"sentence-translation-slot\"][data-sentence-index=\"0\"]'
+              )?.dataset.state === 'error',
+""",
+              """      () => attempts.get(0) === 2 && slots[0].dataset.state === 'translated',
+""": """      () => attempts.get(0) === 2 && env.root.querySelector(
+                '[data-role=\"sentence-translation-slot\"][data-sentence-index=\"0\"]'
+              )?.dataset.state === 'translated',
+"""
+          }
+          for old, new in replacements.items():
+              if old not in content:
+                  raise SystemExit(f'expected assertion not found: {old!r}')
+              content = content.replace(old, new, 1)
+          path.write_text(content, encoding='utf-8')
+          Path('.github/workflows/apply-stale-dom-test-fix.yml').unlink()
+
+      - name: Commit test stabilization
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/reader-pending-dom.test.js .github/workflows/apply-stale-dom-test-fix.yml
+          git commit -m "Stabilize sentence translation DOM test"
+          git push origin HEAD:fix/translation-response-shapes
