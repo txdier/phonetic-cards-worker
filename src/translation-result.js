@@ -82,17 +82,16 @@ function parseTranslationText(value) {
   let text = stripReasoning(stripCodeFence(String(value || '').normalize('NFKC').trim()));
   if (!text) return '';
 
-  for (const candidate of jsonObjectCandidates(text)) {
-    try {
-      const parsed = JSON.parse(candidate);
-      const translation = translationFromValue(parsed, 0);
-      if (translation) return translation;
-    } catch {
-      // Keep checking other balanced JSON objects or the plain-text fallback.
-    }
+  try {
+    const parsed = JSON.parse(text);
+    const translation = translationFromValue(parsed, 0);
+    if (translation) return translation;
+  } catch {
+    // Use the plain-text fallback below.
   }
 
   if (/^\s*[\[{]/.test(text) || /["']translation["']\s*:/i.test(text)) return '';
+  if (/^(?:explanation|reasoning|解释|说明)\s*[:：]/i.test(text)) return '';
 
   text = text
     .replace(/^(?:the\s+)?(?:translation|translated text|final answer|译文(?:如下)?|翻译(?:如下)?|答案)\s*[:：]\s*/i, '')
@@ -112,43 +111,6 @@ function stripReasoning(value) {
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
     .trim();
-}
-
-function jsonObjectCandidates(value) {
-  const candidates = [];
-  let start = -1;
-  let depth = 0;
-  let quote = '';
-  let escaped = false;
-
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === '\\') {
-        escaped = true;
-      } else if (character === quote) {
-        quote = '';
-      }
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (character === '{') {
-      if (depth === 0) start = index;
-      depth += 1;
-    } else if (character === '}' && depth > 0) {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        candidates.push(value.slice(start, index + 1));
-        start = -1;
-      }
-    }
-  }
-  return candidates;
 }
 
 function sanitize(value) {
