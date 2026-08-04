@@ -1,0 +1,50 @@
+/* Focused mobile/PWA interaction fixes kept separate from the main design sheet. */
+
+/* SVG children must never become the effective click target inside action buttons. */
+#pc-root button svg,
+#pc-root button svg * {
+  pointer-events: none;
+}
+
+/* Present the word add/edit form as an accessible modal card instead of opening at page top. */
+#pc-word-form.open {
+  position: fixed;
+  z-index: 1200;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(920px, calc(100vw - 28px));
+  max-height: calc(100dvh - 28px);
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  box-shadow:
+    0 0 0 100vmax rgb(0 0 0 / 58%),
+    0 22px 60px rgb(0 0 0 / 42%);
+}
+
+body:has(#pc-word-form.open) {
+  overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  /* iOS zooms focused controls whose computed font size is below 16px. */
+  #pc-root input:not([type="checkbox"]):not([type="radio"]),
+  #pc-root textarea,
+  #pc-root select {
+    font-size: 16px !important;
+  }
+
+  #pc-word-form.open {
+    inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px;
+    transform: none;
+    width: auto;
+    max-height: calc(100dvh - 20px - env(safe-area-inset-bottom));
+    border-radius: 16px;
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+  }
+
+  .pc-conversion-panel .pc-form,
+  .pc-conversion-form {
+    scroll-margin-bottom: 24px;
+  }
+}

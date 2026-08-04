@@ -8,6 +8,7 @@ import { handleSentenceTranslationsApi } from './sentence-translations-api.js';
 import { handleStatsApi } from './stats-api.js';
 import { handleTtsApi } from './tts-api.js';
 import { handleTranslationApi } from './translation-api.js';
+import { handleUserPreferencesApi } from './user-preferences-api.js';
 import { handleWordLibraryApi } from './word-library-api.js';
 import { handleWordsApi } from './words-api.js';
 
@@ -32,6 +33,9 @@ export default {
         return jsonResponse({ error: 'unauthorized' }, { status: 401 });
       }
       try {
+        if (path === '/api/user-preferences') {
+          return await handleUserPreferencesApi(request, env, path, userId);
+        }
         if (
           /^\/api\/articles\/[a-zA-Z0-9-]+\/progress(?:\/events)?$/.test(path)
         ) {
