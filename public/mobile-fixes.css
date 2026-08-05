@@ -1,9 +1,79 @@
 /* Focused mobile/PWA interaction fixes kept separate from the main design sheet. */
 
-/* SVG children must never become the effective click target inside action buttons. */
-#pc-root button svg,
-#pc-root button svg * {
-  pointer-events: none;
+/*
+ * Delegated controls read data-action from the button. SVG and path nodes must
+ * never become the effective pointer target. This applies on desktop and mobile.
+ */
+#pc-root [data-action] svg,
+#pc-root [data-action] svg * {
+  pointer-events: none !important;
+}
+
+/*
+ * The iOS installation dialog is appended to <body>, outside #pc-root, so it
+ * cannot inherit the application's theme variables. Give it an opaque theme
+ * and constrain it to the visual viewport so page content never shows through
+ * or overlaps the instructions.
+ */
+.pc-install-dialog {
+  --install-dialog-bg: #1a232e;
+  --install-dialog-ink: #ede7da;
+  --install-dialog-ink-dim: #b9b2a2;
+  --install-dialog-line: #2c3a48;
+  --install-dialog-accent: #e8a33d;
+
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
+  max-height: calc(
+    100dvh
+    - max(28px, env(safe-area-inset-top))
+    - max(28px, env(safe-area-inset-bottom))
+  );
+  margin: 0;
+  padding:
+    max(22px, env(safe-area-inset-top))
+    max(22px, env(safe-area-inset-right))
+    max(22px, env(safe-area-inset-bottom))
+    max(22px, env(safe-area-inset-left));
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--install-dialog-line) !important;
+  border-radius: 16px;
+  background: var(--install-dialog-bg) !important;
+  color: var(--install-dialog-ink) !important;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
+}
+
+.pc-install-dialog::backdrop {
+  background: rgb(0 0 0 / 72%) !important;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.pc-install-dialog h2 {
+  color: var(--install-dialog-ink) !important;
+}
+
+.pc-install-dialog p {
+  color: var(--install-dialog-ink-dim) !important;
+}
+
+.pc-install-dialog .pc-btn-primary {
+  background: var(--install-dialog-accent) !important;
+  color: #1a1305 !important;
+}
+
+body:has(#pc-root.pc-light) .pc-install-dialog {
+  --install-dialog-bg: #ffffff;
+  --install-dialog-ink: #241c13;
+  --install-dialog-ink-dim: #756b5b;
+  --install-dialog-line: #e3dcc8;
+  --install-dialog-accent: #c97a1e;
 }
 
 /* Present the word add/edit form as an accessible modal card instead of opening at page top. */
@@ -37,6 +107,24 @@ body:has(#pc-word-form.open) {
   #pc-root textarea,
   #pc-root select {
     font-size: 16px !important;
+  }
+
+  .pc-install-dialog {
+    inset:
+      50%
+      max(12px, env(safe-area-inset-right))
+      auto
+      max(12px, env(safe-area-inset-left));
+    transform: translateY(-50%);
+    width: auto;
+    max-width: none;
+    max-height: calc(
+      100dvh
+      - max(24px, env(safe-area-inset-top))
+      - max(24px, env(safe-area-inset-bottom))
+    );
+    margin: 0;
+    padding: 22px 22px max(22px, env(safe-area-inset-bottom));
   }
 
   #pc-word-form.open {
