@@ -1,0 +1,320 @@
+name: Apply sentence translation fixes
+
+on:
+  push:
+    branches:
+      - fix/stable-fast-sentence-translation
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          Path('src/sentence-translation-model.js').write_text("""import { jsonResponse } from './http.js';
+          import { parseTranslationResult } from './translation-result.js';
+
+          export { parseTranslationResult } from './translation-result.js';
+
+          export const SENTENCE_TRANSLATION_MODEL = '@cf/meta/llama-3.2-3b-instruct';
+
+          const DEFAULT_SENTENCE_TRANSLATION_TIMEOUT_MS = 15000;
+          const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。请根据提供的段落语境理解目标句，但只翻译目标句。译文必须自然、准确，保留原文语气，不添加原文没有的信息。只输出简体中文译文，不要解释、分析、标签或 Markdown。`;
+
+          export async function generateSentenceTranslation(env, prompt) {
+            if (!env.AI?.run) throw translationError('TRANSLATION_NOT_CONFIGURED', 503);
+            const input = {
+              messages: [
+                { role: 'system', content: TRANSLATION_RULES },
+                { role: 'user', content: prompt }
+              ],
+              temperature: 0,
+              max_tokens: 192
+            };
+
+            try {
+              const result = await runWithTimeout(env, input);
+              const translation = parseTranslationResult(result);
+              if (!translation) throw translationError('TRANSLATION_FORMAT_INVALID', 502);
+              return translation;
+            } catch (error) {
+              if (error?.translationCode) throw error;
+              const status = Number(error?.status || error?.cause?.status || 0);
+              if (status === 429) throw translationError('TRANSLATION_DAILY_LIMIT', 429);
+              if (error?.code === 'TRANSLATION_TIMEOUT') {
+                throw translationError('TRANSLATION_TIMEOUT', 504);
+              }
+              throw translationError('TRANSLATION_UNAVAILABLE', 503);
+            }
+          }
+
+          export function sentenceTranslationFailureResponse(error) {
+            const code = error?.translationCode || 'TRANSLATION_UNAVAILABLE';
+            const messages = {
+              TRANSLATION_NOT_CONFIGURED: '翻译服务尚未配置',
+              TRANSLATION_DAILY_LIMIT: '翻译服务今日额度已用完，请稍后再试',
+              TRANSLATION_TIMEOUT: '翻译请求超时，请重试',
+              TRANSLATION_FORMAT_INVALID: '翻译结果格式异常，请重试',
+              TRANSLATION_UNAVAILABLE: '翻译服务暂时不可用，请稍后重试'
+            };
+            return jsonResponse(
+              { error: messages[code] || messages.TRANSLATION_UNAVAILABLE, code },
+              { status: error?.httpStatus || 503 }
+            );
+          }
+
+          async function runWithTimeout(env, input) {
+            const sentenceConfigured = Number(env.SENTENCE_TRANSLATION_TIMEOUT_MS);
+            const sharedConfigured = Number(env.TRANSLATION_TIMEOUT_MS);
+            const configured = Number.isFinite(sentenceConfigured) && sentenceConfigured > 0
+              ? sentenceConfigured
+              : sharedConfigured;
+            const timeoutMs = Number.isFinite(configured) && configured > 0
+              ? configured
+              : DEFAULT_SENTENCE_TRANSLATION_TIMEOUT_MS;
+            const controller = new AbortController();
+            let timer;
+            try {
+              return await Promise.race([
+                env.AI.run(SENTENCE_TRANSLATION_MODEL, input, { signal: controller.signal }),
+                new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    controller.abort();
+                    reject(Object.assign(new Error('translation timed out'), {
+                      code: 'TRANSLATION_TIMEOUT'
+                    }));
+                  }, timeoutMs);
+                })
+              ]);
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+
+          function translationError(code, status) {
+            return Object.assign(new Error(code), {
+              translationCode: code,
+              httpStatus: status
+            });
+          }
+          """.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          replace_once(
+              'src/translation-api.js',
+              "export const TRANSLATION_RULES_VERSION = 'sentence-v1';",
+              "export const TRANSLATION_RULES_VERSION = 'sentence-v2-fast';"
+          )
+
+          path = Path('src/sentence-translations-api.js')
+          text = path.read_text(encoding='utf-8')
+          old_imports = """import {
+            TRANSLATION_MODEL,
+            TRANSLATION_RULES_VERSION
+          } from './translation-api.js';
+          import {
+            generateSentenceTranslation,
+            sentenceTranslationFailureResponse
+          } from './sentence-translation-model.js';""".replace('\n          ', '\n').lstrip()
+          new_imports = """import { TRANSLATION_RULES_VERSION } from './translation-api.js';
+          import {
+            generateSentenceTranslation,
+            sentenceTranslationFailureResponse,
+            SENTENCE_TRANSLATION_MODEL
+          } from './sentence-translation-model.js';""".replace('\n          ', '\n').lstrip()
+          if text.count(old_imports) != 1:
+              raise SystemExit('src/sentence-translations-api.js: import block did not match')
+          text = text.replace(old_imports, new_imports, 1)
+          text = text.replace('const PROMPT_CONTEXT_LIMIT = 6000;', 'const PROMPT_CONTEXT_LIMIT = 1500;', 1)
+          old_prompt = """  const prompt = [
+            `Target sentence: ${JSON.stringify(item.identity.sentence)}`,
+            `Relevant paragraph context: ${JSON.stringify(
+              contextWindow(
+                item.identity.paragraph,
+                item.identity.sentence,
+                PROMPT_CONTEXT_LIMIT
+              )
+            )}`,
+            'Translate only the target sentence into natural Simplified Chinese.'
+          ].join('\\n');""".replace('\n          ', '\n').rstrip()
+          new_prompt = """  const prompt = [
+            `目标句：${JSON.stringify(item.identity.sentence)}`,
+            `所在段落（仅用于消歧）：${JSON.stringify(
+              contextWindow(
+                item.identity.paragraph,
+                item.identity.sentence,
+                PROMPT_CONTEXT_LIMIT
+              )
+            )}`,
+            '只翻译目标句，输出自然的简体中文译文。'
+          ].join('\\n');""".replace('\n          ', '\n').rstrip()
+          if text.count(old_prompt) != 1:
+              raise SystemExit('src/sentence-translations-api.js: prompt block did not match')
+          text = text.replace(old_prompt, new_prompt, 1)
+          model_count = text.count('TRANSLATION_MODEL')
+          if model_count != 2:
+              raise SystemExit(f'src/sentence-translations-api.js: expected two model references, found {model_count}')
+          text = text.replace('TRANSLATION_MODEL', 'SENTENCE_TRANSLATION_MODEL')
+          path.write_text(text, encoding='utf-8')
+
+          replace_once(
+              'tests/translations-api.test.js',
+              "assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v1');",
+              "assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v2-fast');"
+          )
+          replace_once(
+              'tests/translations-api.test.js',
+              "  assert.match(modelPrompt, /Target sentence: \\\"Fine\\.\\\"/);\n  assert.match(modelPrompt, /Relevant paragraph context: \\\"After a long argument, she said, Fine\\.\\\"/);",
+              "  assert.match(modelPrompt, /目标句：\\\"Fine\\.\\\"/);\n  assert.match(modelPrompt, /所在段落（仅用于消歧）：\\\"After a long argument, she said, Fine\\.\\\"/);"
+          )
+          replace_once(
+              'tests/translations-api.test.js',
+              "  assert.match(lastPrompt, /Relevant paragraph context:/);\n  assert.ok(lastPrompt.length < 6500);",
+              "  assert.match(lastPrompt, /所在段落（仅用于消歧）：/);\n  assert.ok(lastPrompt.length < 2000);"
+          )
+
+          Path('tests/sentence-translation-model.test.js').write_text("""import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import {
+            generateSentenceTranslation,
+            parseTranslationResult,
+            SENTENCE_TRANSLATION_MODEL
+          } from '../src/sentence-translation-model.js';
+
+          test('sentence translation uses the compact non-reasoning model request', async () => {
+            const calls = [];
+            const translation = await generateSentenceTranslation({
+              AI: {
+                async run(model, input, options) {
+                  calls.push({ model, input, options });
+                  return { response: '这是自然译文。' };
+                }
+              }
+            }, '目标句："Fine."');
+
+            assert.equal(translation, '这是自然译文。');
+            assert.equal(SENTENCE_TRANSLATION_MODEL, '@cf/meta/llama-3.2-3b-instruct');
+            assert.equal(calls.length, 1);
+            assert.equal(calls[0].model, SENTENCE_TRANSLATION_MODEL);
+            assert.equal(calls[0].input.max_tokens, 192);
+            assert.equal(calls[0].input.temperature, 0);
+            assert.equal('max_completion_tokens' in calls[0].input, false);
+            assert.equal('response_format' in calls[0].input, false);
+            assert.ok(calls[0].options.signal instanceof AbortSignal);
+          });
+
+          test('sentence translation honors its shorter dedicated timeout', async () => {
+            let signal;
+            await assert.rejects(
+              generateSentenceTranslation({
+                SENTENCE_TRANSLATION_TIMEOUT_MS: '1',
+                AI: {
+                  run(_model, _input, options) {
+                    signal = options.signal;
+                    return new Promise(() => {});
+                  }
+                }
+              }, '目标句："Fine."'),
+              error => error.translationCode === 'TRANSLATION_TIMEOUT'
+                && error.httpStatus === 504
+            );
+            assert.equal(signal.aborted, true);
+          });
+
+          test('sentence translation parser accepts strict JSON', () => {
+            assert.equal(
+              parseTranslationResult({ response: '{"translation":"这是译文"}' }),
+              '这是译文'
+            );
+          });
+
+          test('sentence translation parser accepts fenced or extended JSON', () => {
+            assert.equal(
+              parseTranslationResult({
+                response: '```json\\n{"translation":"自然译文","reason":"context"}\\n```'
+              }),
+              '自然译文'
+            );
+            assert.equal(
+              parseTranslationResult({ response: 'Result: {"translatedText":"另一条译文"}' }),
+              '另一条译文'
+            );
+          });
+
+          test('sentence translation parser accepts a plain translation fallback', () => {
+            assert.equal(
+              parseTranslationResult({ response: '翻译：这是纯文本结果' }),
+              '这是纯文本结果'
+            );
+          });
+
+          test('sentence translation parser rejects empty and malformed structured output', () => {
+            assert.equal(parseTranslationResult({ response: '' }), '');
+            assert.equal(parseTranslationResult({ response: '{not-json}' }), '');
+            assert.equal(parseTranslationResult({ response: '{"reason":"missing"}' }), '');
+          });
+          """.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          replace_once(
+              'tests/reader-pending-dom.test.js',
+              "  const firstRequest = deferred();\n  const attempts = new Map();",
+              "  const firstRequest = deferred();\n  const secondRequest = deferred();\n  const attempts = new Map();"
+          )
+          replace_once(
+              'tests/reader-pending-dom.test.js',
+              "        if (body.sentenceIndex === 0 && attempts.get(0) === 1) return firstRequest.promise;\n        return {\n          ...body,\n          translation: body.sentenceIndex === 0 ? '第一句重试。' : '第二句。',\n          cached: false\n        };",
+              "        if (body.sentenceIndex === 0 && attempts.get(0) === 1) return firstRequest.promise;\n        if (body.sentenceIndex === 1 && attempts.get(1) === 1) {\n          return secondRequest.promise.then(() => ({\n            ...body,\n            translation: '第二句。',\n            cached: false\n          }));\n        }\n        return {\n          ...body,\n          translation: body.sentenceIndex === 0 ? '第一句重试。' : '第二句。',\n          cached: false\n        };"
+          )
+          replace_once(
+              'tests/reader-pending-dom.test.js',
+              "    await waitFor(\n      () => attempts.get(0) === 1\n        && attempts.get(1) === 1\n        && slots[1].dataset.state === 'translated',\n      'independent sentence POST should finish before rejecting the first request'\n    );",
+              "    await waitFor(\n      () => attempts.get(0) === 1 && attempts.get(1) === 1,\n      'both sentence POST requests should start independently'\n    );\n    secondRequest.resolve();\n    await waitFor(\n      () => slots[1].dataset.state === 'translated',\n      'resolved independent sentence POST should reach translated state'\n    );"
+          )
+          PY
+
+      - name: Run root test suite
+        run: npm test
+
+      - name: Run all tests
+        run: npm run test:all
+
+      - name: Commit fixes and remove helper workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-sentence-fixes.yml
+          git add -A
+          git commit -m "Stabilize and speed up sentence translation"
+          git push
