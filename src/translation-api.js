@@ -2,7 +2,7 @@ import { jsonResponse } from './http.js';
 import { splitArticleParagraphs } from '../public/lib/text.js';
 
 export const TRANSLATION_MODEL = '@cf/zai-org/glm-4.7-flash';
-export const TRANSLATION_RULES_VERSION = 'sentence-v1';
+export const TRANSLATION_RULES_VERSION = 'sentence-v2-fast';
 
 const WORD_LIMIT = 200;
 const SELECTION_LIMIT = 2000;

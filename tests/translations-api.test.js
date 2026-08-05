@@ -17,7 +17,7 @@ test('strict translation service returns only a validated translation', async ()
     AI: { async run() { return { response: '{"translation":"璇戞枃"}' }; } }
   }, 'Translate this sentence.');
   assert.equal(value, '璇戞枃');
-  assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v1');
+  assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v2-fast');
 });
 
 test('strict translation service exposes stable format failures', async () => {
@@ -439,8 +439,8 @@ test('sentence translation context, cache reuse, and user isolation', async t =>
   ), env);
   assert.equal(first.status, 200);
   assert.equal((await first.json()).cached, false);
-  assert.match(modelPrompt, /Target sentence: "Fine\."/);
-  assert.match(modelPrompt, /Relevant paragraph context: "After a long argument, she said, Fine\."/);
+  assert.match(modelPrompt, /目标句： "Fine\."/);
+  assert.match(modelPrompt, /所在段落（仅用于消歧）： "After a long argument, she said, Fine\."/);
 
   const second = await worker.fetch(await authenticatedRequest(
     '/api/articles/a1/sentence-translations', 'POST',
@@ -567,8 +567,8 @@ test('sentence translation validates stale invalid and oversized sentences while
   ), env);
   assert.equal(longContext.status, 200);
   assert.equal((await longContext.json()).translation, '意外调用');
-  assert.match(lastPrompt, /Relevant paragraph context:/);
-  assert.ok(lastPrompt.length < 6500);
+  assert.match(lastPrompt, /所在段落（仅用于消歧）：/);
+  assert.ok(lastPrompt.length < 2000);
 
   DB.prepare('UPDATE articles SET body = ? WHERE id = ?')
     .bind('x'.repeat(30001), 'a1').run();

@@ -1,18 +1,12 @@
 import { jsonResponse } from './http.js';
-import { TRANSLATION_MODEL } from './translation-api.js';
-import {
-  parseTranslationResult,
-  TRANSLATION_RESPONSE_FORMAT
-} from './translation-result.js';
+import { parseTranslationResult } from './translation-result.js';
 
 export { parseTranslationResult } from './translation-result.js';
 
-const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。必须遵守以下规则：
-1. 根据提供的上下文理解目标句，但只翻译目标句。
-2. 使用自然的简体中文，避免逐字直译。
-3. 保留原文语气、强调和称呼。
-4. 不增加原文没有的信息。
-5. 返回 translation 字段，不提供解释、分析或其他文字。`;
+export const SENTENCE_TRANSLATION_MODEL = '@cf/meta/llama-3.2-3b-instruct';
+
+const DEFAULT_SENTENCE_TRANSLATION_TIMEOUT_MS = 15000;
+const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。请根据提供的段落语境理解目标句，但只翻译目标句。译文必须自然、准确，保留原文语气，不添加原文没有的信息。只输出简体中文译文，不要解释、分析、标签或 Markdown。`;
 
 export async function generateSentenceTranslation(env, prompt) {
   if (!env.AI?.run) throw translationError('TRANSLATION_NOT_CONFIGURED', 503);
@@ -21,13 +15,12 @@ export async function generateSentenceTranslation(env, prompt) {
       { role: 'system', content: TRANSLATION_RULES },
       { role: 'user', content: prompt }
     ],
-    response_format: TRANSLATION_RESPONSE_FORMAT,
     temperature: 0,
-    max_completion_tokens: 768
+    max_tokens: 192
   };
 
   try {
-    const result = await runModel(env, input);
+    const result = await runWithTimeout(env, input);
     const translation = parseTranslationResult(result);
     if (!translation) throw translationError('TRANSLATION_FORMAT_INVALID', 502);
     return translation;
@@ -57,42 +50,32 @@ export function sentenceTranslationFailureResponse(error) {
   );
 }
 
-async function runModel(env, input) {
-  try {
-    return await runWithTimeout(env, input);
-  } catch (error) {
-    if (!isResponseFormatError(error)) throw error;
-    const fallback = { ...input };
-    delete fallback.response_format;
-    return runWithTimeout(env, fallback);
-  }
-}
-
 async function runWithTimeout(env, input) {
-  const configured = Number(env.TRANSLATION_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(configured) && configured > 0 ? configured : 30000;
+  const sentenceConfigured = Number(env.SENTENCE_TRANSLATION_TIMEOUT_MS);
+  const sharedConfigured = Number(env.TRANSLATION_TIMEOUT_MS);
+  const configured = Number.isFinite(sentenceConfigured) && sentenceConfigured > 0
+    ? sentenceConfigured
+    : sharedConfigured;
+  const timeoutMs = Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_SENTENCE_TRANSLATION_TIMEOUT_MS;
   const controller = new AbortController();
   let timer;
   try {
     return await Promise.race([
-      env.AI.run(TRANSLATION_MODEL, input, { signal: controller.signal }),
+      env.AI.run(SENTENCE_TRANSLATION_MODEL, input, { signal: controller.signal }),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          controller.abort();
-          reject(Object.assign(new Error('translation timed out'), {
-            code: 'TRANSLATION_TIMEOUT'
-          }));
+controller.abort();
+reject(Object.assign(new Error('translation timed out'), {
+  code: 'TRANSLATION_TIMEOUT'
+}));
         }, timeoutMs);
       })
     ]);
   } finally {
     clearTimeout(timer);
   }
-}
-
-function isResponseFormatError(error) {
-  const message = String(error?.message || error?.cause?.message || '');
-  return /response[_ -]?format|json mode|json schema|structured output/i.test(message);
 }
 
 function translationError(code, status) {

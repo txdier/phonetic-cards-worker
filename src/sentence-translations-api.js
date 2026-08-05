@@ -1,16 +1,14 @@
 import { jsonResponse } from './http.js';
 import { splitArticleParagraphs } from '../public/lib/text.js';
-import {
-  TRANSLATION_MODEL,
-  TRANSLATION_RULES_VERSION
-} from './translation-api.js';
+import { TRANSLATION_RULES_VERSION } from './translation-api.js';
 import {
   generateSentenceTranslation,
-  sentenceTranslationFailureResponse
+  sentenceTranslationFailureResponse,
+  SENTENCE_TRANSLATION_MODEL
 } from './sentence-translation-model.js';
 
 const SENTENCE_LIMIT = 6000;
-const PROMPT_CONTEXT_LIMIT = 6000;
+const PROMPT_CONTEXT_LIMIT = 1500;
 const LOOKUP_BATCH_SIZE = 50;
 const MAX_EXPLICIT_LOOKUP_LIMIT = 500;
 
@@ -72,15 +70,15 @@ async function postSentenceTranslation(request, env, articleId, userId) {
   }
 
   const prompt = [
-    `Target sentence: ${JSON.stringify(item.identity.sentence)}`,
-    `Relevant paragraph context: ${JSON.stringify(
+    `目标句： ${JSON.stringify(item.identity.sentence)}`,
+    `所在段落（仅用于消歧）： ${JSON.stringify(
       contextWindow(
         item.identity.paragraph,
         item.identity.sentence,
         PROMPT_CONTEXT_LIMIT
       )
     )}`,
-    'Translate only the target sentence into natural Simplified Chinese.'
+    '只翻译目标句，输出自然的简体中文译文。'
   ].join('\n');
   let translation;
   try {
@@ -112,7 +110,7 @@ async function postSentenceTranslation(request, env, articleId, userId) {
     item.identity.contextHash,
     item.identity.sentence,
     translation,
-    TRANSLATION_MODEL,
+    SENTENCE_TRANSLATION_MODEL,
     TRANSLATION_RULES_VERSION,
     now,
     now,
@@ -230,7 +228,7 @@ async function identity(userId, sentence, paragraph) {
       userId,
       normalizedSentence,
       normalizedParagraph,
-      TRANSLATION_MODEL,
+      SENTENCE_TRANSLATION_MODEL,
       TRANSLATION_RULES_VERSION
     ]))
   };
