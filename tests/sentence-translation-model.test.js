@@ -35,8 +35,8 @@ test('sentence translation honors its shorter dedicated timeout', async () => {
       SENTENCE_TRANSLATION_TIMEOUT_MS: '1',
       AI: {
         run(_model, _input, options) {
-signal = options.signal;
-return new Promise(() => {});
+          signal = options.signal;
+          return new Promise(() => {});
         }
       }
     }, '目标句："Fine."'),
