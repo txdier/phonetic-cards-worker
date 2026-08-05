@@ -953,6 +953,7 @@ test('sentence translation restore failure leaves idle slots usable', async () =
 
 test('sentence translation slot isolates loading, errors, and retries', async () => {
   const firstRequest = deferred();
+  const secondRequest = deferred();
   const attempts = new Map();
   const detail = articleDetail({
     body: 'First sentence. Second sentence.', markings: [], pending_terms: [], words: []
@@ -968,6 +969,13 @@ test('sentence translation slot isolates loading, errors, and retries', async ()
         const body = JSON.parse(init.body);
         attempts.set(body.sentenceIndex, (attempts.get(body.sentenceIndex) || 0) + 1);
         if (body.sentenceIndex === 0 && attempts.get(0) === 1) return firstRequest.promise;
+        if (body.sentenceIndex === 1 && attempts.get(1) === 1) {
+          return secondRequest.promise.then(() => ({
+            ...body,
+            translation: '第二句。',
+            cached: false
+          }));
+        }
         return {
           ...body,
           translation: body.sentenceIndex === 0 ? '第一句重试。' : '第二句。',
@@ -992,10 +1000,13 @@ test('sentence translation slot isolates loading, errors, and retries', async ()
 
     click(env.window, slots[1].querySelector('[data-action="translate-sentence"]'));
     await waitFor(
-      () => attempts.get(0) === 1
-        && attempts.get(1) === 1
-        && slots[1].dataset.state === 'translated',
-      'independent sentence POST should finish before rejecting the first request'
+      () => attempts.get(0) === 1 && attempts.get(1) === 1,
+      'both sentence POST requests should start independently'
+    );
+    secondRequest.resolve();
+    await waitFor(
+      () => slots[1].dataset.state === 'translated',
+      'resolved independent sentence POST should reach translated state'
     );
     firstRequest.reject(new Error('first sentence failed'));
     await waitFor(
