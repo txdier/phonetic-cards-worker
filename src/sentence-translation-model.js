@@ -66,10 +66,10 @@ async function runWithTimeout(env, input) {
       env.AI.run(SENTENCE_TRANSLATION_MODEL, input, { signal: controller.signal }),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-controller.abort();
-reject(Object.assign(new Error('translation timed out'), {
-  code: 'TRANSLATION_TIMEOUT'
-}));
+          controller.abort();
+          reject(Object.assign(new Error('translation timed out'), {
+            code: 'TRANSLATION_TIMEOUT'
+          }));
         }, timeoutMs);
       })
     ]);
