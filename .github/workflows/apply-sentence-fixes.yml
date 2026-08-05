@@ -34,14 +34,15 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_once(path, old, new):
+          def replace_exact(path, old, new, expected=1):
               file = Path(path)
               text = file.read_text(encoding='utf-8')
               count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected one match, found {count}')
-              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} matches for {old!r}, found {count}')
+              file.write_text(text.replace(old, new), encoding='utf-8')
 
           Path('src/sentence-translation-model.js').write_text("""import { jsonResponse } from './http.js';
           import { parseTranslationResult } from './translation-result.js';
@@ -131,7 +132,7 @@ jobs:
           }
           """.replace('\n          ', '\n').lstrip(), encoding='utf-8')
 
-          replace_once(
+          replace_exact(
               'src/translation-api.js',
               "export const TRANSLATION_RULES_VERSION = 'sentence-v1';",
               "export const TRANSLATION_RULES_VERSION = 'sentence-v2-fast';"
@@ -156,52 +157,56 @@ jobs:
           if text.count(old_imports) != 1:
               raise SystemExit('src/sentence-translations-api.js: import block did not match')
           text = text.replace(old_imports, new_imports, 1)
-          text = text.replace('const PROMPT_CONTEXT_LIMIT = 6000;', 'const PROMPT_CONTEXT_LIMIT = 1500;', 1)
-          old_prompt = """  const prompt = [
-            `Target sentence: ${JSON.stringify(item.identity.sentence)}`,
-            `Relevant paragraph context: ${JSON.stringify(
-              contextWindow(
-                item.identity.paragraph,
-                item.identity.sentence,
-                PROMPT_CONTEXT_LIMIT
+
+          replacements = [
+              ('const PROMPT_CONTEXT_LIMIT = 6000;', 'const PROMPT_CONTEXT_LIMIT = 1500;', 1),
+              ('Target sentence:', '目标句：', 1),
+              ('Relevant paragraph context:', '所在段落（仅用于消歧）：', 1),
+              (
+                  'Translate only the target sentence into natural Simplified Chinese.',
+                  '只翻译目标句，输出自然的简体中文译文。',
+                  1
               )
-            )}`,
-            'Translate only the target sentence into natural Simplified Chinese.'
-          ].join('\\n');""".replace('\n          ', '\n').rstrip()
-          new_prompt = """  const prompt = [
-            `目标句：${JSON.stringify(item.identity.sentence)}`,
-            `所在段落（仅用于消歧）：${JSON.stringify(
-              contextWindow(
-                item.identity.paragraph,
-                item.identity.sentence,
-                PROMPT_CONTEXT_LIMIT
-              )
-            )}`,
-            '只翻译目标句，输出自然的简体中文译文。'
-          ].join('\\n');""".replace('\n          ', '\n').rstrip()
-          if text.count(old_prompt) != 1:
-              raise SystemExit('src/sentence-translations-api.js: prompt block did not match')
-          text = text.replace(old_prompt, new_prompt, 1)
-          model_count = text.count('TRANSLATION_MODEL')
+          ]
+          for old, new, expected in replacements:
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f'src/sentence-translations-api.js: expected {expected} matches for {old!r}, found {count}'
+                  )
+              text = text.replace(old, new)
+
+          text, model_count = re.subn(
+              r'\bTRANSLATION_MODEL\b',
+              'SENTENCE_TRANSLATION_MODEL',
+              text
+          )
           if model_count != 2:
-              raise SystemExit(f'src/sentence-translations-api.js: expected two model references, found {model_count}')
-          text = text.replace('TRANSLATION_MODEL', 'SENTENCE_TRANSLATION_MODEL')
+              raise SystemExit(
+                  f'src/sentence-translations-api.js: expected two standalone model references, found {model_count}'
+              )
           path.write_text(text, encoding='utf-8')
 
-          replace_once(
+          replace_exact(
               'tests/translations-api.test.js',
               "assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v1');",
               "assert.equal(TRANSLATION_RULES_VERSION, 'sentence-v2-fast');"
           )
-          replace_once(
+          replace_exact(
               'tests/translations-api.test.js',
-              "  assert.match(modelPrompt, /Target sentence: \\\"Fine\\.\\\"/);\n  assert.match(modelPrompt, /Relevant paragraph context: \\\"After a long argument, she said, Fine\\.\\\"/);",
-              "  assert.match(modelPrompt, /目标句：\\\"Fine\\.\\\"/);\n  assert.match(modelPrompt, /所在段落（仅用于消歧）：\\\"After a long argument, she said, Fine\\.\\\"/);"
+              'Target sentence:',
+              '目标句：'
           )
-          replace_once(
+          replace_exact(
               'tests/translations-api.test.js',
-              "  assert.match(lastPrompt, /Relevant paragraph context:/);\n  assert.ok(lastPrompt.length < 6500);",
-              "  assert.match(lastPrompt, /所在段落（仅用于消歧）：/);\n  assert.ok(lastPrompt.length < 2000);"
+              'Relevant paragraph context:',
+              '所在段落（仅用于消歧）：',
+              expected=2
+          )
+          replace_exact(
+              'tests/translations-api.test.js',
+              'assert.ok(lastPrompt.length < 6500);',
+              'assert.ok(lastPrompt.length < 2000);'
           )
 
           Path('tests/sentence-translation-model.test.js').write_text("""import test from 'node:test';
@@ -286,17 +291,17 @@ jobs:
           });
           """.replace('\n          ', '\n').lstrip(), encoding='utf-8')
 
-          replace_once(
+          replace_exact(
               'tests/reader-pending-dom.test.js',
               "  const firstRequest = deferred();\n  const attempts = new Map();",
               "  const firstRequest = deferred();\n  const secondRequest = deferred();\n  const attempts = new Map();"
           )
-          replace_once(
+          replace_exact(
               'tests/reader-pending-dom.test.js',
               "        if (body.sentenceIndex === 0 && attempts.get(0) === 1) return firstRequest.promise;\n        return {\n          ...body,\n          translation: body.sentenceIndex === 0 ? '第一句重试。' : '第二句。',\n          cached: false\n        };",
               "        if (body.sentenceIndex === 0 && attempts.get(0) === 1) return firstRequest.promise;\n        if (body.sentenceIndex === 1 && attempts.get(1) === 1) {\n          return secondRequest.promise.then(() => ({\n            ...body,\n            translation: '第二句。',\n            cached: false\n          }));\n        }\n        return {\n          ...body,\n          translation: body.sentenceIndex === 0 ? '第一句重试。' : '第二句。',\n          cached: false\n        };"
           )
-          replace_once(
+          replace_exact(
               'tests/reader-pending-dom.test.js',
               "    await waitFor(\n      () => attempts.get(0) === 1\n        && attempts.get(1) === 1\n        && slots[1].dataset.state === 'translated',\n      'independent sentence POST should finish before rejecting the first request'\n    );",
               "    await waitFor(\n      () => attempts.get(0) === 1 && attempts.get(1) === 1,\n      'both sentence POST requests should start independently'\n    );\n    secondRequest.resolve();\n    await waitFor(\n      () => slots[1].dataset.state === 'translated',\n      'resolved independent sentence POST should reach translated state'\n    );"
