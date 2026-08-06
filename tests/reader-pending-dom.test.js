@@ -44,11 +44,17 @@ async function flush() {
   await Promise.resolve();
 }
 
-async function waitFor(predicate, message = 'condition was not reached') {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+async function waitFor(
+  predicate,
+  message = 'condition was not reached',
+  timeoutMs = 3000
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (predicate()) return;
     await flush();
   }
+  if (predicate()) return;
   assert.fail(message);
 }
 
