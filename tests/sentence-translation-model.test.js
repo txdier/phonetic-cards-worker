@@ -6,25 +6,26 @@ import {
   SENTENCE_TRANSLATION_MODEL
 } from '../src/sentence-translation-model.js';
 
-test('sentence translation uses the compact non-reasoning model request', async () => {
+test('sentence translation uses the fast JSON-mode model request', async () => {
   const calls = [];
   const translation = await generateSentenceTranslation({
     AI: {
       async run(model, input, options) {
         calls.push({ model, input, options });
-        return { response: '这是自然译文。' };
+        return { response: { translation: '这是自然译文。' } };
       }
     }
   }, '目标句："Fine."');
 
   assert.equal(translation, '这是自然译文。');
-  assert.equal(SENTENCE_TRANSLATION_MODEL, '@cf/meta/llama-3.2-3b-instruct');
+  assert.equal(SENTENCE_TRANSLATION_MODEL, '@cf/meta/llama-3.1-8b-instruct-fast');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].model, SENTENCE_TRANSLATION_MODEL);
   assert.equal(calls[0].input.max_tokens, 192);
   assert.equal(calls[0].input.temperature, 0);
   assert.equal('max_completion_tokens' in calls[0].input, false);
-  assert.equal('response_format' in calls[0].input, false);
+  assert.equal(calls[0].input.response_format.type, 'json_schema');
+  assert.deepEqual(calls[0].input.response_format.json_schema.required, ['translation']);
   assert.ok(calls[0].options.signal instanceof AbortSignal);
 });
 

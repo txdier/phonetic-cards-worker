@@ -1,12 +1,15 @@
 import { jsonResponse } from './http.js';
-import { parseTranslationResult } from './translation-result.js';
+import {
+  parseTranslationResult,
+  TRANSLATION_RESPONSE_FORMAT
+} from './translation-result.js';
 
 export { parseTranslationResult } from './translation-result.js';
 
-export const SENTENCE_TRANSLATION_MODEL = '@cf/meta/llama-3.2-3b-instruct';
+export const SENTENCE_TRANSLATION_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
 
 const DEFAULT_SENTENCE_TRANSLATION_TIMEOUT_MS = 15000;
-const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。请根据提供的段落语境理解目标句，但只翻译目标句。译文必须自然、准确，保留原文语气，不添加原文没有的信息。只输出简体中文译文，不要解释、分析、标签或 Markdown。`;
+const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。请根据提供的段落语境理解目标句，但只翻译目标句。译文必须自然、准确，保留原文语气，不添加原文没有的信息。返回且只返回包含 translation 字段的 JSON 对象。`;
 
 export async function generateSentenceTranslation(env, prompt) {
   if (!env.AI?.run) throw translationError('TRANSLATION_NOT_CONFIGURED', 503);
@@ -15,6 +18,7 @@ export async function generateSentenceTranslation(env, prompt) {
       { role: 'system', content: TRANSLATION_RULES },
       { role: 'user', content: prompt }
     ],
+    response_format: TRANSLATION_RESPONSE_FORMAT,
     temperature: 0,
     max_tokens: 192
   };
