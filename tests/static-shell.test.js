@@ -81,6 +81,7 @@ test('reader settings use theme tokens, responsive measure, and accessible contr
 test('service worker upgrades the shell with translation dependencies while APIs stay network-only', async () => {
   const serviceWorker = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
   assert.match(serviceWorker, /phonetic-cards-shell-v5/);
+  assert.match(serviceWorker, /['"]\/lib\/article-translation-scheduler\.js['"]/);
   assert.match(serviceWorker, /['"]\/lib\/translation-preferences\.js['"]/);
   assert.match(serviceWorker, /keys\.filter\(key => key !== CACHE_NAME\).*caches\.delete/s);
   assert.match(
@@ -146,6 +147,19 @@ test('sentence translation slots use a quiet annotation layout without clamping 
   assert.doesNotMatch(css, /\.pc-sentence-translation-controls-cached \.pc-sentence-translation-action::after/);
   assert.doesNotMatch(slot || '', /(?:^|[;\s])height\s*:/);
   assert.doesNotMatch(translated || '', /line-clamp|overflow:\s*hidden|max-height/);
+});
+
+test('progressive article translation uses quiet progress and pending styles', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const progress = css.match(/\.pc-article-translation-progress\s*\{([^}]*)\}/)?.[1];
+  const pending = css.match(/\.pc-reader-translation-pending\s*\{([^}]*)\}/)?.[1];
+
+  assert.match(progress || '', /margin:\s*0\s+0\s+1em/);
+  assert.match(progress || '', /color:\s*var\(--ink-dim\)/);
+  assert.match(progress || '', /font-size:\s*\.8em/);
+  assert.match(pending || '', /min-height:\s*2\.5em/);
+  assert.match(pending || '', /color:\s*var\(--ink-dim\)/);
+  assert.match(pending || '', /opacity:\s*\.72/);
 });
 
 test('tag checkboxes render as compact centered color chips', async () => {

@@ -150,6 +150,35 @@ function articleDetail(overrides = {}) {
   };
 }
 
+function progressiveArticleTranslation(completed = [], completedBatch = null, {
+  totalBatches = 4,
+  titleZh = 'Translated title',
+  translations = {}
+} = {}) {
+  const completedIndexes = new Set(completed);
+  const batches = Array.from({ length: totalBatches }, (_, index) => ({
+    index,
+    paragraphIndexes: [index],
+    completed: completedIndexes.has(index)
+  }));
+  return {
+    status: completed.length === batches.length
+      ? 'fresh'
+      : completed.length ? 'partial' : 'missing',
+    sourceHash: 'a'.repeat(64),
+    rulesVersion: 'article-v2-progressive',
+    titleZh: completedIndexes.has(0) ? titleZh : '',
+    paragraphs: completed.map(index => ({
+      index,
+      translation: translations[index] ?? `translation ${index}`
+    })),
+    batches,
+    completedBatches: completed.length,
+    totalBatches: batches.length,
+    ...(completedBatch == null ? {} : { completedBatch })
+  };
+}
+
 function createReaderSpeechFake(isSupported = true) {
   const calls = [];
   let listener = null;
@@ -407,24 +436,520 @@ function setupReader({
   };
 }
 
+test('partial article translation renders completed paragraphs, pending placeholders, and progress', async () => {
+  const articleRequest = deferred();
+  const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
+  const partial = {
+    status: 'partial',
+    sourceHash: 'a'.repeat(64),
+    rulesVersion: 'article-v2-progressive',
+    titleZh: '娴嬭瘯鏂囩珷',
+    paragraphs: [{ index: 0, translation: '绗竴娈点€?' }],
+    batches: [
+      { index: 0, paragraphIndexes: [0], completed: true },
+      { index: 1, paragraphIndexes: [1], completed: false }
+    ],
+    completedBatches: 1,
+    totalBatches: 2
+  };
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return partial;
+      if (path === '/api/articles/a1/translation/batches/1' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation"]').textContent,
+      '绗竴娈点€?'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation-pending"]')
+        .dataset.paragraphIndex,
+      '1'
+    );
+    /* Previous mojibake expectation intentionally removed.
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]').textContent,
+      '宸茬炕璇?1/2 鎵?'
+    );
+    */
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]').getAttribute('role'),
+      'status'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]').textContent,
+      '已翻译 1/2 批'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]')
+        .getAttribute('aria-live'),
+      'polite'
+    );
+  } finally {
+    env.cleanup();
+    articleRequest.resolve(progressiveArticleTranslation([0, 1], 1, { totalBatches: 2 }));
+    env.restore();
+  }
+});
+
+test('reader schedules progressive article batches and resumes only missing work', async () => {
+  const requests = new Map([0, 1, 2, 3].map(index => [index, deferred()]));
+  const calls = [];
+  const detail = articleDetail({
+    body: 'Paragraph zero.\n\nParagraph one.\n\nParagraph two.\n\nParagraph three.',
+    markings: [], pending_terms: [], words: []
+  });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation();
+      }
+      const match = path.match(/^\/api\/articles\/a1\/translation\/batches\/(\d+)$/);
+      if (match && init.method === 'PUT') {
+        const index = Number(match[1]);
+        calls.push({ index, body: JSON.parse(init.body) });
+        return requests.get(index).promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+
+    assert.deepEqual(calls, [{
+      index: 0,
+      body: {
+        sourceHash: 'a'.repeat(64),
+        rulesVersion: 'article-v2-progressive',
+        refresh: false
+      }
+    }]);
+
+    requests.get(0).resolve(progressiveArticleTranslation([0], 0));
+    await waitFor(() => calls.length === 3, 'later translation batches did not start');
+    assert.deepEqual(calls.map(call => call.index), [0, 1, 2]);
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation"][data-paragraph-index="0"]')
+        .textContent,
+      'translation 0'
+    );
+
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="original"]'
+    ));
+    requests.get(2).resolve(progressiveArticleTranslation([0, 2], 2));
+    await env.ready();
+    assert.deepEqual(calls.map(call => call.index), [0, 1, 2]);
+
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    assert.deepEqual(calls.map(call => call.index), [0, 1, 2, 3]);
+    assert.equal(calls.filter(call => call.index === 1).length, 1);
+    assert.equal(calls.filter(call => call.index === 2).length, 1);
+  } finally {
+    env.cleanup();
+    for (const request of requests.values()) {
+      request.resolve(progressiveArticleTranslation([0, 1, 2, 3]));
+    }
+    env.restore();
+  }
+});
+
+test('completed article batches preserve focused and speaking sentence nodes', async () => {
+  const gate = deferred();
+  const detail = articleDetail({ body: 'Focused sentence.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 1 });
+      }
+      if (path.endsWith('/translation/batches/0') && init.method === 'PUT') return gate.promise;
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="full"]'));
+    const sentence = env.root.querySelector('[data-sentence-index="0"]');
+    sentence.tabIndex = -1;
+    sentence.classList.add('pc-speaking');
+    sentence.focus();
+    gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 1, titleZh: '标题', translations: { 0: '译文。' }
+    }));
+    await waitFor(() => env.root.querySelector('[data-role="paragraph-translation"]'));
+    assert.equal(sentence.isConnected, true);
+    assert.equal(env.window.document.activeElement, sentence);
+    assert.equal(sentence.classList.contains('pc-speaking'), true);
+  } finally {
+    env.cleanup();
+    gate.resolve(progressiveArticleTranslation([0], 0, { totalBatches: 1 }));
+    env.restore();
+  }
+});
+
+test('full mode immediately renders pending paragraphs before translation resolves', async () => {
+  const articleRequest = deferred();
+  const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 2 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+
+    assert.equal(
+      env.root.querySelectorAll('[data-role="paragraph-translation-pending"]').length,
+      2
+    );
+    /* Previous mojibake expectation intentionally removed.
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation-pending"]').textContent,
+      '绛夊緟缈昏瘧'
+    );
+    */
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation-pending"]').textContent,
+      '等待翻译'
+    );
+  } finally {
+    env.cleanup();
+    articleRequest.resolve(progressiveArticleTranslation([0], 0, { totalBatches: 2 }));
+    env.restore();
+  }
+});
+
+test('stale article translation success cannot overwrite a newer loaded state', async () => {
+  const articleRequest = deferred();
+  let translationGets = 0;
+  const detail = articleDetail({ words: [] });
+  const newerTranslation = {
+    status: 'fresh', titleZh: 'new-title', paragraphs: [
+      { index: 0, translation: 'new-first' },
+      { index: 1, translation: 'new-second' }
+    ]
+  };
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        translationGets += 1;
+        return translationGets === 1
+          ? progressiveArticleTranslation([], null, { totalBatches: 2 })
+          : newerTranslation;
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      if (path === '/api/articles/a1/markings/m1' && init.method === 'DELETE') {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('.pc-term-pending'));
+    click(env.window, env.root.querySelector('[data-action="unmark-local"]'));
+    await waitFor(
+      () => env.root.querySelector('[data-role="article-translation-title"]')
+        ?.textContent === 'new-title',
+      'newer translation state was not loaded'
+    );
+
+    articleRequest.resolve({
+      status: 'fresh', titleZh: 'old-title', paragraphs: [
+        { index: 0, translation: 'old-first' },
+        { index: 1, translation: 'old-second' }
+      ]
+    });
+    await env.ready();
+
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-title"]').textContent,
+      'new-title'
+    );
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')]
+        .map(node => node.textContent),
+      ['new-first', 'new-second']
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('article translation state GET failure can recover in-reader without reload', async () => {
+  let gets = 0;
+  const detail = articleDetail({ body: 'Recoverable paragraph.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        gets += 1;
+        if (gets === 1) throw new Error('state unavailable');
+        return progressiveArticleTranslation([0], null, {
+          totalBatches: 1, titleZh: '标题', translations: { 0: '已恢复。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+    const retry = env.root.querySelector('[data-action="retry-article-translation-state"]');
+    assert.ok(retry);
+    click(env.window, retry);
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '已恢复。'
+    );
+    assert.equal(gets, 2);
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('switching original to full preserves translation-state retry and recovers', async () => {
+  let gets = 0;
+  const detail = articleDetail({ body: 'Retry after mode switch.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        gets += 1;
+        if (gets === 1) throw new Error('state unavailable');
+        return progressiveArticleTranslation([0], null, {
+          totalBatches: 1, titleZh: '标题', translations: { 0: '恢复译文。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="full"]'));
+    const retry = env.root.querySelector('[data-action="retry-article-translation-state"]');
+    assert.ok(retry);
+    click(env.window, retry);
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '恢复译文。'
+    );
+    assert.equal(gets, 2);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('source and rules conflicts reload authoritative translation state', async () => {
+  for (const code of ['TRANSLATION_SOURCE_CHANGED', 'TRANSLATION_RULES_CHANGED']) {
+    let gets = 0;
+    let puts = 0;
+    const detail = articleDetail({ body: 'Conflict paragraph.', markings: [], pending_terms: [], words: [] });
+    const env = setupReader({
+      body: detail.body,
+      apiImpl: async (path, init = {}) => {
+        if (path === '/api/articles/a1' && !init.method) return detail;
+        if (path === '/api/articles/a1/translation' && !init.method) {
+          gets += 1;
+          return gets === 1
+            ? progressiveArticleTranslation([], null, { totalBatches: 1 })
+            : progressiveArticleTranslation([0], null, {
+              totalBatches: 1, titleZh: '新标题', translations: { 0: `恢复 ${code}` }
+            });
+        }
+        if (path.endsWith('/translation/batches/0') && init.method === 'PUT') {
+          puts += 1;
+          const error = new Error(code);
+          error.code = code;
+          throw error;
+        }
+        throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+      }
+    });
+    try {
+      await env.ready();
+      click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+      click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="full"]'));
+      await waitFor(() => env.root.querySelector('[data-role="paragraph-translation"]'));
+      assert.equal(gets, 2);
+      assert.equal(puts, 1);
+      assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+    } finally {
+      env.cleanup();
+      env.restore();
+    }
+  }
+});
+
+test('stale article translation failure stays silent after a newer load resets mode', async () => {
+  const articleRequest = deferred();
+  let translationGets = 0;
+  const detail = articleDetail({ words: [] });
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        translationGets += 1;
+        return translationGets === 1
+          ? progressiveArticleTranslation([], null, { totalBatches: 2 })
+          : { status: 'missing', sourceHash: 'b'.repeat(64), rulesVersion: 'article-v2-progressive' };
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      if (path === '/api/articles/a1/markings/m1' && init.method === 'DELETE') {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('.pc-term-pending'));
+    click(env.window, env.root.querySelector('[data-action="unmark-local"]'));
+    await waitFor(
+      () => env.window.localStorage.getItem(TRANSLATION_MODE_KEY) === 'original',
+      'newer load did not reset translation mode'
+    );
+
+    articleRequest.reject(new Error('obsolete generation failed'));
+    await env.ready();
+
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+    assert.equal(
+      env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'),
+      'false'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('article translation settlement does not restore focus after the panel loses ownership', async () => {
+  const articleRequest = deferred();
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 2 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    const back = env.root.querySelector('[data-action="back-library"]');
+    back.focus();
+
+    articleRequest.resolve({
+      status: 'fresh', titleZh: '娴嬭瘯鏍囬', paragraphs: [
+        { index: 0, translation: '绗竴娈点€?' },
+        { index: 1, translation: '绗簩娈点€?' }
+      ]
+    });
+    await env.ready();
+
+    assert.equal(env.window.document.activeElement, back);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('translation toolbar panel generates and toggles complete paragraph translations', async () => {
   const calls = [];
   const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
   const translation = {
     status: 'fresh', titleZh: '测试文章', model: '@cf/zai-org/glm-4.7-flash',
     updatedAt: 2,
+    sourceHash: 'a'.repeat(64), rulesVersion: 'article-v2-progressive',
     paragraphs: [
       { index: 0, translation: '第一段。' },
       { index: 1, translation: '第二段。' }
-    ]
+    ],
+    batches: [{ index: 0, paragraphIndexes: [0, 1], completed: true }],
+    completedBatches: 1, totalBatches: 1, completedBatch: 0
   };
   const env = setupReader({
     body: detail.body,
     apiImpl: async (path, init = {}) => {
       calls.push({ path, init });
       if (path === '/api/articles/a1' && !init.method) return detail;
-      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
-      if (path === '/api/articles/a1/translation' && init.method === 'PUT') return translation;
+      if (path === '/api/articles/a1/translation' && !init.method) return {
+        ...translation, status: 'missing', titleZh: '', paragraphs: [],
+        batches: [{ index: 0, paragraphIndexes: [0, 1], completed: false }],
+        completedBatches: 0, completedBatch: undefined
+      };
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        return translation;
+      }
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
     }
   });
@@ -458,7 +983,9 @@ test('translation toolbar panel generates and toggles complete paragraph transla
     trigger = env.root.querySelector('[data-action="translation-menu"]');
     assert.equal(trigger.getAttribute('aria-pressed'), 'true');
     assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
-    assert.ok(calls.some(call => call.path === '/api/articles/a1/translation' && initMethod(call) === 'PUT'));
+    assert.ok(calls.some(call => (
+      call.path === '/api/articles/a1/translation/batches/0' && initMethod(call) === 'PUT'
+    )));
 
     click(env.window, trigger);
     click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="original"]'));
@@ -577,13 +1104,15 @@ test('translation restoration displays an existing full translation without an A
   }
 });
 
-test('translation panel keeps focus during and after a failed first-time full generation', async () => {
+test('failed first progressive batch keeps full mode active without trapping focus', async () => {
   const articleRequest = deferred();
   const env = setupReader({
     apiImpl: async (path, init = {}) => {
       if (path === '/api/articles/a1' && !init.method) return articleDetail();
-      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
-      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 2 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
         return articleRequest.promise;
       }
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
@@ -596,18 +1125,17 @@ test('translation panel keeps focus during and after a failed first-time full ge
     full.focus();
     click(env.window, full);
 
-    const busyPanel = env.root.querySelector('[data-role="translation-panel"]');
-    assert.equal(full.isConnected, true);
-    assert.equal(full.disabled, true);
-    assert.equal(busyPanel.tabIndex, -1);
-    assert.equal(env.window.document.activeElement, busyPanel);
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(full.isConnected, false);
+    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    assert.equal(env.window.document.activeElement, trigger);
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
 
     articleRequest.reject(new Error('generation failed'));
     await env.ready();
-    assert.equal(full.isConnected, true);
-    assert.equal(full.disabled, false);
-    assert.equal(full.textContent, '翻译全文');
-    assert.equal(env.window.document.activeElement, full);
+    assert.match(env.root.querySelector(':scope > [data-inline-error]').textContent, /generation failed/);
+    assert.equal(env.window.document.activeElement, trigger);
+    assert.equal(trigger.getAttribute('aria-pressed'), 'true');
   } finally {
     env.cleanup();
     env.restore();
@@ -616,16 +1144,17 @@ test('translation panel keeps focus during and after a failed first-time full ge
 
 test('translation mode refresh failure preserves the existing full translation and display mode', async () => {
   const refreshRequest = deferred();
-  const translation = {
-    status: 'fresh', titleZh: '旧标题', model: 'model', updatedAt: 2,
-    paragraphs: [{ index: 0, translation: '旧译文。' }]
-  };
+  const translation = progressiveArticleTranslation([0], null, {
+    totalBatches: 1,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文。' }
+  });
   const env = setupReader({
     translationMode: 'full',
     apiImpl: async (path, init = {}) => {
       if (path === '/api/articles/a1' && !init.method) return articleDetail();
       if (path === '/api/articles/a1/translation' && !init.method) return translation;
-      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
         return refreshRequest.promise;
       }
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
@@ -638,10 +1167,11 @@ test('translation mode refresh failure preserves the existing full translation a
     refresh.focus();
     click(env.window, refresh);
 
-    const busyPanel = env.root.querySelector('[data-role="translation-panel"]');
-    assert.equal(refresh.disabled, true);
-    assert.equal(busyPanel.tabIndex, -1);
-    assert.equal(env.window.document.activeElement, busyPanel);
+    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(refresh.isConnected, false);
+    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    assert.equal(env.window.document.activeElement, trigger);
+    assert.equal(env.root.querySelector('[data-role="paragraph-translation"]').textContent, '旧译文。');
 
     refreshRequest.reject(new Error('refresh failed'));
     await env.ready();
@@ -650,23 +1180,23 @@ test('translation mode refresh failure preserves the existing full translation a
     assert.equal(env.root.querySelector('[data-role="paragraph-translation"]').textContent, '旧译文。');
     assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
     assert.equal(env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'), 'true');
-    assert.ok(env.root.querySelector('[data-role="translation-panel"]'));
-    assert.equal(refresh.isConnected, true);
-    assert.equal(refresh.disabled, false);
-    assert.equal(env.window.document.activeElement, refresh);
+    assert.match(env.root.querySelector(':scope > [data-inline-error]').textContent, /refresh failed/);
+    assert.equal(env.window.document.activeElement, trigger);
   } finally {
     env.cleanup();
     env.restore();
   }
 });
 
-test('translation panel reopens safely during a failed first-time full generation', async () => {
+test('translation panel remains usable while the first progressive batch is in flight', async () => {
   const articleRequest = deferred();
   const env = setupReader({
     apiImpl: async (path, init = {}) => {
       if (path === '/api/articles/a1' && !init.method) return articleDetail();
-      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
-      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 2 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
         return articleRequest.promise;
       }
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
@@ -674,43 +1204,44 @@ test('translation panel reopens safely during a failed first-time full generatio
   });
   try {
     await env.ready();
-    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
     click(env.window, trigger);
     const full = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
     full.focus();
     click(env.window, full);
 
-    click(env.window, trigger);
-    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
     click(env.window, trigger);
     const reopened = env.root.querySelector('[data-role="translation-panel"]');
-    assert.equal(env.window.document.activeElement, reopened);
-    assert.ok([...reopened.querySelectorAll('[data-action="translation-mode"]')].every(node => node.disabled));
+    const currentFull = reopened.querySelector('[data-action="translation-mode"][data-mode="full"]');
+    assert.equal(env.window.document.activeElement, currentFull);
+    assert.ok([...reopened.querySelectorAll('[data-action="translation-mode"]')]
+      .every(node => node.disabled === false));
 
     articleRequest.reject(new Error('generation failed'));
     await env.ready();
-    const restored = reopened.querySelector('[data-action="translation-mode"][data-mode="full"]');
-    assert.equal(restored.isConnected, true);
-    assert.equal(restored.disabled, false);
-    assert.equal(env.window.document.activeElement, restored);
+    assert.equal(currentFull.isConnected, true);
+    assert.equal(currentFull.disabled, false);
+    assert.equal(env.window.document.activeElement, currentFull);
   } finally {
     env.cleanup();
     env.restore();
   }
 });
 
-test('translation panel reopens safely during a failed full refresh', async () => {
+test('translation panel remains usable while a full refresh is in flight', async () => {
   const refreshRequest = deferred();
-  const translation = {
-    status: 'fresh', titleZh: '旧标题', model: 'model', updatedAt: 2,
-    paragraphs: [{ index: 0, translation: '旧译文。' }]
-  };
+  const translation = progressiveArticleTranslation([0], null, {
+    totalBatches: 1,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文。' }
+  });
   const env = setupReader({
     translationMode: 'full',
     apiImpl: async (path, init = {}) => {
       if (path === '/api/articles/a1' && !init.method) return articleDetail();
       if (path === '/api/articles/a1/translation' && !init.method) return translation;
-      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
         return refreshRequest.promise;
       }
       throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
@@ -718,25 +1249,23 @@ test('translation panel reopens safely during a failed full refresh', async () =
   });
   try {
     await env.ready();
-    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
     click(env.window, trigger);
     const refresh = env.root.querySelector('[data-action="translate-article"]');
     refresh.focus();
     click(env.window, refresh);
 
-    click(env.window, trigger);
-    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
     click(env.window, trigger);
     const reopened = env.root.querySelector('[data-role="translation-panel"]');
-    assert.equal(env.window.document.activeElement, reopened);
-    assert.equal(reopened.querySelector('[data-action="translate-article"]').disabled, true);
+    const currentRefresh = reopened.querySelector('[data-action="translate-article"]');
+    assert.equal(currentRefresh.disabled, false);
 
     refreshRequest.reject(new Error('refresh failed'));
     await env.ready();
-    const restored = reopened.querySelector('[data-action="translate-article"]');
-    assert.equal(restored.isConnected, true);
-    assert.equal(restored.disabled, false);
-    assert.equal(env.window.document.activeElement, restored);
+    assert.equal(currentRefresh.isConnected, true);
+    assert.equal(currentRefresh.disabled, false);
+    assert.match(env.root.querySelector(':scope > [data-inline-error]').textContent, /refresh failed/);
   } finally {
     env.cleanup();
     env.restore();
@@ -1468,8 +1997,10 @@ test('selection translation cannot supersede an in-flight article translation', 
     body: detail.body,
     apiImpl: async (path, init = {}) => {
       if (path === '/api/articles/a1' && !init.method) return detail;
-      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
-      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 1 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
         return articleRequest.promise;
       }
       if (path === '/api/translations/selection') return { translation: '第一句。' };
@@ -1481,10 +2012,10 @@ test('selection translation cannot supersede an in-flight article translation', 
     click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
     const articleButton = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
     click(env.window, articleButton);
-    assert.ok(env.root.querySelector('[data-role="translation-panel"]'));
+    assert.equal(env.root.querySelector('[data-role="translation-panel"]'), null);
     assert.equal(
-      env.root.querySelector('[data-action="translation-mode"][data-mode="full"]').disabled,
-      true
+      env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'),
+      'true'
     );
 
     const sentence = env.root.querySelector('[data-sentence-index="0"]');
@@ -3160,6 +3691,425 @@ test('ordinary sentence click speaks exactly once', async () => {
     ]);
   } finally {
     cleanup();
+    env.restore();
+  }
+});
+
+test('translation scheduler retries before offering a focused manual continuation', async () => {
+  let attempts = 0;
+  const detail = articleDetail({ body: 'First paragraph.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 1 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        attempts += 1;
+        if (attempts <= 2) {
+          const error = new Error(`temporary failure ${attempts}`);
+          error.code = 'TRANSLATION_TIMEOUT';
+          throw error;
+        }
+        return progressiveArticleTranslation([0], 0, {
+          totalBatches: 1,
+          titleZh: '重试标题',
+          translations: { 0: '重试译文。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    const full = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
+    full.focus();
+    click(env.window, full);
+    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+
+    await waitFor(
+      () => env.root.querySelector('[data-action="continue-article-translation"]'),
+      'exhausted retry should expose manual continuation'
+    );
+    assert.equal(attempts, 2);
+    assert.equal(env.window.document.activeElement, trigger);
+    assert.match(
+      env.root.querySelector(':scope > [data-inline-error]').textContent,
+      /temporary failure 2/
+    );
+
+    const continuation = env.root.querySelector('[data-action="continue-article-translation"]');
+    continuation.focus();
+    click(env.window, continuation);
+    assert.equal(env.window.document.activeElement, trigger);
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '重试译文。',
+      'manual continuation should restart the missing batch'
+    );
+    assert.equal(attempts, 3);
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('refreshes a legacy-compatible fresh translation through every additive plan batch', async () => {
+  const calls = [];
+  const detail = articleDetail({
+    body: 'First paragraph.\n\nSecond paragraph.',
+    markings: [], pending_terms: [], words: []
+  });
+  const cached = progressiveArticleTranslation([0, 1], null, {
+    totalBatches: 2,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文一。', 1: '旧译文二。' }
+  });
+  cached.model = 'legacy-model';
+  cached.updatedAt = 1;
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return cached;
+      const match = path.match(/^\/api\/articles\/a1\/translation\/batches\/(\d+)$/);
+      if (match && init.method === 'PUT') {
+        const gate = deferred();
+        calls.push({ index: Number(match[1]), body: JSON.parse(init.body), gate });
+        return gate.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
+    click(env.window, trigger);
+    let refresh = env.root.querySelector('[data-action="translate-article"]');
+    refresh.focus();
+    click(env.window, refresh);
+    assert.deepEqual(calls.map(call => call.index), [0]);
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['旧译文一。', '旧译文二。']
+    );
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(env.window.document.activeElement, trigger);
+
+    click(env.window, trigger);
+    refresh = env.root.querySelector('[data-action="translate-article"]');
+    refresh.focus();
+    click(env.window, refresh);
+    assert.deepEqual(calls.map(call => call.index), [0]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(env.window.document.activeElement, trigger);
+
+    calls[0].gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 2,
+      titleZh: '过期标题',
+      translations: { 0: '过期译文。' }
+    }));
+    await waitFor(() => calls.length === 2, 'replacement should wait for superseded request settlement');
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['旧译文一。', '旧译文二。']
+    );
+
+    calls[1].gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 2,
+      titleZh: '新标题',
+      translations: { 0: '新译文一。' }
+    }));
+    await waitFor(() => calls.length === 3, 'new generation should continue with batch one');
+    assert.deepEqual(calls.map(call => call.index), [0, 0, 1]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['新译文一。', '旧译文二。']
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]')?.textContent,
+      '已翻译 1/2 批'
+    );
+
+    calls[2].gate.resolve(progressiveArticleTranslation([0, 1], 1, {
+      totalBatches: 2,
+      titleZh: '新标题',
+      translations: { 0: '新译文一。', 1: '新译文二。' }
+    }));
+    await waitFor(
+      () => env.root.querySelectorAll('[data-role="paragraph-translation"]')[1]?.textContent === '新译文二。',
+      'second replacement should render'
+    );
+  } finally {
+    env.cleanup();
+    for (const call of calls) call.gate.resolve(cached);
+    env.restore();
+  }
+});
+
+test('refresh Continue retries an initial failed replacement with refresh intent', async () => {
+  const calls = [];
+  const detail = articleDetail({ body: 'First paragraph.', markings: [], pending_terms: [], words: [] });
+  const cached = progressiveArticleTranslation([0], null, {
+    totalBatches: 1,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文。' }
+  });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return cached;
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        calls.push(JSON.parse(init.body));
+        if (calls.length <= 2) {
+          const error = new Error(`refresh timeout ${calls.length}`);
+          error.code = 'TRANSLATION_TIMEOUT';
+          throw error;
+        }
+        return progressiveArticleTranslation([0], 0, {
+          totalBatches: 1,
+          titleZh: '新标题',
+          translations: { 0: '新译文。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+
+    await waitFor(
+      () => env.root.querySelector('[data-action="continue-article-translation"]'),
+      'failed refresh should expose Continue after two attempts'
+    );
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(body => body.refresh === true));
+    assert.equal(env.root.querySelector('[data-role="paragraph-translation"]').textContent, '旧译文。');
+
+    click(env.window, env.root.querySelector('[data-action="continue-article-translation"]'));
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '新译文。',
+      'Continue should retry the failed refresh batch'
+    );
+
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every(body => body.refresh === true));
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('refresh Continue requests only replacement batches not completed in its generation', async () => {
+  const calls = [];
+  const detail = articleDetail({
+    body: 'First paragraph.\n\nSecond paragraph.',
+    markings: [], pending_terms: [], words: []
+  });
+  const cached = progressiveArticleTranslation([0, 1], null, {
+    totalBatches: 2,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文一。', 1: '旧译文二。' }
+  });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return cached;
+      const match = path.match(/^\/api\/articles\/a1\/translation\/batches\/(\d+)$/);
+      if (match && init.method === 'PUT') {
+        const index = Number(match[1]);
+        calls.push({ index, body: JSON.parse(init.body) });
+        if (index === 0) {
+          return progressiveArticleTranslation([0], 0, {
+            totalBatches: 2,
+            titleZh: '新标题',
+            translations: { 0: '新译文一。' }
+          });
+        }
+        const batchOneAttempts = calls.filter(call => call.index === 1).length;
+        if (batchOneAttempts <= 2) {
+          const error = new Error(`batch one timeout ${batchOneAttempts}`);
+          error.code = 'TRANSLATION_TIMEOUT';
+          throw error;
+        }
+        return progressiveArticleTranslation([0, 1], 1, {
+          totalBatches: 2,
+          titleZh: '新标题',
+          translations: { 0: '新译文一。', 1: '新译文二。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+
+    await waitFor(
+      () => env.root.querySelector('[data-action="continue-article-translation"]'),
+      'later refresh failure should expose Continue'
+    );
+    assert.deepEqual(calls.map(call => call.index), [0, 1, 1]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['新译文一。', '旧译文二。']
+    );
+
+    click(env.window, env.root.querySelector('[data-action="continue-article-translation"]'));
+    await waitFor(
+      () => env.root.querySelectorAll('[data-role="paragraph-translation"]')[1]?.textContent === '新译文二。',
+      'Continue should request the remaining replacement batch'
+    );
+
+    assert.deepEqual(calls.map(call => call.index), [0, 1, 1, 1]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('forced refresh resumes only unreplaced batches after leaving full mode', async () => {
+  const calls = [];
+  const detail = articleDetail({
+    body: 'First paragraph.\n\nSecond paragraph.',
+    markings: [], pending_terms: [], words: []
+  });
+  const cached = progressiveArticleTranslation([0, 1], null, {
+    totalBatches: 2,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文一。', 1: '旧译文二。' }
+  });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return cached;
+      const match = path.match(/^\/api\/articles\/a1\/translation\/batches\/(\d+)$/);
+      if (match && init.method === 'PUT') {
+        const gate = deferred();
+        calls.push({ index: Number(match[1]), body: JSON.parse(init.body), gate });
+        return gate.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translate-article"]'));
+    assert.deepEqual(calls.map(call => call.index), [0]);
+
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="original"]'
+    ));
+    calls[0].gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 2,
+      titleZh: '新标题',
+      translations: { 0: '新译文一。' }
+    }));
+    await env.ready();
+    assert.deepEqual(calls.map(call => call.index), [0]);
+
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    await waitFor(() => calls.length === 2, 'returning to full mode should resume refresh');
+
+    assert.deepEqual(calls.map(call => call.index), [0, 1]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+  } finally {
+    env.cleanup();
+    for (const call of calls) call.gate.resolve(cached);
+    env.restore();
+  }
+});
+
+test('translation quota remains terminal when a sibling request rejects later', async () => {
+  const quotaRequest = deferred();
+  const siblingRequest = deferred();
+  const calls = [];
+  const detail = articleDetail({
+    body: 'Paragraph zero.\n\nParagraph one.\n\nParagraph two.\n\nParagraph three.',
+    markings: [], pending_terms: [], words: []
+  });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation();
+      }
+      const match = path.match(/^\/api\/articles\/a1\/translation\/batches\/(\d+)$/);
+      if (match && init.method === 'PUT') {
+        const index = Number(match[1]);
+        calls.push(index);
+        if (index === 0) return progressiveArticleTranslation([0], 0);
+        if (index === 1) return quotaRequest.promise;
+        if (index === 2) return siblingRequest.promise;
+        return deferred().promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    await waitFor(() => calls.length === 3, 'first and sibling batches should start');
+    assert.deepEqual(calls, [0, 1, 2]);
+
+    const quotaError = new Error('daily limit reached');
+    quotaError.code = 'TRANSLATION_DAILY_LIMIT';
+    quotaRequest.reject(quotaError);
+    await waitFor(
+      () => env.root.querySelector(':scope > [data-inline-error]')?.textContent.includes('今日翻译额度已用完'),
+      'quota error should become visible'
+    );
+    assert.equal(env.root.querySelector('[data-action="continue-article-translation"]'), null);
+
+    const siblingError = new Error('late sibling timeout');
+    siblingError.code = 'TRANSLATION_TIMEOUT';
+    siblingRequest.reject(siblingError);
+    await env.ready();
+
+    assert.match(env.root.querySelector(':scope > [data-inline-error]').textContent, /今日翻译额度已用完/);
+    assert.equal(env.root.querySelector('[data-action="continue-article-translation"]'), null);
+
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="original"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    await env.ready();
+
+    assert.deepEqual(calls, [0, 1, 2]);
+    assert.equal(env.root.querySelector('[data-action="continue-article-translation"]'), null);
+  } finally {
+    env.cleanup();
+    quotaRequest.resolve(progressiveArticleTranslation([0, 1], 1));
+    siblingRequest.resolve(progressiveArticleTranslation([0, 2], 2));
     env.restore();
   }
 });

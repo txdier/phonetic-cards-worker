@@ -1,5 +1,11 @@
 import { jsonResponse } from './http.js';
 import { splitArticleParagraphs } from '../public/lib/text.js';
+import {
+  ARTICLE_TRANSLATION_RULES_VERSION,
+  articleSourceHash,
+  createArticleTranslationPlan,
+  loadArticleTranslationState
+} from './article-translation-progress.js';
 
 export const TRANSLATION_MODEL = '@cf/zai-org/glm-4.7-flash';
 export const TRANSLATION_RULES_VERSION = 'sentence-v2-fast';
@@ -17,6 +23,13 @@ const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。必�
 6. 只输出译文，不提供解释、注释、总结、备选版本或其他文字。`;
 
 export async function handleTranslationApi(request, env, path, userId) {
+  const batchMatch = path.match(
+    /^\/api\/articles\/([a-zA-Z0-9-]+)\/translation\/batches\/(\d+)$/
+  );
+  if (batchMatch) {
+    if (request.method !== 'PUT') return notFound();
+    return putArticleTranslationBatch(env, batchMatch[1], Number(batchMatch[2]), userId, request);
+  }
   const articleMatch = path.match(/^\/api\/articles\/([a-zA-Z0-9-]+)\/translation$/);
   if (articleMatch) {
     if (request.method === 'GET') {
@@ -57,27 +70,234 @@ export async function handleTranslationApi(request, env, path, userId) {
   return notFound();
 }
 
+async function putArticleTranslationBatch(env, articleId, batchIndex, userId, request) {
+  const body = await readObject(request);
+  if (!isArticleBatchRequest(body)) return invalidInput();
+  const article = await loadArticle(env.DB, articleId, userId);
+  if (!article) return articleNotFound();
+  if (Array.from(article.body).length > ARTICLE_LIMIT) return tooLong();
+  if (codePointLength(article.title) > SELECTION_LIMIT) return tooLong();
+
+  const plan = await createArticleTranslationPlan(article);
+  if (body.rulesVersion !== ARTICLE_TRANSLATION_RULES_VERSION) return rulesChanged();
+  if (body.sourceHash !== plan.sourceHash) return sourceChanged();
+  const batch = plan.batches[batchIndex];
+  if (!batch) return invalidBatch();
+
+  const state = await loadArticleTranslationState(env.DB, article, userId);
+  const requestedRunToken = Object.hasOwn(body, 'runToken') ? body.runToken : state.runToken;
+  const activated = await activateArticleTranslationRun(
+    env.DB, article, userId, plan.sourceHash, requestedRunToken,
+    body.refresh === true, body.previousRunToken
+  );
+  if (!activated) return runChanged();
+  const hasRequiredTitle = batchIndex !== 0 || Boolean(state.titleZh?.trim());
+  if (state.batches[batchIndex].completed && hasRequiredTitle && body.refresh !== true) {
+    return jsonResponse({ ...state, completedBatch: batchIndex });
+  }
+  if (!env.AI?.run) {
+    return aiFailure('TRANSLATION_NOT_CONFIGURED', 503, { runToken: requestedRunToken });
+  }
+
+  let parsed;
+  try {
+    const task = {
+      title: article.title,
+      translateTitle: batchIndex === 0,
+      paragraphs: batch.paragraphs
+    };
+    const result = await runTranslationModel(env, {
+      messages: [
+        {
+          role: 'system',
+          content: `${TRANSLATION_RULES}\nReturn strict JSON without Markdown. Preserve paragraph formatting and tone.`
+        },
+        {
+          role: 'user',
+          content: `Translation task JSON: ${JSON.stringify(task)}\nReturn only {"titleTranslation":"...","paragraphs":[{"index":0,"translation":"..."}]}. Paragraph indexes must exactly match this batch.`
+        }
+      ],
+      temperature: 0,
+      max_completion_tokens: 4096
+    });
+    parsed = parseArticleResult(responseText(result), batch.paragraphs);
+    if (
+      !parsed
+      || (batchIndex === 0 && !parsed.titleTranslation)
+      || (batchIndex !== 0 && parsed.titleTranslation)
+    ) {
+      return aiFailure(
+        'TRANSLATION_FORMAT_INVALID', 502, { runToken: requestedRunToken }
+      );
+    }
+  } catch (error) {
+    return mapAiError(error, { runToken: requestedRunToken });
+  }
+
+  const currentArticle = await loadArticle(env.DB, articleId, userId);
+  if (
+    !currentArticle
+    || await articleSourceHash(currentArticle.title, currentArticle.body) !== plan.sourceHash
+  ) return sourceChanged();
+
+  const now = Date.now();
+  const titleZh = batchIndex === 0 ? parsed.titleTranslation : null;
+  const saveResults = await env.DB.batch([
+    env.DB.prepare(`UPDATE articles SET updated_at = updated_at
+                    WHERE id = ? AND user_id = ? AND title = ? AND body = ?`)
+      .bind(articleId, userId, article.title, article.body),
+    env.DB.prepare(`DELETE FROM article_translation_paragraphs
+                    WHERE article_id = ? AND user_id = ? AND source_hash <> ?
+                      AND EXISTS (
+                        SELECT 1 FROM articles
+                        WHERE id = ? AND user_id = ? AND title = ? AND body = ?
+                      )`)
+      .bind(
+        articleId, userId, plan.sourceHash,
+        articleId, userId, article.title, article.body
+      ),
+    env.DB.prepare(`INSERT INTO article_translation_progress
+                    (article_id, user_id, source_hash, rules_version, title_zh,
+                     model, created_at, updated_at, run_token)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    FROM articles
+                    WHERE id = ? AND user_id = ? AND title = ? AND body = ?
+                    ON CONFLICT(article_id) DO UPDATE SET
+                      user_id = excluded.user_id,
+                      source_hash = excluded.source_hash,
+                      rules_version = excluded.rules_version,
+                      title_zh = CASE
+                        WHEN article_translation_progress.source_hash = excluded.source_hash
+                          AND article_translation_progress.rules_version = excluded.rules_version
+                          AND article_translation_progress.run_token = excluded.run_token
+                        THEN COALESCE(excluded.title_zh, article_translation_progress.title_zh)
+                        ELSE excluded.title_zh
+                      END,
+                      model = excluded.model,
+                      updated_at = excluded.updated_at,
+                      run_token = excluded.run_token
+                    WHERE article_translation_progress.run_token = excluded.run_token
+                      OR article_translation_progress.source_hash <> excluded.source_hash
+                      OR article_translation_progress.rules_version <> excluded.rules_version`)
+      .bind(
+        articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
+        titleZh, TRANSLATION_MODEL, now, now, requestedRunToken,
+        articleId, userId, article.title, article.body
+      ),
+    ...parsed.paragraphs.map(paragraph => env.DB.prepare(`
+      INSERT INTO article_translation_paragraphs
+        (article_id, user_id, source_hash, rules_version, paragraph_index,
+         translation_zh, model, created_at, updated_at, run_token)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      FROM article_translation_progress
+      WHERE article_id = ? AND user_id = ? AND source_hash = ?
+        AND rules_version = ? AND run_token = ?
+      ON CONFLICT(article_id, user_id, source_hash, rules_version, paragraph_index)
+      DO UPDATE SET translation_zh = excluded.translation_zh,
+                    model = excluded.model,
+                    updated_at = excluded.updated_at,
+                    run_token = excluded.run_token
+    `).bind(
+      articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
+      paragraph.index, paragraph.translation, TRANSLATION_MODEL, now, now, requestedRunToken,
+      articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION, requestedRunToken
+    ))
+  ]);
+  if (Number(saveResults[0]?.meta?.changes) !== 1) return sourceChanged();
+  if (Number(saveResults[2]?.meta?.changes) !== 1) return runChanged();
+  return jsonResponse({
+    ...await loadArticleTranslationState(env.DB, currentArticle, userId),
+    completedBatch: batchIndex
+  });
+}
+
+async function loadArticle(DB, articleId, userId) {
+  return DB.prepare(`
+    SELECT id, title, body FROM articles WHERE id = ? AND user_id = ?
+  `).bind(articleId, userId).first();
+}
+
+async function activateArticleTranslationRun(
+  DB, article, userId, sourceHash, runToken, refresh, previousRunToken
+) {
+  const now = Date.now();
+  const existing = await DB.prepare(`
+    SELECT source_hash, rules_version, run_token
+    FROM article_translation_progress WHERE article_id = ? AND user_id = ?
+  `).bind(article.id, userId).first();
+  if (!existing) {
+    return true;
+  }
+  const samePlan = existing.source_hash === sourceHash
+    && existing.rules_version === ARTICLE_TRANSLATION_RULES_VERSION;
+  if (!refresh) return !samePlan || existing.run_token === runToken;
+  if (samePlan && existing.run_token === runToken) return true;
+  const expected = previousRunToken ?? existing.run_token;
+  const updated = await DB.prepare(`UPDATE article_translation_progress
+    SET source_hash = ?, rules_version = ?, title_zh = NULL, model = ?,
+        updated_at = ?, run_token = ?
+    WHERE article_id = ? AND user_id = ? AND run_token = ?`)
+    .bind(
+      sourceHash, ARTICLE_TRANSLATION_RULES_VERSION, TRANSLATION_MODEL, now,
+      runToken, article.id, userId, expected
+    ).run();
+  return Number(updated.meta?.changes) === 1;
+}
+
+function isArticleBatchRequest(body) {
+  if (
+    !body
+    || typeof body.sourceHash !== 'string'
+    || !/^[a-f0-9]{64}$/.test(body.sourceHash)
+    || typeof body.rulesVersion !== 'string'
+    || !body.rulesVersion
+    || (Object.hasOwn(body, 'refresh') && typeof body.refresh !== 'boolean')
+    || (Object.hasOwn(body, 'runToken') && !validRunToken(body.runToken))
+    || (Object.hasOwn(body, 'previousRunToken') && !validRunToken(body.previousRunToken, true))
+  ) return false;
+  return Object.keys(body).every(key => [
+    'sourceHash', 'rulesVersion', 'runToken', 'previousRunToken', 'refresh'
+  ].includes(key));
+}
+
+function validRunToken(value, allowEmpty = false) {
+  return typeof value === 'string' && value.length <= 128 && (allowEmpty || value.length > 0);
+}
+
 async function getArticleTranslation(DB, articleId, userId) {
   const article = await DB.prepare(`
     SELECT id, title, body FROM articles WHERE id = ? AND user_id = ?
   `).bind(articleId, userId).first();
   if (!article) return articleNotFound();
+  const progressive = await loadArticleTranslationState(DB, article, userId);
+  if (progressive.status !== 'missing') return jsonResponse(progressive);
   const row = await DB.prepare(`
     SELECT title_zh, paragraphs_json, source_hash, model, updated_at
     FROM article_translations WHERE article_id = ? AND user_id = ?
   `).bind(articleId, userId).first();
-  if (!row) return jsonResponse({ status: 'missing' });
-  if (row.source_hash !== await articleSourceHash(article.title, article.body)) {
-    return jsonResponse({ status: 'missing' });
+  if (!row) return jsonResponse(progressive);
+  if (row.source_hash !== progressive.sourceHash) {
+    return jsonResponse(progressive);
   }
   const paragraphs = parseStoredParagraphs(row.paragraphs_json);
   if (!paragraphs) return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
+  const translatedIndexes = new Set(paragraphs.map(paragraph => paragraph.index));
+  const batches = progressive.batches.map(batch => ({
+    ...batch,
+    completed: batch.paragraphIndexes.every(index => translatedIndexes.has(index))
+  }));
   return jsonResponse({
     status: 'fresh',
     titleZh: row.title_zh,
     paragraphs,
     model: row.model,
-    updatedAt: Number(row.updated_at)
+    updatedAt: Number(row.updated_at),
+    sourceHash: progressive.sourceHash,
+    rulesVersion: progressive.rulesVersion,
+    runToken: progressive.runToken,
+    batches,
+    completedBatches: batches.filter(batch => batch.completed).length,
+    totalBatches: batches.length
   });
 }
 
@@ -316,15 +536,6 @@ function parseStoredParagraphs(value) {
   }
 }
 
-async function articleSourceHash(title, body) {
-  const digest = await crypto.subtle.digest(
-    'SHA-256', new TextEncoder().encode(JSON.stringify({ title, body }))
-  );
-  return [...new Uint8Array(digest)]
-    .map(value => value.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 async function readObject(request) {
   try {
     const value = await request.json();
@@ -342,17 +553,40 @@ function codePointLength(value) {
   return Array.from(value).length;
 }
 
-function mapAiError(error) {
+function mapAiError(error, details) {
   const status = Number(error?.status || error?.cause?.status || 0);
-  if (status === 429) return aiFailure('TRANSLATION_DAILY_LIMIT', 429);
-  if (error?.code === 'TRANSLATION_TIMEOUT') return aiFailure('TRANSLATION_TIMEOUT', 504);
-  return aiFailure('TRANSLATION_UNAVAILABLE');
+  if (status === 429) return aiFailure('TRANSLATION_DAILY_LIMIT', 429, details);
+  if (error?.code === 'TRANSLATION_TIMEOUT') {
+    return aiFailure('TRANSLATION_TIMEOUT', 504, details);
+  }
+  return aiFailure('TRANSLATION_UNAVAILABLE', 503, details);
 }
 
 function invalidInput() {
   return jsonResponse(
     { error: 'invalid translation input', code: 'INVALID_TRANSLATION_INPUT' },
     { status: 400 }
+  );
+}
+
+function invalidBatch() {
+  return jsonResponse(
+    { error: 'invalid translation batch', code: 'INVALID_TRANSLATION_BATCH' },
+    { status: 400 }
+  );
+}
+
+function rulesChanged() {
+  return jsonResponse(
+    { error: 'translation rules changed', code: 'TRANSLATION_RULES_CHANGED' },
+    { status: 409 }
+  );
+}
+
+function runChanged() {
+  return jsonResponse(
+    { error: 'translation run changed', code: 'TRANSLATION_RUN_CHANGED' },
+    { status: 409 }
   );
 }
 
@@ -370,8 +604,14 @@ function sourceChanged() {
   );
 }
 
-function aiFailure(code, status = 503) {
-  return jsonResponse({ error: 'translation unavailable', code }, { status });
+function aiFailure(code, status = 503, details = {}) {
+  return jsonResponse({
+    error: code === 'TRANSLATION_DAILY_LIMIT'
+      ? '今日翻译额度已用完，请明天再试'
+      : 'translation unavailable',
+    code,
+    ...details
+  }, { status });
 }
 
 function articleNotFound() {

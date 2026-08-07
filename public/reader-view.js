@@ -25,6 +25,7 @@ import {
   saveTranslationMode,
   TRANSLATION_MODES
 } from './lib/translation-preferences.js';
+import { createArticleTranslationScheduler } from './lib/article-translation-scheduler.js';
 import { renderInlineError, showToast } from './lib/dom.js';
 
 function element(tag, className, text) {
@@ -182,6 +183,7 @@ export function createReaderView({
   let paragraphs = [];
   let sentences = [];
   let articleTranslation = null;
+  let articleTranslationLoadError = null;
   let translationMode = loadTranslationMode(storage);
   let sentenceTranslations = new Map();
   const sentenceTranslationStates = new Map();
@@ -189,8 +191,6 @@ export function createReaderView({
   let sentenceTranslationsLoaded = false;
   let sentenceTranslationsLoading = false;
   let sentenceTranslationsLoadGeneration = 0;
-  let translationBusy = false;
-  let articleTranslationGeneration = 0;
   let selectionTranslationGeneration = 0;
   let loadVersion = 0;
   let conversionCleanup = null;
@@ -229,8 +229,6 @@ export function createReaderView({
   let timerPanelTrigger = null;
   let settingsPanelTrigger = null;
   let translationPanelTrigger = null;
-  let translationPanelPendingFocus = null;
-  let translationOperationFocusTarget = null;
   let timerBackgroundState = [];
   let timerControlState = [];
   let readerPreferences = loadReaderPreferences(storage);
@@ -282,6 +280,46 @@ export function createReaderView({
   const mediaBridge = createMediaSessionBridge({
     mediaSession: mediaRuntime.mediaSession,
     MediaMetadata: mediaRuntime.MediaMetadata
+  });
+  const articleTranslationScheduler = createArticleTranslationScheduler({
+    requestBatch(batch, state, refresh) {
+      return api(
+        `/api/articles/${encodeURIComponent(articleId)}/translation/batches/${batch.index}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            sourceHash: state.sourceHash,
+            rulesVersion: state.rulesVersion,
+            runToken: state.runToken,
+            ...(refresh ? { previousRunToken: state.previousRunToken || '' } : {}),
+            refresh
+          })
+        }
+      );
+    },
+    onBatch(result) {
+      if (!mergeArticleTranslationState(result)) return;
+      syncArticleTranslationView();
+    },
+    onError(error, { terminal = false } = {}) {
+      if (!mounted) return;
+      if (['TRANSLATION_SOURCE_CHANGED', 'TRANSLATION_RULES_CHANGED', 'TRANSLATION_RUN_CHANGED']
+        .includes(error?.code)) {
+        void recoverArticleTranslationState();
+        return;
+      }
+      renderInlineError(
+        root,
+        error?.code === 'TRANSLATION_DAILY_LIMIT'
+          ? '今日翻译额度已用完，请明天再试'
+          : error.message || '文章翻译暂不可用，请稍后重试'
+      );
+      if (!terminal) {
+        const target = root.querySelector(':scope > [data-inline-error]');
+        target?.append(' ', actionButton('continue-article-translation', '继续翻译'));
+      }
+      syncTranslationPanel();
+    }
   });
 
   function speakDirect(text) {
@@ -720,9 +758,75 @@ export function createReaderView({
     sentenceTranslationsLoading = false;
   }
 
+  function mergeArticleTranslationState(result) {
+    if (!['missing', 'partial', 'fresh'].includes(result?.status)) return false;
+    const samePlan = Boolean(
+      articleTranslation
+      && result.sourceHash
+      && result.sourceHash === articleTranslation.sourceHash
+      && result.rulesVersion
+      && result.rulesVersion === articleTranslation.rulesVersion
+    );
+    const sameRun = Boolean(
+      samePlan
+      && (result.runToken || '') === (articleTranslation.runToken || '')
+    );
+    const currentRunParagraphs = new Map(
+      (sameRun ? articleTranslation.paragraphs : []).map(paragraph => [
+        Number(paragraph.index), paragraph
+      ])
+    );
+    const displayed = new Map(
+      (samePlan
+        ? articleTranslation.displayParagraphs || articleTranslation.paragraphs
+        : []).map(paragraph => [
+        Number(paragraph.index), paragraph
+      ])
+    );
+    for (const paragraph of result.paragraphs || []) {
+      currentRunParagraphs.set(Number(paragraph.index), paragraph);
+      displayed.set(Number(paragraph.index), paragraph);
+    }
+    const paragraphs = [...currentRunParagraphs.values()]
+      .sort((left, right) => Number(left.index) - Number(right.index));
+    const displayParagraphs = [...displayed.values()]
+      .sort((left, right) => Number(left.index) - Number(right.index));
+    const batches = result.batches || (samePlan ? articleTranslation.batches : []) || [];
+    const completedBatches = Number.isInteger(result.completedBatches)
+      ? result.completedBatches
+      : batches.filter(batch => batch.completed).length;
+    const totalBatches = Number.isInteger(result.totalBatches)
+      ? result.totalBatches
+      : batches.length || undefined;
+    const status = result.status;
+    articleTranslation = {
+      ...(samePlan ? articleTranslation : {}),
+      ...result,
+      status,
+      paragraphs,
+      displayParagraphs,
+      ...(batches.length ? { batches } : {}),
+      ...(Number.isInteger(completedBatches) ? { completedBatches } : {}),
+      ...(Number.isInteger(totalBatches) ? { totalBatches } : {})
+    };
+    return true;
+  }
+
   function renderBody(container) {
     const body = element('div', 'pc-reader-text');
     body.dataset.role = 'reader-text';
+    if (translationMode === 'full' && articleTranslation?.status === 'partial') {
+      const progress = element(
+        'div',
+        'pc-article-translation-progress',
+        `宸茬炕璇?${articleTranslation.completedBatches}/${articleTranslation.totalBatches} 鎵?`
+      );
+      progress.textContent = `已翻译 ${articleTranslation.completedBatches}/${articleTranslation.totalBatches} 批`;
+      progress.dataset.role = 'article-translation-progress';
+      progress.setAttribute('role', 'status');
+      progress.setAttribute('aria-live', 'polite');
+      body.append(progress);
+    }
     const candidates = highlightCandidates(article);
     for (const paragraph of paragraphs) {
       const sentenceMode = translationMode === 'sentence';
@@ -750,7 +854,8 @@ export function createReaderView({
       }
       body.append(paragraphNode);
       const translated = translationMode === 'full'
-        ? articleTranslation?.paragraphs?.find(item => Number(item.index) === paragraph.index)
+        ? (articleTranslation?.displayParagraphs || articleTranslation?.paragraphs)
+          ?.find(item => Number(item.index) === paragraph.index)
         : null;
       if (translated) {
         const translationNode = element(
@@ -759,20 +864,97 @@ export function createReaderView({
         translationNode.dataset.role = 'paragraph-translation';
         translationNode.dataset.paragraphIndex = String(paragraph.index);
         body.append(translationNode);
+      } else if (translationMode === 'full') {
+        const pending = element(
+          'div',
+          'pc-reader-translation pc-reader-translation-pending',
+          '绛夊緟缈昏瘧'
+        );
+        pending.textContent = '等待翻译';
+        pending.dataset.role = 'paragraph-translation-pending';
+        pending.dataset.paragraphIndex = String(paragraph.index);
+        body.append(pending);
       }
     }
     container.append(body);
+  }
+
+  function syncArticleTranslationView() {
+    if (!mounted || !article || translationMode !== 'full') return;
+    root.querySelector('[data-action="translation-menu"]')
+      ?.setAttribute('aria-pressed', 'true');
+    const title = root.querySelector('.pc-reader-title');
+    root.querySelector('[data-role="article-translation-title"]')?.remove();
+    if (title && articleTranslation?.titleZh) {
+      const translatedTitle = element(
+        'div', 'pc-reader-translation-title', articleTranslation.titleZh
+      );
+      translatedTitle.dataset.role = 'article-translation-title';
+      title.after(translatedTitle);
+    }
+    const currentBody = root.querySelector('[data-role="reader-text"]');
+    if (currentBody) {
+      let progress = currentBody.querySelector('[data-role="article-translation-progress"]');
+      if (articleTranslation?.status === 'partial') {
+        if (!progress) {
+          progress = element('div', 'pc-article-translation-progress');
+          progress.dataset.role = 'article-translation-progress';
+          progress.setAttribute('role', 'status');
+          progress.setAttribute('aria-live', 'polite');
+          currentBody.prepend(progress);
+        }
+        progress.textContent = `已翻译 ${articleTranslation.completedBatches}/${articleTranslation.totalBatches} 批`;
+      } else {
+        progress?.remove();
+      }
+      for (const paragraph of paragraphs) {
+        const selector = `[data-paragraph-index="${paragraph.index}"]`;
+        let translationNode = currentBody.querySelector(
+          `[data-role="paragraph-translation"]${selector},[data-role="paragraph-translation-pending"]${selector}`
+        );
+        const translated = (articleTranslation?.displayParagraphs || articleTranslation?.paragraphs)?.find(
+          item => Number(item.index) === paragraph.index
+        );
+        if (!translationNode) {
+          translationNode = element('div', 'pc-reader-translation');
+          translationNode.dataset.paragraphIndex = String(paragraph.index);
+          const sentence = currentBody.querySelector(
+            `[data-sentence-index="${paragraph.sentences[0]?.index}"]`
+          );
+          sentence?.closest('.pc-reader-paragraph')?.after(translationNode);
+        }
+        if (translated) {
+          translationNode.className = 'pc-reader-translation';
+          translationNode.dataset.role = 'paragraph-translation';
+          translationNode.textContent = translated.translation;
+        } else {
+          translationNode.className = 'pc-reader-translation pc-reader-translation-pending';
+          translationNode.dataset.role = 'paragraph-translation-pending';
+          translationNode.textContent = '等待翻译';
+        }
+      }
+    }
+    syncTranslationPanel();
   }
 
   async function loadArticleTranslation(version) {
     try {
       const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`);
       if (!isCurrent(version)) return;
-      articleTranslation = result?.status === 'fresh' ? result : null;
-    } catch {
-      if (isCurrent(version)) articleTranslation = null;
+      articleTranslationLoadError = null;
+      if (!mergeArticleTranslationState(result)) articleTranslation = null;
+    } catch (error) {
+      if (isCurrent(version)) {
+        articleTranslation = null;
+        articleTranslationLoadError = error;
+      }
     }
-    if (isCurrent(version) && translationMode === 'full' && !articleTranslation) {
+    if (
+      isCurrent(version)
+      && translationMode === 'full'
+      && !articleTranslationLoadError
+      && (!articleTranslation || articleTranslation.status === 'missing')
+    ) {
       translationMode = 'original';
       saveTranslationMode(storage, translationMode);
     }
@@ -780,52 +962,55 @@ export function createReaderView({
 
   function closeTranslationPanel({ restoreFocus = true } = {}) {
     const panel = root.querySelector('[data-role="translation-panel"]');
-    if (!panel) {
-      translationPanelPendingFocus = null;
-      return;
-    }
+    if (!panel) return;
     panel.remove();
     if (translationPanelTrigger) translationPanelTrigger.setAttribute('aria-expanded', 'false');
     if (restoreFocus && translationPanelTrigger?.isConnected) translationPanelTrigger.focus();
     translationPanelTrigger = null;
-    translationPanelPendingFocus = null;
+  }
+
+  function showArticleTranslationLoadError() {
+    if (!articleTranslationLoadError || !mounted) return;
+    renderInlineError(
+      root,
+      articleTranslationLoadError.message || '翻译状态加载失败'
+    );
+    root.querySelector(':scope > [data-inline-error]')?.append(
+      ' ', actionButton('retry-article-translation-state', '重试')
+    );
+  }
+
+  async function recoverArticleTranslationState() {
+    try {
+      const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`);
+      if (!mounted || !mergeArticleTranslationState(result)) return;
+      articleTranslationLoadError = null;
+      root.querySelector(':scope > [data-inline-error]')?.remove();
+      syncArticleTranslationView();
+      if (translationMode === 'full' && articleTranslation.status !== 'fresh') {
+        articleTranslationScheduler.start(articleTranslation);
+      }
+    } catch (error) {
+      articleTranslationLoadError = error;
+      showArticleTranslationLoadError();
+    }
   }
 
   function fullTranslationModeLabel() {
-    if (translationBusy) return '翻译中…';
-    return articleTranslation ? '全文译文' : '翻译全文';
+    return articleTranslation && articleTranslation.status !== 'missing'
+      ? '全文译文'
+      : '翻译全文';
   }
 
-  function translationPanelControl(panel, target) {
-    if (!target?.action) return null;
-    return [...panel.querySelectorAll('[data-action]')].find(control => (
-      control.dataset.action === target.action
-      && (target.mode == null || control.dataset.mode === target.mode)
-    )) || null;
-  }
-
-  function syncTranslationPanel({ focusTarget = null } = {}) {
+  function syncTranslationPanel() {
     const panel = root.querySelector('[data-role="translation-panel"]');
     if (!panel) return;
-    if (translationBusy && focusTarget && panel.contains(document.activeElement)) {
-      translationPanelPendingFocus = focusTarget;
-      panel.focus();
-    }
     for (const choice of panel.querySelectorAll('[data-action="translation-mode"]')) {
       choice.setAttribute('aria-pressed', String(translationMode === choice.dataset.mode));
-      choice.disabled = translationBusy;
       if (choice.dataset.mode === 'full') choice.textContent = fullTranslationModeLabel();
     }
     const refresh = panel.querySelector('[data-action="translate-article"]');
-    if (refresh) {
-      refresh.textContent = translationBusy ? '翻译中…' : '重新翻译全文';
-      refresh.disabled = translationBusy;
-    }
-    if (!translationBusy && translationPanelPendingFocus) {
-      const control = translationPanelControl(panel, translationPanelPendingFocus);
-      translationPanelPendingFocus = null;
-      if (control && !control.disabled) control.focus();
-    }
+    if (refresh) refresh.textContent = '重新翻译全文';
   }
 
   function renderTranslationPanel({ focusActive = false } = {}) {
@@ -847,14 +1032,11 @@ export function createReaderView({
       const choice = actionButton('translation-mode', label, 'pc-reader-settings-choice');
       choice.dataset.mode = mode;
       choice.setAttribute('aria-pressed', String(translationMode === mode));
-      choice.disabled = translationBusy;
       choices.append(choice);
     }
     panel.append(element('h2', 'pc-reader-settings-title', '翻译'), choices);
-    if (articleTranslation && translationMode === 'full') {
-      const refresh = actionButton('translate-article', translationBusy ? '翻译中…' : '重新翻译全文');
-      refresh.disabled = translationBusy;
-      panel.append(refresh);
+    if (articleTranslation?.status && articleTranslation.status !== 'missing' && translationMode === 'full') {
+      panel.append(actionButton('translate-article', '重新翻译全文'));
     }
     root.append(panel);
     positionAnchoredPanel(
@@ -863,10 +1045,7 @@ export function createReaderView({
       '--reader-settings-left',
       '--reader-settings-top'
     );
-    if (translationBusy) {
-      translationPanelPendingFocus = translationOperationFocusTarget;
-      panel.focus();
-    } else if (focusActive) {
+    if (focusActive) {
       panel.querySelector('[aria-pressed="true"]')?.focus();
     }
   }
@@ -881,43 +1060,14 @@ export function createReaderView({
     renderTranslationPanel({ focusActive: true });
   }
 
-  async function translateArticle(focusTarget) {
-    if (translationBusy) return false;
-    translationOperationFocusTarget = focusTarget;
-    translationBusy = true;
-    const generation = ++articleTranslationGeneration;
-    syncTranslationPanel({ focusTarget });
-    try {
-      const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`, {
-        method: 'PUT', body: '{}'
-      });
-      if (!mounted || generation !== articleTranslationGeneration) return false;
-      if (result?.status !== 'fresh') throw new Error('文章翻译暂不可用，请稍后重试');
-      articleTranslation = result;
-      return true;
-    } catch (error) {
-      if (mounted && generation === articleTranslationGeneration) {
-        renderInlineError(root, error.message || '文章翻译暂不可用，请稍后重试');
-      }
-      return false;
-    } finally {
-      if (generation === articleTranslationGeneration) {
-        translationBusy = false;
-        syncTranslationPanel();
-        translationOperationFocusTarget = null;
-      }
-    }
-  }
-
-  async function setTranslationMode(mode) {
-    if (!TRANSLATION_MODES.includes(mode) || translationBusy) return;
-    if (mode === 'full' && !articleTranslation) {
-      await translateArticle({ action: 'translation-mode', mode: 'full' });
-      if (!articleTranslation) return;
-    }
+  function setTranslationMode(mode) {
+    if (!TRANSLATION_MODES.includes(mode)) return;
     if (translationMode === 'sentence' && mode !== 'sentence') {
       suspendSentenceTranslationRestore();
       suspendSentenceTranslationRequests();
+    }
+    if (translationMode === 'full' && mode !== 'full') {
+      articleTranslationScheduler.suspend();
     }
     translationMode = mode;
     saveTranslationMode(storage, mode);
@@ -925,13 +1075,22 @@ export function createReaderView({
       ?.contains(document.activeElement) === true;
     closeTranslationPanel({ restoreFocus: false });
     render();
+    showArticleTranslationLoadError();
     if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
+    if (
+      mode === 'full'
+      && (
+        articleTranslation?.status !== 'fresh'
+        || articleTranslationScheduler.hasPendingWork()
+      )
+    ) {
+      articleTranslationScheduler.start(articleTranslation);
+    }
     if (mode === 'sentence') void loadSentenceTranslations();
   }
 
-  async function refreshArticleTranslation() {
-    if (!articleTranslation || translationBusy) return;
-    if (!await translateArticle({ action: 'translate-article' })) return;
+  function refreshArticleTranslation() {
+    if (!articleTranslation) return;
     translationMode = 'full';
     saveTranslationMode(storage, translationMode);
     const restoreToolbarFocus = root.querySelector('[data-role="translation-panel"]')
@@ -939,6 +1098,16 @@ export function createReaderView({
     closeTranslationPanel({ restoreFocus: false });
     render();
     if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
+    articleTranslationScheduler.start(articleTranslation, { refresh: true });
+  }
+
+  function continueArticleTranslation() {
+    if (!articleTranslation) return;
+    const error = root.querySelector(':scope > [data-inline-error]');
+    const restoreToolbarFocus = error?.contains(document.activeElement) === true;
+    if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
+    error?.remove();
+    articleTranslationScheduler.start(articleTranslation);
   }
 
   function applyReaderPreferences() {
@@ -1828,7 +1997,7 @@ export function createReaderView({
     const header = element('header', 'pc-reader-header');
     header.append(actionButton('back-library', '返回文章库'));
     header.append(element('h1', 'pc-reader-title', article.title));
-    if (translationMode === 'full' && articleTranslation) {
+    if (translationMode === 'full' && articleTranslation?.titleZh) {
       const translatedTitle = element(
         'div', 'pc-reader-translation-title', articleTranslation.titleZh
       );
@@ -1868,6 +2037,7 @@ export function createReaderView({
 
   async function load() {
     const version = ++loadVersion;
+    articleTranslationScheduler.invalidate();
     clearTransient();
     closeSelection();
     try {
@@ -1894,6 +2064,10 @@ export function createReaderView({
         activeAloudOffsetSeconds = resumeState.position.offsetSeconds;
       }
       render();
+      showArticleTranslationLoadError();
+      if (translationMode === 'full' && articleTranslation?.status !== 'fresh') {
+        articleTranslationScheduler.start(articleTranslation);
+      }
       if (translationMode === 'sentence') void loadSentenceTranslations();
       if (resumeState.snapshot && !initialTimerExpiryHandled) {
         applySpeechState(resumeState.snapshot, {
@@ -2382,6 +2556,8 @@ export function createReaderView({
     }
     if (action === 'reader-preference') updateReaderPreference(target);
     if (action === 'translate-article') refreshArticleTranslation();
+    if (action === 'continue-article-translation') continueArticleTranslation();
+    if (action === 'retry-article-translation-state') void recoverArticleTranslationState();
     if (action === 'speech-timer-set') {
       setSleepTimer(target);
     }
@@ -2709,7 +2885,7 @@ export function createReaderView({
     saveAloudCheckpoint({ immediate: true, state: 'paused' });
     saveProgress();
     mounted = false;
-    articleTranslationGeneration += 1;
+    articleTranslationScheduler.invalidate();
     sentenceTranslationsLoadGeneration += 1;
     for (const sentenceIndex of sentenceTranslationGenerations.keys()) {
       sentenceTranslationGenerations.set(
@@ -2717,7 +2893,6 @@ export function createReaderView({
         (sentenceTranslationGenerations.get(sentenceIndex) || 0) + 1
       );
     }
-    translationOperationFocusTarget = null;
     selectionTranslationGeneration += 1;
     closeTimerPanel({ restoreFocus: false });
     closeReaderSettings({ restoreFocus: false });
