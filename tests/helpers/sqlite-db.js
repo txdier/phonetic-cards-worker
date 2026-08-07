@@ -12,6 +12,7 @@ const MIGRATIONS = [
   new URL('../../migrations/0008_add_article_aloud_offset.sql', import.meta.url),
   new URL('../../migrations/0009_article_translations.sql', import.meta.url),
   new URL('../../migrations/0010_sentence_translation_cache.sql', import.meta.url),
+  new URL('../../migrations/0011_user_preferences.sql', import.meta.url),
   new URL('../../migrations/0012_progressive_article_translations.sql', import.meta.url)
 ];
 

@@ -203,6 +203,9 @@ test('article translation migration creates owned cascading storage', () => {
 test('progressive article translation migration stores metadata and paragraphs independently', () => {
   const DB = createSqliteDb();
   try {
+    assert.deepEqual(DB.all('PRAGMA table_info(user_preferences)').map(row => row.name), [
+      'user_id', 'tts_preferences_json', 'updated_at'
+    ]);
     assert.deepEqual(DB.all('PRAGMA table_info(article_translation_progress)').map(row => row.name), [
       'article_id', 'user_id', 'source_hash', 'rules_version', 'title_zh',
       'model', 'created_at', 'updated_at'
