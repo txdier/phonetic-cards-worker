@@ -85,7 +85,8 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
   if (!batch) return invalidBatch();
 
   const state = await loadArticleTranslationState(env.DB, article, userId);
-  if (state.batches[batchIndex].completed && body.refresh !== true) {
+  const hasRequiredTitle = batchIndex !== 0 || Boolean(state.titleZh?.trim());
+  if (state.batches[batchIndex].completed && hasRequiredTitle && body.refresh !== true) {
     return jsonResponse({ ...state, completedBatch: batchIndex });
   }
   if (!env.AI?.run) return aiFailure('TRANSLATION_NOT_CONFIGURED');
@@ -112,7 +113,11 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
       max_completion_tokens: 4096
     });
     parsed = parseArticleResult(responseText(result), batch.paragraphs);
-    if (!parsed || (batchIndex === 0 && !parsed.titleTranslation)) {
+    if (
+      !parsed
+      || (batchIndex === 0 && !parsed.titleTranslation)
+      || (batchIndex !== 0 && parsed.titleTranslation)
+    ) {
       return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
     }
   } catch (error) {
@@ -126,41 +131,65 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
   ) return sourceChanged();
 
   const now = Date.now();
-  await env.DB.batch([
+  const titleZh = batchIndex === 0 ? parsed.titleTranslation : null;
+  const saveResults = await env.DB.batch([
+    env.DB.prepare(`UPDATE articles SET updated_at = updated_at
+                    WHERE id = ? AND user_id = ? AND title = ? AND body = ?`)
+      .bind(articleId, userId, article.title, article.body),
     env.DB.prepare(`DELETE FROM article_translation_paragraphs
-                    WHERE article_id = ? AND user_id = ? AND source_hash <> ?`)
-      .bind(articleId, userId, plan.sourceHash),
+                    WHERE article_id = ? AND user_id = ? AND source_hash <> ?
+                      AND EXISTS (
+                        SELECT 1 FROM articles
+                        WHERE id = ? AND user_id = ? AND title = ? AND body = ?
+                      )`)
+      .bind(
+        articleId, userId, plan.sourceHash,
+        articleId, userId, article.title, article.body
+      ),
     env.DB.prepare(`INSERT INTO article_translation_progress
                     (article_id, user_id, source_hash, rules_version, title_zh,
                      model, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                    FROM articles
+                    WHERE id = ? AND user_id = ? AND title = ? AND body = ?
                     ON CONFLICT(article_id) DO UPDATE SET
                       user_id = excluded.user_id,
                       source_hash = excluded.source_hash,
                       rules_version = excluded.rules_version,
-                      title_zh = COALESCE(
-                        excluded.title_zh, article_translation_progress.title_zh
-                      ),
+                      title_zh = CASE
+                        WHEN article_translation_progress.user_id = excluded.user_id
+                          AND article_translation_progress.source_hash = excluded.source_hash
+                          AND article_translation_progress.rules_version = excluded.rules_version
+                        THEN COALESCE(
+                          excluded.title_zh, article_translation_progress.title_zh
+                        )
+                        ELSE excluded.title_zh
+                      END,
                       model = excluded.model,
                       updated_at = excluded.updated_at`)
       .bind(
         articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
-        parsed.titleTranslation || null, TRANSLATION_MODEL, now, now
+        titleZh, TRANSLATION_MODEL, now, now,
+        articleId, userId, article.title, article.body
       ),
     ...parsed.paragraphs.map(paragraph => env.DB.prepare(`
       INSERT INTO article_translation_paragraphs
         (article_id, user_id, source_hash, rules_version, paragraph_index,
          translation_zh, model, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+      FROM articles
+      WHERE id = ? AND user_id = ? AND title = ? AND body = ?
       ON CONFLICT(article_id, user_id, source_hash, rules_version, paragraph_index)
       DO UPDATE SET translation_zh = excluded.translation_zh,
                     model = excluded.model,
                     updated_at = excluded.updated_at
     `).bind(
       articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
-      paragraph.index, paragraph.translation, TRANSLATION_MODEL, now, now
+      paragraph.index, paragraph.translation, TRANSLATION_MODEL, now, now,
+      articleId, userId, article.title, article.body
     ))
   ]);
+  if (Number(saveResults[0]?.meta?.changes) !== 1) return sourceChanged();
   return jsonResponse({
     ...await loadArticleTranslationState(env.DB, currentArticle, userId),
     completedBatch: batchIndex
