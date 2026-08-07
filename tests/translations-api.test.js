@@ -200,6 +200,22 @@ test('article translation migration creates owned cascading storage', () => {
   }
 });
 
+test('progressive article translation migration stores metadata and paragraphs independently', () => {
+  const DB = createSqliteDb();
+  try {
+    assert.deepEqual(DB.all('PRAGMA table_info(article_translation_progress)').map(row => row.name), [
+      'article_id', 'user_id', 'source_hash', 'rules_version', 'title_zh',
+      'model', 'created_at', 'updated_at'
+    ]);
+    assert.deepEqual(DB.all('PRAGMA table_info(article_translation_paragraphs)').map(row => row.name), [
+      'article_id', 'user_id', 'source_hash', 'rules_version', 'paragraph_index',
+      'translation_zh', 'model', 'created_at', 'updated_at'
+    ]);
+  } finally {
+    DB.close();
+  }
+});
+
 test('sentence translation migration creates a user-scoped reusable cache', () => {
   const DB = createSqliteDb();
   try {
