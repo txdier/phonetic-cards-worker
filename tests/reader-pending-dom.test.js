@@ -454,6 +454,15 @@ test('partial article translation renders completed paragraphs, pending placehol
       env.root.querySelector('[data-role="article-translation-progress"]').textContent,
       '宸茬炕璇?1/2 鎵?'
     );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]').getAttribute('role'),
+      'status'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]')
+        .getAttribute('aria-live'),
+      'polite'
+    );
   } finally {
     articleRequest.reject(new Error('reader closed'));
     env.cleanup();
@@ -493,6 +502,157 @@ test('full mode immediately renders pending paragraphs before translation resolv
     assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
   } finally {
     articleRequest.reject(new Error('reader closed'));
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('stale article translation success cannot overwrite a newer loaded state', async () => {
+  const articleRequest = deferred();
+  let translationGets = 0;
+  const detail = articleDetail({ words: [] });
+  const newerTranslation = {
+    status: 'fresh', titleZh: 'new-title', paragraphs: [
+      { index: 0, translation: 'new-first' },
+      { index: 1, translation: 'new-second' }
+    ]
+  };
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        translationGets += 1;
+        return translationGets === 1 ? { status: 'missing' } : newerTranslation;
+      }
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      if (path === '/api/articles/a1/markings/m1' && init.method === 'DELETE') {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('.pc-term-pending'));
+    click(env.window, env.root.querySelector('[data-action="unmark-local"]'));
+    await waitFor(
+      () => env.root.querySelector('[data-role="article-translation-title"]')
+        ?.textContent === 'new-title',
+      'newer translation state was not loaded'
+    );
+
+    articleRequest.resolve({
+      status: 'fresh', titleZh: 'old-title', paragraphs: [
+        { index: 0, translation: 'old-first' },
+        { index: 1, translation: 'old-second' }
+      ]
+    });
+    await env.ready();
+
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-title"]').textContent,
+      'new-title'
+    );
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')]
+        .map(node => node.textContent),
+      ['new-first', 'new-second']
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('stale article translation failure stays silent after a newer load resets mode', async () => {
+  const articleRequest = deferred();
+  let translationGets = 0;
+  const detail = articleDetail({ words: [] });
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        translationGets += 1;
+        return translationGets === 1
+          ? { status: 'missing' }
+          : { status: 'missing', sourceHash: 'b'.repeat(64), rulesVersion: 'article-v2-progressive' };
+      }
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      if (path === '/api/articles/a1/markings/m1' && init.method === 'DELETE') {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('.pc-term-pending'));
+    click(env.window, env.root.querySelector('[data-action="unmark-local"]'));
+    await waitFor(
+      () => env.window.localStorage.getItem(TRANSLATION_MODE_KEY) === 'original',
+      'newer load did not reset translation mode'
+    );
+
+    articleRequest.reject(new Error('obsolete generation failed'));
+    await env.ready();
+
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+    assert.equal(
+      env.root.querySelector('[data-action="translation-menu"]').getAttribute('aria-pressed'),
+      'false'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('article translation settlement does not restore focus after the panel loses ownership', async () => {
+  const articleRequest = deferred();
+  const env = setupReader({
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return articleDetail();
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    const back = env.root.querySelector('[data-action="back-library"]');
+    back.focus();
+
+    articleRequest.resolve({
+      status: 'fresh', titleZh: '娴嬭瘯鏍囬', paragraphs: [
+        { index: 0, translation: '绗竴娈点€?' },
+        { index: 1, translation: '绗簩娈点€?' }
+      ]
+    });
+    await env.ready();
+
+    assert.equal(env.window.document.activeElement, back);
+  } finally {
     env.cleanup();
     env.restore();
   }

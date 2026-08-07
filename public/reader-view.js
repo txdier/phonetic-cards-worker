@@ -191,6 +191,7 @@ export function createReaderView({
   let sentenceTranslationsLoadGeneration = 0;
   let translationBusy = false;
   let articleTranslationGeneration = 0;
+  let translationModeGeneration = 0;
   let selectionTranslationGeneration = 0;
   let loadVersion = 0;
   let conversionCleanup = null;
@@ -777,6 +778,8 @@ export function createReaderView({
         `宸茬炕璇?${articleTranslation.completedBatches}/${articleTranslation.totalBatches} 鎵?`
       );
       progress.dataset.role = 'article-translation-progress';
+      progress.setAttribute('role', 'status');
+      progress.setAttribute('aria-live', 'polite');
       body.append(progress);
     }
     const candidates = highlightCandidates(article);
@@ -860,6 +863,7 @@ export function createReaderView({
       if (isCurrent(version)) articleTranslation = null;
     }
     if (isCurrent(version) && translationMode === 'full' && !articleTranslation) {
+      translationModeGeneration += 1;
       translationMode = 'original';
       saveTranslationMode(storage, translationMode);
     }
@@ -910,8 +914,9 @@ export function createReaderView({
     }
     if (!translationBusy && translationPanelPendingFocus) {
       const control = translationPanelControl(panel, translationPanelPendingFocus);
+      const restoreFocus = panel.contains(document.activeElement);
       translationPanelPendingFocus = null;
-      if (control && !control.disabled) control.focus();
+      if (restoreFocus && control && !control.disabled) control.focus();
     }
   }
 
@@ -968,27 +973,54 @@ export function createReaderView({
     renderTranslationPanel({ focusActive: true });
   }
 
+  function articleTranslationSourceKey() {
+    if (articleTranslation?.sourceHash && articleTranslation.rulesVersion) {
+      return `${articleTranslation.sourceHash}:${articleTranslation.rulesVersion}`;
+    }
+    return JSON.stringify([article?.title || '', article?.body || '']);
+  }
+
+  function isCurrentArticleTranslationOperation(operation) {
+    return mounted
+      && operation.generation === articleTranslationGeneration
+      && operation.loadVersion === loadVersion
+      && operation.modeGeneration === translationModeGeneration
+      && operation.sourceKey === articleTranslationSourceKey();
+  }
+
+  function invalidateArticleTranslationOperation() {
+    articleTranslationGeneration += 1;
+    translationBusy = false;
+    translationOperationFocusTarget = null;
+    translationPanelPendingFocus = null;
+  }
+
   async function translateArticle(focusTarget) {
     if (translationBusy) return false;
     translationOperationFocusTarget = focusTarget;
     translationBusy = true;
-    const generation = ++articleTranslationGeneration;
+    const operation = {
+      generation: ++articleTranslationGeneration,
+      loadVersion,
+      modeGeneration: translationModeGeneration,
+      sourceKey: articleTranslationSourceKey()
+    };
     syncTranslationPanel({ focusTarget });
     try {
       const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`, {
         method: 'PUT', body: '{}'
       });
-      if (!mounted || generation !== articleTranslationGeneration) return false;
+      if (!isCurrentArticleTranslationOperation(operation)) return false;
       if (result?.status !== 'fresh') throw new Error('文章翻译暂不可用，请稍后重试');
       mergeArticleTranslationState(result);
       return true;
     } catch (error) {
-      if (mounted && generation === articleTranslationGeneration) {
+      if (isCurrentArticleTranslationOperation(operation)) {
         renderInlineError(root, error.message || '文章翻译暂不可用，请稍后重试');
       }
       return false;
     } finally {
-      if (generation === articleTranslationGeneration) {
+      if (operation.generation === articleTranslationGeneration) {
         translationBusy = false;
         syncTranslationPanel();
         translationOperationFocusTarget = null;
@@ -1002,6 +1034,7 @@ export function createReaderView({
       suspendSentenceTranslationRestore();
       suspendSentenceTranslationRequests();
     }
+    if (translationMode !== mode) translationModeGeneration += 1;
     translationMode = mode;
     saveTranslationMode(storage, mode);
     const restoreToolbarFocus = root.querySelector('[data-role="translation-panel"]')
@@ -1011,9 +1044,13 @@ export function createReaderView({
       void (async () => {
         if (!await translateArticle({ action: 'translation-mode', mode: 'full' })) return;
         if (!mounted || translationMode !== 'full') return;
+        const panel = root.querySelector('[data-role="translation-panel"]');
+        const restoreAfterTranslation = panel?.contains(document.activeElement) === true;
         closeTranslationPanel({ restoreFocus: false });
         syncArticleTranslationView();
-        if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
+        if (restoreAfterTranslation) {
+          root.querySelector('[data-action="translation-menu"]')?.focus();
+        }
       })();
       return;
     }
@@ -1962,6 +1999,7 @@ export function createReaderView({
 
   async function load() {
     const version = ++loadVersion;
+    invalidateArticleTranslationOperation();
     clearTransient();
     closeSelection();
     try {
