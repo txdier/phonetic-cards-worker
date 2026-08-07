@@ -8,6 +8,34 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   let waitingForFirstBatch = false;
   const activeBatchIndexes = new Set();
 
+  function completedBatchIndexes(nextState = state) {
+    return new Set(
+      (nextState?.batches || [])
+        .filter(batch => batch.completed)
+        .map(batch => batch.index)
+    );
+  }
+
+  function schedulableBatches(batches) {
+    const seen = new Set();
+    return (batches || []).filter(batch => {
+      if (seen.has(batch.index)) return false;
+      seen.add(batch.index);
+      return (refresh || !batch.completed) && !activeBatchIndexes.has(batch.index);
+    });
+  }
+
+  function nextQueuedBatch() {
+    const completed = refresh ? new Set() : completedBatchIndexes();
+    while (queue.length) {
+      const batch = queue.shift();
+      if (activeBatchIndexes.has(batch.index)) continue;
+      if (completed.has(batch.index)) continue;
+      return batch;
+    }
+    return null;
+  }
+
   function settle(batch, requestGeneration) {
     if (requestGeneration !== generation) return false;
     active -= 1;
@@ -35,6 +63,10 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
       state = result;
       if (batch.index === 0) waitingForFirstBatch = false;
       onBatch(result);
+      if (!refresh) {
+        const completed = completedBatchIndexes(result);
+        queue = queue.filter(queued => !completed.has(queued.index));
+      }
       pump();
     }, error => {
       if (!settle(batch, requestGeneration)) return;
@@ -46,8 +78,9 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   function pump() {
     if (suspended) return;
     const limit = waitingForFirstBatch ? 1 : 2;
-    while (active < limit && queue.length) {
-      if (!run(queue.shift())) break;
+    while (active < limit) {
+      const batch = nextQueuedBatch();
+      if (!batch || !run(batch)) break;
     }
   }
 
@@ -55,9 +88,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     state = nextState;
     refresh = options.refresh === true;
     suspended = false;
-    queue = (state?.batches || []).filter(batch => (
-      (refresh || !batch.completed) && !activeBatchIndexes.has(batch.index)
-    ));
+    queue = schedulableBatches(state?.batches);
     const firstBatch = queue.find(batch => batch.index === 0);
     waitingForFirstBatch = Boolean(firstBatch || activeBatchIndexes.has(0));
     if (firstBatch) {

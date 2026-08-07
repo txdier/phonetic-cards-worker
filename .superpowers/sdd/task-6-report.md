@@ -105,3 +105,52 @@ Two review observations belong to later tasks in the progressive-translation pla
 - Legacy fresh GET responses currently lack progressive `sourceHash`, `rulesVersion`, and `batches`; Task 8 owns additive compatibility metadata and shell integration. Until that metadata exists, a legacy-shaped refresh cannot be progressively scheduled.
 
 No retry/quota styling or recovery UI was added in Task 6.
+
+## Follow-up Review Fixes: Queue Reconciliation and Duplicate Indexes
+
+Two additional independent-review findings were reproduced with controlled deferred tests.
+
+Follow-up RED:
+
+```text
+node --test --test-name-pattern="skips queued batches|duplicate batch indexes" tests/article-translation-scheduler.test.js
+tests 2, pass 0, fail 2
+
+completed-state reconciliation:
+expected started [0]
+actual started [0, 1, 2, 3]
+
+duplicate descriptors:
+expected started [0, 1, 2]
+actual started [0, 0, 1, 1, 2]
+```
+
+Root cause: the queue retained the initial server snapshot for its entire run and used batch object identity rather than batch index as its uniqueness boundary.
+
+Fixes:
+
+- Queue construction now canonicalizes batch descriptors by `batch.index`.
+- Every dequeue re-checks the current active index set and, for normal non-refresh work, the latest server-completed index set.
+- After each successful `onBatch`, normal queued work is reconciled against `result.batches[].completed` before pumping.
+- Refresh queues are deliberately excluded from completion reconciliation; refresh supersession remains assigned to Task 7.
+
+Follow-up GREEN and final verification:
+
+```text
+node --test --test-name-pattern="skips queued batches|duplicate batch indexes" tests/article-translation-scheduler.test.js
+tests 2, pass 2, fail 0
+
+node --test tests/article-translation-scheduler.test.js
+tests 7, pass 7, fail 0
+
+node --test tests/article-translation-scheduler.test.js tests/reader-pending-dom.test.js
+tests 119, pass 119, fail 0
+
+npm.cmd run test:all
+tests 446, pass 446, fail 0
+
+git diff --check
+exit 0
+```
+
+Follow-up self-review confirmed that duplicate descriptors cannot create concurrent requests for one index or cause one settlement to delete another request's active marker. No new concerns were found; Task 7 refresh supersession remains the only intentionally deferred scheduler behavior from this review cycle.

@@ -85,6 +85,74 @@ test('article translation scheduler prioritizes batch zero then runs at most two
   assert.deepEqual(renderedBatches, [0, 2, 1, 3]);
 });
 
+test('article translation scheduler skips queued batches completed by the first response', async () => {
+  const first = deferred();
+  const started = [];
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch(batch) {
+      started.push(batch.index);
+      return batch.index === 0
+        ? first.promise
+        : Promise.resolve(translationState([0, 1, 2, 3], batch.index));
+    },
+    onBatch() {},
+    onError(error) {
+      assert.fail(`unexpected scheduler error: ${error.message}`);
+    }
+  });
+
+  scheduler.start(translationState());
+  first.resolve(translationState([0, 1, 2, 3], 0));
+  await flush();
+
+  assert.deepEqual(started, [0]);
+});
+
+test('article translation scheduler requests duplicate batch indexes only once', async () => {
+  const first = deferred();
+  const later = new Map([[1, deferred()], [2, deferred()]]);
+  const started = [];
+  const activeByIndex = new Map();
+  let duplicateConcurrent = false;
+  const duplicateState = {
+    ...translationState(),
+    batches: [
+      { index: 0, paragraphIndexes: [0], completed: false },
+      { index: 0, paragraphIndexes: [0], completed: false },
+      { index: 1, paragraphIndexes: [1], completed: false },
+      { index: 1, paragraphIndexes: [1], completed: false },
+      { index: 2, paragraphIndexes: [2], completed: false }
+    ]
+  };
+  const scheduler = createArticleTranslationScheduler({
+    async requestBatch(batch) {
+      started.push(batch.index);
+      const active = (activeByIndex.get(batch.index) || 0) + 1;
+      activeByIndex.set(batch.index, active);
+      duplicateConcurrent ||= active > 1;
+      try {
+        return await (batch.index === 0 ? first.promise : later.get(batch.index).promise);
+      } finally {
+        activeByIndex.set(batch.index, activeByIndex.get(batch.index) - 1);
+      }
+    },
+    onBatch() {},
+    onError(error) {
+      assert.fail(`unexpected scheduler error: ${error.message}`);
+    }
+  });
+
+  scheduler.start(duplicateState);
+  first.resolve(translationState([0], 0));
+  await flush();
+  later.get(1).resolve(translationState([0, 1], 1));
+  later.get(2).resolve(translationState([0, 1, 2], 2));
+  await flush();
+
+  assert.deepEqual(started, [0, 1, 2]);
+  assert.equal(duplicateConcurrent, false);
+});
+
 test('article translation scheduler suspends new work and resumes only missing batches', async () => {
   const requests = new Map([0, 1, 2, 3].map(index => [index, deferred()]));
   const started = [];
