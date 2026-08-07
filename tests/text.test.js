@@ -115,6 +115,21 @@ test('keeps a numbered heading in one sentence when the segmenter isolates its o
   ]);
 });
 
+test('keeps a numbered heading on one visual line when its ordinal ends with a line break', () => {
+  const segmenter = {
+    segment() {
+      return [
+        { index: 0, segment: '1.\n' },
+        { index: 3, segment: 'Morning Routines' }
+      ];
+    }
+  };
+
+  assert.deepEqual(splitSentences('1.\nMorning Routines', segmenter), [
+    { index: 0, start: 0, end: 19, text: '1. Morning Routines' }
+  ]);
+});
+
 test('falls back deterministically at English sentence punctuation', () => {
   const noSegmenter = { segment: null };
 

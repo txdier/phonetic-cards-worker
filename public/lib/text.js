@@ -147,7 +147,7 @@ function mergeLeadingNumberedHeading(spans) {
       index: 0,
       start: ordinal.start,
       end: heading.end,
-      text: ordinal.text + heading.text
+      text: `${ordinal.text.trimEnd()} ${heading.text.trimStart()}`
     },
     ...rest.map((span, index) => ({ ...span, index: index + 1 }))
   ];
