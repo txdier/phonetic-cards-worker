@@ -1222,9 +1222,10 @@ test('queued refresh uses the run token reserved by a failed predecessor', async
 
   scheduler.start(cached, { refresh: true });
   scheduler.start(cached, { refresh: true });
-  for (let attempt = 0; attempt < 100 && completed.length === 0 && errors.length === 0; attempt += 1) {
-    await new Promise(resolve => setImmediate(resolve));
-  }
+  await waitFor(
+    () => completed.length > 0 || errors.length > 0,
+    'queued refresh should complete or report an error'
+  );
 
   assert.equal(errors.length, 0);
   assert.equal(completed.length, 1);
