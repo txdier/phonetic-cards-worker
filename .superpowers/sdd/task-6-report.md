@@ -1,92 +1,107 @@
-# Task 6 Report: Stable Sentence Translation Slots
+# Task 6 Report: Progressive Article Translation Scheduler
 
 ## Outcome
 
-Implemented sentence-mode rendering and connected it to the sentence translation cache API.
+Implemented first-batch-priority progressive article translation and integrated it with the reader.
 
-- Original and full modes retain `<p>` paragraph markup and existing English sentence speech/selection behavior.
-- Sentence mode renders valid block paragraph/unit markup with one stable translation slot per global sentence index.
-- Entering or restoring sentence mode renders idle slots immediately, then performs one lazy cache GET without generating translations.
-- Per-sentence POST state is independent and uses browser SHA-256 source hashes plus request generations.
-- Translate, retry, and refresh actions update only their slot; refresh failures retain the prior translation.
-- Cache GET failures surface as non-blocking reader errors while idle slot actions remain usable.
-- Mode changes and cleanup invalidate pending generations so stale responses cannot mutate current DOM/state.
-- Cache and request updates do not rerender the toolbar or translation panel, preserving the Task 5 focus behavior.
-- Stable, touch-sized slot styles reserve two translation lines and allow long translations to grow without clamping.
+- Added `createArticleTranslationScheduler({ requestBatch, onBatch, onError })` with `start`, `suspend`, and `invalidate` lifecycle methods.
+- A missing batch 0 is the only initial request; later batches start only after its success.
+- Later work is limited to two active requests.
+- Every successful batch state is delivered to `onBatch` immediately.
+- Suspension prevents new requests while allowing valid in-flight results to render.
+- Resume schedules only missing, non-active batches and preserves batch-0 priority even when it is still in flight.
+- Invalidation makes stale success and failure callbacks inert.
+- The reader now uses `PUT /api/articles/:id/translation/batches/:index` with `sourceHash`, `rulesVersion`, and `refresh`.
+- The reader retains missing progressive plan metadata, renders full mode immediately, replaces its translation state after each batch, suspends when leaving full mode, and invalidates on reload and cleanup.
+- Removed the temporary whole-article PUT busy-state path.
 
 ## Files
 
+- `public/lib/article-translation-scheduler.js`
 - `public/reader-view.js`
-- `public/styles.css`
+- `tests/article-translation-scheduler.test.js`
 - `tests/reader-pending-dom.test.js`
-- `tests/static-shell.test.js`
 
 ## TDD Evidence
 
-Initial focused RED:
+Initial scheduler RED:
 
 ```text
-node --test --test-name-pattern="sentence translation (slot|restore|refresh|stale|speech)" tests/reader-pending-dom.test.js
-tests 6, pass 0, fail 6
+node --test tests/article-translation-scheduler.test.js
+FAIL ERR_MODULE_NOT_FOUND: public/lib/article-translation-scheduler.js
+tests 1, pass 0, fail 1
 ```
 
-The failures were caused by the missing sentence slots, cache GET, actions, and request state. The static slot-style test also failed because the new CSS rules were absent.
+Initial scheduler GREEN:
 
-After the first GREEN pass, self-review added a slot stability invariant requiring the translated text to live inside the single refresh action. That assertion failed before the render refactor and passed afterward.
+```text
+node --test tests/article-translation-scheduler.test.js
+tests 3, pass 3, fail 0
+```
+
+Reader integration RED:
+
+```text
+node --test --test-name-pattern="reader schedules progressive" tests/reader-pending-dom.test.js
+tests 1, pass 0, fail 1
+Expected batch-0 call; actual calls: []
+```
+
+The reader integration became GREEN after replacing the legacy whole-article trigger with the scheduler. The first complete focused run then exposed legacy endpoint/busy-state tests, which were converted to the progressive batch contract.
+
+Self-review race RED:
+
+```text
+node --test --test-name-pattern="first-batch priority across" tests/article-translation-scheduler.test.js
+tests 1, pass 0, fail 1
+Expected started [0]; actual [0, 1]
+```
+
+This covered suspend/resume while batch 0 itself remained in flight. The gate now treats an active batch 0 as unresolved first-batch work.
+
+Independent-review RED:
+
+```text
+node --test --test-name-pattern="synchronous first-batch failure" tests/article-translation-scheduler.test.js
+tests 1, pass 0, fail 1
+Expected started [0]; actual [0, 1, 2, 3]
+```
+
+`pump()` now stops when starting a request fails synchronously, so later work cannot bypass a failed batch 0.
 
 ## Final Verification
 
 ```text
-node --test tests/reader-pending-dom.test.js tests/static-shell.test.js
-tests 124, pass 124, fail 0
+node --test tests/article-translation-scheduler.test.js
+tests 5, pass 5, fail 0
 
-npm.cmd test
-tests 388, pass 388, fail 0
+node --test tests/article-translation-scheduler.test.js tests/reader-pending-dom.test.js
+tests 117, pass 117, fail 0
+
+npm.cmd run test:all
+tests 444, pass 444, fail 0
 
 git diff --check
 exit 0
 ```
 
-The first full-suite attempt exposed timing-sensitive deferred test setup under parallel load. The tests were corrected to wait until the asynchronous SHA-256 path reached the API stub; the final full-suite run above is clean.
+## Self-review and Independent Review
 
-## Self-review
+- Confirmed the required observed ordering `[0, 2, 1, 3]` and maximum concurrency of two.
+- Confirmed suspension still delivers in-flight `onBatch` callbacks without starting queued work.
+- Confirmed resume neither duplicates completed/active batches nor releases later work before an active batch 0 succeeds.
+- Confirmed reload and cleanup invalidate both stale successes and stale failures.
+- Confirmed the reader sends the exact batch request body and immediately replaces visible progressive state.
+- Independent review found the synchronous-throw batch-0 bypass; it was reproduced RED and fixed GREEN before commit.
+- `git diff --check` and the exact staged-file review were clean.
 
-- Confirmed GET never triggers sentence POST/AI generation.
-- Confirmed sentence actions are excluded from English sentence click/start-selection routing.
-- Confirmed cached maps survive leaving sentence mode and are restored without a second successful GET.
-- Confirmed ordinary failure, refresh failure, newer-response wins, and post-cleanup completion paths.
-- Confirmed no fixed height, max height, overflow clipping, or line clamp on translation content.
+## Deferred Concerns
 
-No known concerns remain.
+No known Task 6 blocker remains.
 
-## Review Fixes
+Two review observations belong to later tasks in the progressive-translation plan:
 
-Addressed the two Important findings from Task 6 review:
+- Task 7 owns forced-refresh overlap/supersession semantics, retry, quota stop, and manual continuation.
+- Legacy fresh GET responses currently lack progressive `sourceHash`, `rulesVersion`, and `batches`; Task 8 owns additive compatibility metadata and shell integration. Until that metadata exists, a legacy-shaped refresh cannot be progressively scheduled.
 
-- Replaced the translated `<p>` nested inside the refresh `<button>` with phrasing-content `<span>` markup, retaining block layout through `display: block`.
-- Replaced one-turn waits after WebCrypto-backed sentence actions with observable polling on POST counts and terminal slot states. No arbitrary sleeps were added.
-
-Review-fix RED:
-
-```text
-node --test --test-name-pattern="sentence translation slot renders|sentence translation slots reserve" tests/reader-pending-dom.test.js tests/static-shell.test.js
-tests 2, pass 0, fail 2
-```
-
-The DOM test reported `P !== SPAN`, and the style test reported the missing `display: block` declaration.
-
-Review-fix focused GREEN:
-
-```text
-node --test --test-name-pattern="sentence translation (slot|restore|refresh|stale|speech)|sentence translation slots reserve" tests/reader-pending-dom.test.js tests/static-shell.test.js
-tests 7, pass 7, fail 0
-```
-
-Requested final verification:
-
-```text
-node --test tests/reader-pending-dom.test.js tests/static-shell.test.js
-tests 124, pass 124, fail 0
-```
-
-Review-fix self-review confirmed that the sentence translation action contains no `<p>`, the translated role is carried by a block-styled `<span>`, and all reviewed post-digest paths wait for API invocation or an observable terminal slot state. Task 5 translation-panel code and focus handling were unchanged.
+No retry/quota styling or recovery UI was added in Task 6.
