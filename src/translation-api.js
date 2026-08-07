@@ -231,12 +231,22 @@ async function getArticleTranslation(DB, articleId, userId) {
   }
   const paragraphs = parseStoredParagraphs(row.paragraphs_json);
   if (!paragraphs) return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
+  const translatedIndexes = new Set(paragraphs.map(paragraph => paragraph.index));
+  const batches = progressive.batches.map(batch => ({
+    ...batch,
+    completed: batch.paragraphIndexes.every(index => translatedIndexes.has(index))
+  }));
   return jsonResponse({
     status: 'fresh',
     titleZh: row.title_zh,
     paragraphs,
     model: row.model,
-    updatedAt: Number(row.updated_at)
+    updatedAt: Number(row.updated_at),
+    sourceHash: progressive.sourceHash,
+    rulesVersion: progressive.rulesVersion,
+    batches,
+    completedBatches: batches.filter(batch => batch.completed).length,
+    totalBatches: batches.length
   });
 }
 

@@ -3598,7 +3598,7 @@ test('translation scheduler retries before offering a focused manual continuatio
   }
 });
 
-test('refreshes progressive translation in a new generation while retaining old text', async () => {
+test('refreshes a legacy-compatible fresh translation through every additive plan batch', async () => {
   const calls = [];
   const detail = articleDetail({
     body: 'First paragraph.\n\nSecond paragraph.',
@@ -3609,6 +3609,8 @@ test('refreshes progressive translation in a new generation while retaining old 
     titleZh: '旧标题',
     translations: { 0: '旧译文一。', 1: '旧译文二。' }
   });
+  cached.model = 'legacy-model';
+  cached.updatedAt = 1;
   const env = setupReader({
     body: detail.body,
     translationMode: 'full',

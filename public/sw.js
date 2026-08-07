@@ -13,6 +13,7 @@ const SHELL_ASSETS = [
   '/stats-view.js',
   '/words-view.js',
   '/lib/aloud-checkpoint.js',
+  '/lib/article-translation-scheduler.js',
   '/lib/connectivity.js',
   '/lib/dom.js',
   '/lib/floating-panel.js',

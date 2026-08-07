@@ -464,13 +464,92 @@ test('article translation GET ignores an out-of-range progressive paragraph row'
   ), { AUTH_SECRET: SECRET, DB });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
+  const fresh = await response.json();
+  assert.deepEqual({
+    status: fresh.status,
+    titleZh: fresh.titleZh,
+    paragraphs: fresh.paragraphs,
+    model: fresh.model,
+    updatedAt: fresh.updatedAt
+  }, {
     status: 'fresh',
     titleZh: 'Legacy title',
     paragraphs: [{ index: 0, translation: 'Legacy body.' }],
     model: 'legacy-model',
     updatedAt: 1
   });
+  assert.equal(fresh.sourceHash, state.sourceHash);
+  assert.equal(fresh.rulesVersion, state.rulesVersion);
+  assert.deepEqual(fresh.batches, [
+    { index: 0, paragraphIndexes: [0], completed: true }
+  ]);
+  assert.equal(fresh.completedBatches, 1);
+  assert.equal(fresh.totalBatches, 1);
+});
+
+test('legacy stored article translation exposes a plan that refreshes every batch', async t => {
+  const body = `${'a'.repeat(501)}\n\nSecond paragraph.`;
+  const DB = seededArticleDb(body);
+  t.after(() => DB.close());
+  const sourceHash = await articleSourceHash('Test article', body);
+  DB.prepare(`INSERT INTO article_translations
+    (article_id, user_id, title_zh, paragraphs_json, source_hash, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      'a1', 'u1', 'Legacy title', JSON.stringify([
+        { index: 0, translation: 'Legacy first.' },
+        { index: 1, translation: 'Legacy second.' }
+      ]), sourceHash, 'legacy-model', 1, 1
+    ).run();
+  let aiCalls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        aiCalls += 1;
+        return { response: JSON.stringify(aiCalls === 1 ? {
+          titleTranslation: 'Refreshed title',
+          paragraphs: [{ index: 0, translation: 'Refreshed first.' }]
+        } : {
+          titleTranslation: '',
+          paragraphs: [{ index: 1, translation: 'Refreshed second.' }]
+        }) };
+      }
+    }
+  };
+
+  const fresh = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  assert.equal(fresh.status, 'fresh');
+  assert.equal(fresh.titleZh, 'Legacy title');
+  assert.deepEqual(fresh.paragraphs.map(paragraph => paragraph.translation), [
+    'Legacy first.', 'Legacy second.'
+  ]);
+  assert.equal(fresh.sourceHash, sourceHash);
+  assert.equal(fresh.rulesVersion, 'article-v2-progressive');
+  assert.deepEqual(fresh.batches.map(batch => batch.completed), [true, true]);
+
+  const refreshBatch = async index => worker.fetch(await authenticatedRequest(
+    `/api/articles/a1/translation/batches/${index}`, 'PUT', {
+      sourceHash: fresh.sourceHash,
+      rulesVersion: fresh.rulesVersion,
+      refresh: true
+    }
+  ), env);
+  const first = await refreshBatch(0);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).completedBatch, 0);
+  const later = await refreshBatch(1);
+  assert.equal(later.status, 200);
+  const completed = await later.json();
+  assert.equal(completed.completedBatch, 1);
+  assert.equal(completed.status, 'fresh');
+  assert.deepEqual(completed.paragraphs.map(paragraph => paragraph.translation), [
+    'Refreshed first.', 'Refreshed second.'
+  ]);
+  assert.equal(aiCalls, 2);
 });
 
 test('article translation GET exposes deterministic missing and partial batch state', async t => {
