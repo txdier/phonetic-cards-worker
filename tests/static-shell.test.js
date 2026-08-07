@@ -80,7 +80,7 @@ test('reader settings use theme tokens, responsive measure, and accessible contr
 
 test('service worker upgrades the shell with translation dependencies while APIs stay network-only', async () => {
   const serviceWorker = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
-  assert.match(serviceWorker, /phonetic-cards-shell-v4/);
+  assert.match(serviceWorker, /phonetic-cards-shell-v5/);
   assert.match(serviceWorker, /['"]\/lib\/translation-preferences\.js['"]/);
   assert.match(serviceWorker, /keys\.filter\(key => key !== CACHE_NAME\).*caches\.delete/s);
   assert.match(
@@ -88,6 +88,12 @@ test('service worker upgrades the shell with translation dependencies while APIs
     /url\.pathname\.startsWith\(['"]\/api\/['"]\)\) return/,
     'API requests must bypass respondWith and all service-worker caches'
   );
+  assert.match(
+    serviceWorker,
+    /event\.respondWith\(\s*fetch\(request\)[\s\S]*caches\.match\(request\)/,
+    'online shell requests must prefer the current deployment before falling back offline'
+  );
+  assert.match(serviceWorker, /cache\.put\(request, response\.clone\(\)\)/);
 });
 
 test('translation toolbar and panel reuse reader settings visual and mobile patterns', async () => {
