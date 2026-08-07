@@ -714,6 +714,12 @@ export function createReaderView({
     }
   }
 
+  function suspendSentenceTranslationRestore() {
+    if (!sentenceTranslationsLoading) return;
+    sentenceTranslationsLoadGeneration += 1;
+    sentenceTranslationsLoading = false;
+  }
+
   function renderBody(container) {
     const body = element('div', 'pc-reader-text');
     body.dataset.role = 'reader-text';
@@ -910,6 +916,7 @@ export function createReaderView({
       if (!articleTranslation) return;
     }
     if (translationMode === 'sentence' && mode !== 'sentence') {
+      suspendSentenceTranslationRestore();
       suspendSentenceTranslationRequests();
     }
     translationMode = mode;
