@@ -62,7 +62,7 @@ test('article reader uses normal-flow paragraphs with themed typography', async 
   assert.match(css, /\.pc-reader-text\s*\{[^}]*font-family:\s*'Atkinson Hyperlegible',\s*'Noto Sans SC'/);
   assert.match(css, /\.pc-reader-text\s*\{[^}]*white-space:\s*pre-line/);
   assert.match(css, /\.pc-reader-paragraph\s*\{[^}]*margin:\s*0/);
-  assert.match(css, /\.pc-reader-paragraph\s*\+\s*\.pc-reader-paragraph\s*\{[^}]*margin-top:\s*1em/);
+  assert.match(css, /\.pc-reader-paragraph\s*\+\s*\.pc-reader-paragraph\s*\{[^}]*margin-top:\s*1\.75em/);
 });
 
 test('reader settings use theme tokens, responsive measure, and accessible controls', async () => {
@@ -108,33 +108,36 @@ test('translation toolbar and panel reuse reader settings visual and mobile patt
   assert.match(mobilePanel, /padding-bottom:\s*calc\(14px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
 });
 
-test('sentence translation slots reserve stable space without clamping long translations', async () => {
+test('sentence translation slots use a quiet annotation layout without clamping long translations', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const paragraphSpacing = css.match(/\.pc-reader-paragraph \+ \.pc-reader-paragraph\s*\{([^}]*)\}/)?.[1];
   const paragraph = css.match(/\.pc-reader-paragraph-sentence-mode\s*\{([^}]*)\}/)?.[1];
   const unit = css.match(/\.pc-reader-sentence-unit\s*\{([^}]*)\}/)?.[1];
   const slot = css.match(/\.pc-sentence-translation-slot\s*\{([^}]*)\}/)?.[1];
   const action = css.match(/\.pc-sentence-translation-action\s*\{([^}]*)\}/)?.[1];
   const translated = css.match(/\.pc-sentence-translation-text\s*\{([^}]*)\}/)?.[1];
+  const refresh = css.match(/\.pc-sentence-translation-refresh\s*\{([^}]*)\}/)?.[1];
 
+  assert.match(paragraphSpacing || '', /margin-top:\s*1\.75em/);
   assert.match(paragraph || '', /display:\s*grid/);
-  assert.match(paragraph || '', /gap:\s*\.55em/);
+  assert.match(paragraph || '', /gap:\s*1em/);
   assert.match(unit || '', /display:\s*grid/);
-  assert.match(slot || '', /min-height:\s*calc\(2\s*\*\s*1\.75em\s*\+\s*12px\)/);
-  assert.match(action || '', /width:\s*100%/);
+  assert.match(unit || '', /gap:\s*\.28em/);
+  assert.match(slot || '', /min-height:\s*44px/);
+  assert.match(slot || '', /padding:\s*0\s+0\s+0\s+14px/);
+  assert.match(slot || '', /border-left:\s*2px\s+solid/);
+  assert.match(slot || '', /background:\s*transparent/);
+  assert.match(slot || '', /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+44px/);
   assert.match(action || '', /min-height:\s*44px/);
   assert.match(translated || '', /display:\s*block/);
-  assert.match(translated || '', /line-height:\s*1\.75/);
+  assert.match(translated || '', /font-size:\s*\.84em/);
+  assert.match(translated || '', /line-height:\s*1\.7/);
   assert.match(translated || '', /font-family:\s*'Noto Sans SC'/);
   assert.match(css, /\.pc-sentence-translation-controls\s*\{/);
-  assert.match(css, /\.pc-sentence-translation-controls-cached\s*\{[^}]*position:\s*absolute/);
-  assert.match(
-    css,
-    /\.pc-sentence-translation-controls-cached \.pc-sentence-translation-action\s*\{[^}]*height:\s*100%/
-  );
-  assert.match(
-    css,
-    /\.pc-sentence-translation-controls-cached \.pc-sentence-translation-action::after\s*\{[^}]*content:/
-  );
+  assert.match(css, /\.pc-sentence-translation-controls-cached\s*\{[^}]*grid-column:\s*2/);
+  assert.match(refresh || '', /width:\s*44px/);
+  assert.match(refresh || '', /min-height:\s*44px/);
+  assert.doesNotMatch(css, /\.pc-sentence-translation-controls-cached \.pc-sentence-translation-action::after/);
   assert.doesNotMatch(slot || '', /(?:^|[;\s])height\s*:/);
   assert.doesNotMatch(translated || '', /line-clamp|overflow:\s*hidden|max-height/);
 });

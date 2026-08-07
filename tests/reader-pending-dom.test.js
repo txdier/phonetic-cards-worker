@@ -788,6 +788,15 @@ test('sentence translation slot renders immediately and keeps sentence speech se
     assert.ok(slot.closest('.pc-reader-paragraph').classList.contains(
       'pc-reader-paragraph-sentence-mode'
     ));
+    const idleAction = slot.querySelector('[data-action="translate-sentence"]');
+    assert.equal(
+      idleAction.querySelector('.pc-sentence-translation-glyph')?.textContent,
+      '译'
+    );
+    assert.equal(
+      idleAction.querySelector('.pc-sentence-translation-action-label')?.textContent,
+      '翻译本句'
+    );
 
     click(env.window, sentence);
     assert.deepEqual(env.speech.calls.at(-1), ['speakOnce', 'First sentence. ']);
@@ -824,12 +833,12 @@ test('sentence translation slot renders immediately and keeps sentence speech se
     assert.equal(translated.textContent, '第一句。');
     assert.equal(translated.tagName, 'SPAN');
     assert.notEqual(translated.parentElement.tagName, 'BUTTON');
+    const refreshAction = slot.querySelector('[data-action="refresh-sentence-translation"]');
+    assert.equal(env.window.document.activeElement, refreshAction);
+    assert.ok(refreshAction.classList.contains('pc-sentence-translation-refresh'));
+    assert.ok(refreshAction.querySelector('svg'));
     assert.equal(
-      env.window.document.activeElement,
-      slot.querySelector('[data-action="refresh-sentence-translation"]')
-    );
-    assert.equal(
-      slot.querySelector('[data-action="refresh-sentence-translation"]').getAttribute('aria-label'),
+      refreshAction.getAttribute('aria-label'),
       '重新翻译'
     );
     assert.equal(slot.querySelector('button p'), null);
@@ -2026,8 +2035,9 @@ test('reader exposes direct replay and sleep timer controls for touch use', asyn
     assert.equal(floatingTimer.textContent, '9:59');
     assert.match(floatingTimer.getAttribute('aria-label'), /9:59/);
 
-    click(env.window, timer);
+    click(env.window, remaining);
     panel = env.root.querySelector('[data-role="sleep-timer-panel"]');
+    assert.ok(panel, 'clicking the visible countdown should reopen the timer panel');
     click(env.window, panel.querySelector('[data-action="speech-timer-set"][data-minutes="20"]'));
     assert.equal(remaining.textContent, '20:00');
 
@@ -3143,6 +3153,20 @@ test('ordinary sentence click speaks exactly once', async () => {
     ]);
   } finally {
     cleanup();
+    env.restore();
+  }
+});
+
+test('browser speech omits a speaker label at the start of a sentence', async () => {
+  const env = setupReader({ body: 'Alice: Hello there.', useTts: false });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-sentence-index="0"]'));
+    assert.deepEqual(env.speech.calls.filter(call => call[0] === 'speakOnce'), [
+      ['speakOnce', 'Hello there.']
+    ]);
+  } finally {
+    env.cleanup();
     env.restore();
   }
 });
