@@ -15,6 +15,16 @@ import { createArticleTranslationScheduler } from '../public/lib/article-transla
 
 const SECRET = 'translation-test-secret';
 
+async function waitFor(predicate, message, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  if (predicate()) return;
+  assert.fail(message);
+}
+
 test('strict translation service returns only a validated translation', async () => {
   const value = await generatePlainTranslation({
     AI: { async run() { return { response: '{"translation":"璇戞枃"}' }; } }
@@ -1077,9 +1087,10 @@ test('article translation batches overlap and complete in reverse order without 
 
   const firstRequest = requestBatch(0, body);
   const laterRequest = requestBatch(1, body);
-  for (let attempt = 0; attempt < 10 && pending.size < 2; attempt += 1) {
-    await new Promise(resolve => setImmediate(resolve));
-  }
+  await waitFor(
+    () => pending.size === 2,
+    'both overlapping batches should reach the AI request'
+  );
   assert.deepEqual([...pending.keys()].sort(), [0, 1]);
   pending.get(1)({ response: JSON.stringify({
     titleTranslation: '',
