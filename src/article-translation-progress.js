@@ -4,10 +4,7 @@ import { createArticleTranslationBatches } from './article-translation-batches.j
 export const ARTICLE_TRANSLATION_RULES_VERSION = 'article-v2-progressive';
 
 export async function loadArticleTranslationState(DB, article, userId) {
-  const sourceHash = await articleSourceHash(article.title, article.body);
-  const paragraphs = splitArticleParagraphs(article.body).paragraphs
-    .map(({ index, text }) => ({ index, text }));
-  const batches = createArticleTranslationBatches(paragraphs);
+  const { sourceHash, paragraphs, batches } = await createArticleTranslationPlan(article);
   const [metadata, { results: rows }] = await Promise.all([
     DB.prepare(`
       SELECT title_zh, model, updated_at
@@ -50,6 +47,14 @@ export async function loadArticleTranslationState(DB, article, userId) {
     completedBatches,
     totalBatches: publicBatches.length
   };
+}
+
+export async function createArticleTranslationPlan(article) {
+  const sourceHash = await articleSourceHash(article.title, article.body);
+  const paragraphs = splitArticleParagraphs(article.body).paragraphs
+    .map(({ index, text }) => ({ index, text }));
+  const batches = createArticleTranslationBatches(paragraphs);
+  return { sourceHash, paragraphs, batches };
 }
 
 export async function articleSourceHash(title, body) {

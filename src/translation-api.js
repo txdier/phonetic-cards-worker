@@ -1,7 +1,9 @@
 import { jsonResponse } from './http.js';
 import { splitArticleParagraphs } from '../public/lib/text.js';
 import {
+  ARTICLE_TRANSLATION_RULES_VERSION,
   articleSourceHash,
+  createArticleTranslationPlan,
   loadArticleTranslationState
 } from './article-translation-progress.js';
 
@@ -21,6 +23,13 @@ const TRANSLATION_RULES = `你是英语到简体中文的专业翻译器。必�
 6. 只输出译文，不提供解释、注释、总结、备选版本或其他文字。`;
 
 export async function handleTranslationApi(request, env, path, userId) {
+  const batchMatch = path.match(
+    /^\/api\/articles\/([a-zA-Z0-9-]+)\/translation\/batches\/(\d+)$/
+  );
+  if (batchMatch) {
+    if (request.method !== 'PUT') return notFound();
+    return putArticleTranslationBatch(env, batchMatch[1], Number(batchMatch[2]), userId, request);
+  }
   const articleMatch = path.match(/^\/api\/articles\/([a-zA-Z0-9-]+)\/translation$/);
   if (articleMatch) {
     if (request.method === 'GET') {
@@ -59,6 +68,121 @@ export async function handleTranslationApi(request, env, path, userId) {
     return translatePlainText(env, prompt, userId);
   }
   return notFound();
+}
+
+async function putArticleTranslationBatch(env, articleId, batchIndex, userId, request) {
+  const body = await readObject(request);
+  if (!isArticleBatchRequest(body)) return invalidInput();
+  const article = await loadArticle(env.DB, articleId, userId);
+  if (!article) return articleNotFound();
+  if (Array.from(article.body).length > ARTICLE_LIMIT) return tooLong();
+  if (codePointLength(article.title) > SELECTION_LIMIT) return tooLong();
+
+  const plan = await createArticleTranslationPlan(article);
+  if (body.rulesVersion !== ARTICLE_TRANSLATION_RULES_VERSION) return rulesChanged();
+  if (body.sourceHash !== plan.sourceHash) return sourceChanged();
+  const batch = plan.batches[batchIndex];
+  if (!batch) return invalidBatch();
+
+  const state = await loadArticleTranslationState(env.DB, article, userId);
+  if (state.batches[batchIndex].completed && body.refresh !== true) {
+    return jsonResponse({ ...state, completedBatch: batchIndex });
+  }
+  if (!env.AI?.run) return aiFailure('TRANSLATION_NOT_CONFIGURED');
+
+  let parsed;
+  try {
+    const task = {
+      title: article.title,
+      translateTitle: batchIndex === 0,
+      paragraphs: batch.paragraphs
+    };
+    const result = await runTranslationModel(env, {
+      messages: [
+        {
+          role: 'system',
+          content: `${TRANSLATION_RULES}\nReturn strict JSON without Markdown. Preserve paragraph formatting and tone.`
+        },
+        {
+          role: 'user',
+          content: `Translation task JSON: ${JSON.stringify(task)}\nReturn only {"titleTranslation":"...","paragraphs":[{"index":0,"translation":"..."}]}. Paragraph indexes must exactly match this batch.`
+        }
+      ],
+      temperature: 0,
+      max_completion_tokens: 4096
+    });
+    parsed = parseArticleResult(responseText(result), batch.paragraphs);
+    if (!parsed || (batchIndex === 0 && !parsed.titleTranslation)) {
+      return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
+    }
+  } catch (error) {
+    return mapAiError(error);
+  }
+
+  const currentArticle = await loadArticle(env.DB, articleId, userId);
+  if (
+    !currentArticle
+    || await articleSourceHash(currentArticle.title, currentArticle.body) !== plan.sourceHash
+  ) return sourceChanged();
+
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM article_translation_paragraphs
+                    WHERE article_id = ? AND user_id = ? AND source_hash <> ?`)
+      .bind(articleId, userId, plan.sourceHash),
+    env.DB.prepare(`INSERT INTO article_translation_progress
+                    (article_id, user_id, source_hash, rules_version, title_zh,
+                     model, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(article_id) DO UPDATE SET
+                      user_id = excluded.user_id,
+                      source_hash = excluded.source_hash,
+                      rules_version = excluded.rules_version,
+                      title_zh = COALESCE(
+                        excluded.title_zh, article_translation_progress.title_zh
+                      ),
+                      model = excluded.model,
+                      updated_at = excluded.updated_at`)
+      .bind(
+        articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
+        parsed.titleTranslation || null, TRANSLATION_MODEL, now, now
+      ),
+    ...parsed.paragraphs.map(paragraph => env.DB.prepare(`
+      INSERT INTO article_translation_paragraphs
+        (article_id, user_id, source_hash, rules_version, paragraph_index,
+         translation_zh, model, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(article_id, user_id, source_hash, rules_version, paragraph_index)
+      DO UPDATE SET translation_zh = excluded.translation_zh,
+                    model = excluded.model,
+                    updated_at = excluded.updated_at
+    `).bind(
+      articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
+      paragraph.index, paragraph.translation, TRANSLATION_MODEL, now, now
+    ))
+  ]);
+  return jsonResponse({
+    ...await loadArticleTranslationState(env.DB, currentArticle, userId),
+    completedBatch: batchIndex
+  });
+}
+
+async function loadArticle(DB, articleId, userId) {
+  return DB.prepare(`
+    SELECT id, title, body FROM articles WHERE id = ? AND user_id = ?
+  `).bind(articleId, userId).first();
+}
+
+function isArticleBatchRequest(body) {
+  if (
+    !body
+    || typeof body.sourceHash !== 'string'
+    || !/^[a-f0-9]{64}$/.test(body.sourceHash)
+    || typeof body.rulesVersion !== 'string'
+    || !body.rulesVersion
+    || (Object.hasOwn(body, 'refresh') && typeof body.refresh !== 'boolean')
+  ) return false;
+  return Object.keys(body).every(key => ['sourceHash', 'rulesVersion', 'refresh'].includes(key));
 }
 
 async function getArticleTranslation(DB, articleId, userId) {
@@ -350,6 +474,20 @@ function invalidInput() {
   return jsonResponse(
     { error: 'invalid translation input', code: 'INVALID_TRANSLATION_INPUT' },
     { status: 400 }
+  );
+}
+
+function invalidBatch() {
+  return jsonResponse(
+    { error: 'invalid translation batch', code: 'INVALID_TRANSLATION_BATCH' },
+    { status: 400 }
+  );
+}
+
+function rulesChanged() {
+  return jsonResponse(
+    { error: 'translation rules changed', code: 'TRANSLATION_RULES_CHANGED' },
+    { status: 409 }
   );
 }
 

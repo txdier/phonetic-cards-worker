@@ -67,6 +67,9 @@ export default {
         ) {
           return await handlePlainTranslationApi(request, env, path, userId);
         }
+        if (/^\/api\/articles\/[a-zA-Z0-9-]+\/translation\/batches\/\d+$/.test(path)) {
+          return await handleTranslationApi(request, env, path, userId);
+        }
         if (/^\/api\/articles\/[a-zA-Z0-9-]+\/translation$/.test(path)) {
           return await handleTranslationApi(request, env, path, userId);
         }

@@ -504,6 +504,274 @@ test('article translation GET exposes deterministic missing and partial batch st
   assert.deepEqual(partial.batches.map(batch => batch.completed), [true, false]);
 });
 
+test('article translation batch saves one deterministic batch and requests the title for batch zero', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  const prompts = [];
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run(_model, input) {
+        prompts.push(input.messages.at(-1).content);
+        return { response: JSON.stringify({
+          titleTranslation: '\u6d4b\u8bd5\u6587\u7ae0',
+          paragraphs: [{ index: 0, translation: '\u552f\u4e00\u6bb5\u3002' }]
+        }) };
+      }
+    }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+
+  const translated = await requestBatch(0, {
+    sourceHash: state.sourceHash,
+    rulesVersion: state.rulesVersion
+  });
+
+  assert.equal(translated.status, 200);
+  const result = await translated.json();
+  assert.equal(result.completedBatch, 0);
+  assert.equal(result.status, 'fresh');
+  assert.deepEqual(result.paragraphs, [{ index: 0, translation: '\u552f\u4e00\u6bb5\u3002' }]);
+  assert.equal(DB.all('SELECT * FROM article_translation_paragraphs').length, 1);
+  assert.match(prompts[0], /"title":"Test article","translateTitle":true/);
+});
+
+test('article translation batch reuses a completed batch without another AI call', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  let aiCalls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        aiCalls += 1;
+        return { response: JSON.stringify({
+          titleTranslation: '\u6807\u9898',
+          paragraphs: [{ index: 0, translation: `\u8bd1\u6587 ${aiCalls}` }]
+        }) };
+      }
+    }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+  const body = { sourceHash: state.sourceHash, rulesVersion: state.rulesVersion };
+
+  await requestBatch(0, body);
+  const duplicate = await requestBatch(0, body);
+
+  assert.equal(duplicate.status, 200);
+  assert.equal((await duplicate.json()).completedBatch, 0);
+  assert.equal(aiCalls, 1);
+});
+
+test('article translation batch refresh calls AI again and replaces that batch', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  let aiCalls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        aiCalls += 1;
+        return { response: JSON.stringify({
+          titleTranslation: `\u6807\u9898 ${aiCalls}`,
+          paragraphs: [{ index: 0, translation: `\u8bd1\u6587 ${aiCalls}` }]
+        }) };
+      }
+    }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+  const body = { sourceHash: state.sourceHash, rulesVersion: state.rulesVersion };
+
+  await requestBatch(0, body);
+  const refreshed = await requestBatch(0, { ...body, refresh: true });
+
+  assert.equal(refreshed.status, 200);
+  assert.equal(aiCalls, 2);
+  assert.equal(DB.get(
+    'SELECT translation_zh FROM article_translation_paragraphs WHERE paragraph_index = 0'
+  ).translation_zh, '\u8bd1\u6587 2');
+});
+
+test('article translation batch returns stable batch and rules validation failures', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  let aiCalls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: { async run() { aiCalls += 1; return { response: '{}' }; } }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+
+  const invalidBatch = await requestBatch(1, {
+    sourceHash: state.sourceHash, rulesVersion: state.rulesVersion
+  });
+  const rulesConflict = await requestBatch(0, {
+    sourceHash: state.sourceHash, rulesVersion: 'article-v1-old'
+  });
+  const sourceConflict = await requestBatch(0, {
+    sourceHash: '0'.repeat(64), rulesVersion: state.rulesVersion
+  });
+
+  assert.equal(invalidBatch.status, 400);
+  assert.equal((await invalidBatch.json()).code, 'INVALID_TRANSLATION_BATCH');
+  assert.equal(rulesConflict.status, 409);
+  assert.equal((await rulesConflict.json()).code, 'TRANSLATION_RULES_CHANGED');
+  assert.equal(sourceConflict.status, 409);
+  assert.equal((await sourceConflict.json()).code, 'TRANSLATION_SOURCE_CHANGED');
+  assert.equal(aiCalls, 0);
+});
+
+test('article translation batch strictly rejects malformed request fields', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  let aiCalls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: { async run() { aiCalls += 1; return { response: '{}' }; } }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+
+  for (const body of [
+    { sourceHash: state.sourceHash, rulesVersion: '' },
+    { sourceHash: state.sourceHash.toUpperCase(), rulesVersion: state.rulesVersion },
+    { sourceHash: state.sourceHash, rulesVersion: state.rulesVersion, refresh: 'yes' },
+    {
+      sourceHash: state.sourceHash,
+      rulesVersion: state.rulesVersion,
+      paragraphs: [{ index: 0, text: 'Client-controlled text.' }]
+    }
+  ]) {
+    const response = await requestBatch(0, body);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_TRANSLATION_INPUT');
+  }
+  assert.equal(aiCalls, 0);
+});
+
+test('article translation batch leaves storage empty when the source changes during AI', async t => {
+  const DB = seededArticleDb('Original body.');
+  t.after(() => DB.close());
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        DB.prepare('UPDATE articles SET body = ?, updated_at = ? WHERE id = ?')
+          .bind('Edited body.', 2, 'a1').run();
+        return { response: JSON.stringify({
+          titleTranslation: '\u6807\u9898',
+          paragraphs: [{ index: 0, translation: '\u65e7\u6b63\u6587\u3002' }]
+        }) };
+      }
+    }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+
+  const sourceChanged = await requestBatch(0, {
+    sourceHash: state.sourceHash, rulesVersion: state.rulesVersion
+  });
+
+  assert.equal(sourceChanged.status, 409);
+  assert.equal((await sourceChanged.json()).code, 'TRANSLATION_SOURCE_CHANGED');
+  assert.equal(DB.all('SELECT * FROM article_translation_paragraphs').length, 0);
+});
+
+test('article translation batches complete in reverse order without overwriting rows', async t => {
+  const DB = seededArticleDb(`${'a'.repeat(501)}\n\nSecond paragraph.`);
+  t.after(() => DB.close());
+  const prompts = [];
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run(_model, input) {
+        const prompt = input.messages.at(-1).content;
+        prompts.push(prompt);
+        const index = prompt.includes('"index":1') ? 1 : 0;
+        return { response: JSON.stringify({
+          titleTranslation: index === 0 ? '\u6807\u9898' : '',
+          paragraphs: [{ index, translation: `\u8bd1\u6587 ${index}` }]
+        }) };
+      }
+    }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const requestBatch = async (index, body) => worker.fetch(
+    await authenticatedRequest(
+      `/api/articles/a1/translation/batches/${index}`, 'PUT', body
+    ),
+    env
+  );
+  const body = { sourceHash: state.sourceHash, rulesVersion: state.rulesVersion };
+
+  await requestBatch(1, body);
+  const completed = await requestBatch(0, body);
+
+  assert.equal(completed.status, 200);
+  assert.deepEqual(
+    DB.all('SELECT paragraph_index FROM article_translation_paragraphs ORDER BY paragraph_index')
+      .map(row => row.paragraph_index),
+    [0, 1]
+  );
+  assert.match(prompts[0], /"title":"Test article","translateTitle":false/);
+  assert.match(prompts[1], /"title":"Test article","translateTitle":true/);
+});
+
 test('sentence translation context, cache reuse, and user isolation', async t => {
   const DB = seededSentenceArticlesDb();
   t.after(() => DB.close());
