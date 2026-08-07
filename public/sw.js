@@ -1,4 +1,4 @@
-const CACHE_NAME = 'phonetic-cards-shell-v4-ios-dialog';
+const CACHE_NAME = 'phonetic-cards-shell-v5-network-first';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -57,5 +57,15 @@ self.addEventListener('fetch', event => {
     event.respondWith(fetch(request).catch(() => caches.match('/')));
     return;
   }
-  event.respondWith(caches.match(request).then(cached => cached || fetch(request)));
+  event.respondWith(
+    fetch(request)
+      .then(async response => {
+        if (response.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(request, response.clone());
+        }
+        return response;
+      })
+      .catch(() => caches.match(request))
+  );
 });
