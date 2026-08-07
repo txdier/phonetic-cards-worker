@@ -1307,19 +1307,26 @@ test('sentence translation restore discards hashing that finishes after leaving 
   });
   try {
     await env.ready();
+    await waitFor(() => gets === 1, 'initial sentence cache restore should start');
     click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
     click(env.window, env.root.querySelector(
       '[data-action="translation-mode"][data-mode="original"]'
     ));
-    gate.resolve();
-    await env.ready();
     click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
     click(env.window, env.root.querySelector(
       '[data-action="translation-mode"][data-mode="sentence"]'
     ));
-    await waitFor(() => gets === 2, 'returning to sentence mode should reload discarded cache');
+    await waitFor(
+      () => gets === 2,
+      'returning to sentence mode should reload discarded cache',
+      500
+    );
+    gate.resolve();
+    await env.ready();
     assert.equal(env.root.querySelector('[data-role="sentence-translation"]'), null);
   } finally {
+    gate.resolve();
+    await env.ready();
     env.cleanup();
     env.restore();
     if (originalCryptoDescriptor) {
