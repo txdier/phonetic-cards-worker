@@ -51,10 +51,10 @@ export function splitSentences(value, segmenter = null) {
       }
       spans.push({ index: spans.length, start, end: start + segment.length, text: segment });
     }
-    return spans;
+    return mergeLeadingNumberedHeading(spans);
   }
 
-  return fallbackSentenceSpans(text);
+  return mergeLeadingNumberedHeading(fallbackSentenceSpans(text));
 }
 
 export function splitArticleParagraphs(value, segmenter = null) {
@@ -137,6 +137,20 @@ export function containsNormalizedTerm(value, normalizedTerm) {
 function createNativeSegmenter() {
   if (typeof globalThis.Intl?.Segmenter !== 'function') return null;
   return new globalThis.Intl.Segmenter('en', { granularity: 'sentence' });
+}
+
+function mergeLeadingNumberedHeading(spans) {
+  if (spans.length < 2 || !/^\s*\d+\.\s*$/.test(spans[0].text)) return spans;
+  const [ordinal, heading, ...rest] = spans;
+  return [
+    {
+      index: 0,
+      start: ordinal.start,
+      end: heading.end,
+      text: ordinal.text + heading.text
+    },
+    ...rest.map((span, index) => ({ ...span, index: index + 1 }))
+  ];
 }
 
 function fallbackSentenceSpans(text) {
