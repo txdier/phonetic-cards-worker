@@ -11,6 +11,7 @@ import {
   translationFailureResponse
 } from '../src/translation-api.js';
 import { createSqliteDb } from './helpers/sqlite-db.js';
+import { createArticleTranslationScheduler } from '../public/lib/article-translation-scheduler.js';
 
 const SECRET = 'translation-test-secret';
 
@@ -1147,6 +1148,77 @@ test('newer translation run wins when superseded refresh settles last', async t 
     DB.get('SELECT translation_zh FROM article_translation_paragraphs').translation_zh,
     '新译文。'
   );
+});
+
+test('queued refresh uses the run token reserved by a failed predecessor', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  let aiCalls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: {
+      async run() {
+        aiCalls += 1;
+        if (aiCalls === 2) {
+          throw Object.assign(new Error('timed out after activation'), {
+            code: 'TRANSLATION_TIMEOUT'
+          });
+        }
+        return { response: JSON.stringify({
+          titleTranslation: aiCalls === 1 ? '初始标题' : '最新标题',
+          paragraphs: [{ index: 0, translation: aiCalls === 1 ? '初始译文。' : '最新译文。' }]
+        }) };
+      }
+    }
+  };
+  const initial = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation/batches/0', 'PUT', {
+      sourceHash: initial.sourceHash,
+      rulesVersion: initial.rulesVersion,
+      runToken: initial.runToken
+    }
+  ), env);
+  const cached = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const completed = [];
+  const errors = [];
+  const scheduler = createArticleTranslationScheduler({
+    async requestBatch(batch, state, refresh) {
+      const response = await worker.fetch(await authenticatedRequest(
+        `/api/articles/a1/translation/batches/${batch.index}`, 'PUT', {
+          sourceHash: state.sourceHash,
+          rulesVersion: state.rulesVersion,
+          runToken: state.runToken,
+          previousRunToken: state.previousRunToken,
+          refresh
+        }
+      ), env);
+      const data = await response.json();
+      if (!response.ok) {
+        const error = Object.assign(new Error(data.error), { code: data.code, data });
+        throw error;
+      }
+      return data;
+    },
+    onBatch(result) { completed.push(result); },
+    onError(error) { errors.push(error); }
+  });
+
+  scheduler.start(cached, { refresh: true });
+  scheduler.start(cached, { refresh: true });
+  for (let attempt = 0; attempt < 100 && completed.length === 0 && errors.length === 0; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  assert.equal(errors.length, 0);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].titleZh, '最新标题');
+  assert.equal(aiCalls, 3);
 });
 
 test('sentence translation context, cache reuse, and user isolation', async t => {

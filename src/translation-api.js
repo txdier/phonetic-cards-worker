@@ -95,7 +95,9 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
   if (state.batches[batchIndex].completed && hasRequiredTitle && body.refresh !== true) {
     return jsonResponse({ ...state, completedBatch: batchIndex });
   }
-  if (!env.AI?.run) return aiFailure('TRANSLATION_NOT_CONFIGURED');
+  if (!env.AI?.run) {
+    return aiFailure('TRANSLATION_NOT_CONFIGURED', 503, { runToken: requestedRunToken });
+  }
 
   let parsed;
   try {
@@ -124,10 +126,12 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
       || (batchIndex === 0 && !parsed.titleTranslation)
       || (batchIndex !== 0 && parsed.titleTranslation)
     ) {
-      return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
+      return aiFailure(
+        'TRANSLATION_FORMAT_INVALID', 502, { runToken: requestedRunToken }
+      );
     }
   } catch (error) {
-    return mapAiError(error);
+    return mapAiError(error, { runToken: requestedRunToken });
   }
 
   const currentArticle = await loadArticle(env.DB, articleId, userId);
@@ -549,11 +553,13 @@ function codePointLength(value) {
   return Array.from(value).length;
 }
 
-function mapAiError(error) {
+function mapAiError(error, details) {
   const status = Number(error?.status || error?.cause?.status || 0);
-  if (status === 429) return aiFailure('TRANSLATION_DAILY_LIMIT', 429);
-  if (error?.code === 'TRANSLATION_TIMEOUT') return aiFailure('TRANSLATION_TIMEOUT', 504);
-  return aiFailure('TRANSLATION_UNAVAILABLE');
+  if (status === 429) return aiFailure('TRANSLATION_DAILY_LIMIT', 429, details);
+  if (error?.code === 'TRANSLATION_TIMEOUT') {
+    return aiFailure('TRANSLATION_TIMEOUT', 504, details);
+  }
+  return aiFailure('TRANSLATION_UNAVAILABLE', 503, details);
 }
 
 function invalidInput() {
@@ -598,12 +604,13 @@ function sourceChanged() {
   );
 }
 
-function aiFailure(code, status = 503) {
+function aiFailure(code, status = 503, details = {}) {
   return jsonResponse({
     error: code === 'TRANSLATION_DAILY_LIMIT'
       ? '今日翻译额度已用完，请明天再试'
       : 'translation unavailable',
-    code
+    code,
+    ...details
   }, { status });
 }
 

@@ -74,6 +74,10 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     activeBatchIndexes.add(batch.index);
 
     function fail(error) {
+      const failedRunToken = error?.data?.runToken || error?.runToken;
+      if (typeof failedRunToken === 'string' && failedRunToken) {
+        authoritativeRunToken = failedRunToken;
+      }
       if (!settle(batch, requestGeneration)) return;
       if (stopped) return;
       if (error?.code === 'TRANSLATION_DAILY_LIMIT') {
