@@ -21,10 +21,10 @@ export async function loadArticleTranslationState(DB, article, userId) {
       ORDER BY paragraph_index
     `).bind(article.id, userId, sourceHash, ARTICLE_TRANSLATION_RULES_VERSION).all()
   ]);
-  const translated = rows.map(row => ({
-    index: Number(row.paragraph_index),
-    translation: row.translation_zh
-  }));
+  const paragraphIndexes = new Set(paragraphs.map(paragraph => paragraph.index));
+  const translated = rows
+    .map(row => ({ index: Number(row.paragraph_index), translation: row.translation_zh }))
+    .filter(paragraph => paragraphIndexes.has(paragraph.index));
   const translatedIndexes = new Set(translated.map(paragraph => paragraph.index));
   const publicBatches = batches.map(batch => ({
     index: batch.index,

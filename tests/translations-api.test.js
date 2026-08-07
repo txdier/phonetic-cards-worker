@@ -433,6 +433,45 @@ test('article translation GET never serves a stored translation with a stale sou
   assert.deepEqual(state.paragraphs, []);
 });
 
+test('article translation GET ignores an out-of-range progressive paragraph row', async t => {
+  const DB = seededArticleDb('Current body.');
+  t.after(() => DB.close());
+  const missing = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), { AUTH_SECRET: SECRET, DB });
+  const state = await missing.json();
+
+  await DB.prepare(`INSERT INTO article_translations
+    (article_id, user_id, title_zh, paragraphs_json, source_hash, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      'a1', 'u1', 'Legacy title', JSON.stringify([{ index: 0, translation: 'Legacy body.' }]),
+      state.sourceHash, 'legacy-model', 1, 1
+    ).run();
+  await DB.prepare(`INSERT INTO article_translation_progress
+    (article_id, user_id, source_hash, rules_version, title_zh, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind('a1', 'u1', state.sourceHash, state.rulesVersion, 'Progress title', 'model', 1, 1).run();
+  await DB.prepare(`INSERT INTO article_translation_paragraphs
+    (article_id, user_id, source_hash, rules_version, paragraph_index,
+     translation_zh, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind('a1', 'u1', state.sourceHash, state.rulesVersion, 99, 'Orphan row.', 'model', 1, 1).run();
+
+  const response = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), { AUTH_SECRET: SECRET, DB });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    status: 'fresh',
+    titleZh: 'Legacy title',
+    paragraphs: [{ index: 0, translation: 'Legacy body.' }],
+    model: 'legacy-model',
+    updatedAt: 1
+  });
+});
+
 test('article translation GET exposes deterministic missing and partial batch state', async t => {
   const DB = seededArticleDb(`${'First paragraph. '.repeat(30)}\n\nSecond paragraph.`);
   t.after(() => DB.close());
