@@ -295,15 +295,19 @@ export function createReaderView({
       );
     },
     onBatch(result) {
-      articleTranslation = result;
+      if (!mergeArticleTranslationState(result)) return;
       syncArticleTranslationView();
     },
-    onError(error) {
+    onError(error, { terminal = false } = {}) {
       if (!mounted) return;
       renderInlineError(
         root,
         error.message || '文章翻译暂不可用，请稍后重试'
       );
+      if (!terminal) {
+        const target = root.querySelector(':scope > [data-inline-error]');
+        target?.append(' ', actionButton('continue-article-translation', '继续翻译'));
+      }
       syncTranslationPanel();
     }
   });
@@ -1000,6 +1004,15 @@ export function createReaderView({
     render();
     if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
     articleTranslationScheduler.start(articleTranslation, { refresh: true });
+  }
+
+  function continueArticleTranslation() {
+    if (!articleTranslation) return;
+    const error = root.querySelector(':scope > [data-inline-error]');
+    const restoreToolbarFocus = error?.contains(document.activeElement) === true;
+    if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
+    error?.remove();
+    articleTranslationScheduler.start(articleTranslation);
   }
 
   function applyReaderPreferences() {
@@ -2447,6 +2460,7 @@ export function createReaderView({
     }
     if (action === 'reader-preference') updateReaderPreference(target);
     if (action === 'translate-article') refreshArticleTranslation();
+    if (action === 'continue-article-translation') continueArticleTranslation();
     if (action === 'speech-timer-set') {
       setSleepTimer(target);
     }

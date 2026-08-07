@@ -3537,6 +3537,157 @@ test('ordinary sentence click speaks exactly once', async () => {
   }
 });
 
+test('translation scheduler retries before offering a focused manual continuation', async () => {
+  let attempts = 0;
+  const detail = articleDetail({ body: 'First paragraph.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 1 });
+      }
+      if (path === '/api/articles/a1/translation/batches/0' && init.method === 'PUT') {
+        attempts += 1;
+        if (attempts <= 2) {
+          const error = new Error(`temporary failure ${attempts}`);
+          error.code = 'TRANSLATION_TIMEOUT';
+          throw error;
+        }
+        return progressiveArticleTranslation([0], 0, {
+          totalBatches: 1,
+          titleZh: '重试标题',
+          translations: { 0: '重试译文。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    const full = env.root.querySelector('[data-action="translation-mode"][data-mode="full"]');
+    full.focus();
+    click(env.window, full);
+    const trigger = env.root.querySelector('[data-action="translation-menu"]');
+
+    await waitFor(
+      () => env.root.querySelector('[data-action="continue-article-translation"]'),
+      'exhausted retry should expose manual continuation'
+    );
+    assert.equal(attempts, 2);
+    assert.equal(env.window.document.activeElement, trigger);
+    assert.match(
+      env.root.querySelector(':scope > [data-inline-error]').textContent,
+      /temporary failure 2/
+    );
+
+    const continuation = env.root.querySelector('[data-action="continue-article-translation"]');
+    continuation.focus();
+    click(env.window, continuation);
+    assert.equal(env.window.document.activeElement, trigger);
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '重试译文。',
+      'manual continuation should restart the missing batch'
+    );
+    assert.equal(attempts, 3);
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('refreshes progressive translation in a new generation while retaining old text', async () => {
+  const calls = [];
+  const detail = articleDetail({
+    body: 'First paragraph.\n\nSecond paragraph.',
+    markings: [], pending_terms: [], words: []
+  });
+  const cached = progressiveArticleTranslation([0, 1], null, {
+    totalBatches: 2,
+    titleZh: '旧标题',
+    translations: { 0: '旧译文一。', 1: '旧译文二。' }
+  });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return cached;
+      const match = path.match(/^\/api\/articles\/a1\/translation\/batches\/(\d+)$/);
+      if (match && init.method === 'PUT') {
+        const gate = deferred();
+        calls.push({ index: Number(match[1]), body: JSON.parse(init.body), gate });
+        return gate.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    let trigger = env.root.querySelector('[data-action="translation-menu"]');
+    click(env.window, trigger);
+    let refresh = env.root.querySelector('[data-action="translate-article"]');
+    refresh.focus();
+    click(env.window, refresh);
+    assert.deepEqual(calls.map(call => call.index), [0]);
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['旧译文一。', '旧译文二。']
+    );
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(env.window.document.activeElement, trigger);
+
+    click(env.window, trigger);
+    refresh = env.root.querySelector('[data-action="translate-article"]');
+    refresh.focus();
+    click(env.window, refresh);
+    assert.deepEqual(calls.map(call => call.index), [0, 0]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+    trigger = env.root.querySelector('[data-action="translation-menu"]');
+    assert.equal(env.window.document.activeElement, trigger);
+
+    calls[0].gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 2,
+      titleZh: '过期标题',
+      translations: { 0: '过期译文。' }
+    }));
+    await env.ready();
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['旧译文一。', '旧译文二。']
+    );
+
+    calls[1].gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 2,
+      titleZh: '新标题',
+      translations: { 0: '新译文一。' }
+    }));
+    await waitFor(() => calls.length === 3, 'new generation should continue with batch one');
+    assert.deepEqual(calls.map(call => call.index), [0, 0, 1]);
+    assert.ok(calls.every(call => call.body.refresh === true));
+    assert.deepEqual(
+      [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
+      ['新译文一。', '旧译文二。']
+    );
+
+    calls[2].gate.resolve(progressiveArticleTranslation([0, 1], 1, {
+      totalBatches: 2,
+      titleZh: '新标题',
+      translations: { 0: '新译文一。', 1: '新译文二。' }
+    }));
+    await waitFor(
+      () => env.root.querySelectorAll('[data-role="paragraph-translation"]')[1]?.textContent === '新译文二。',
+      'second replacement should render'
+    );
+  } finally {
+    env.cleanup();
+    for (const call of calls) call.gate.resolve(cached);
+    env.restore();
+  }
+});
+
 test('browser speech omits a speaker label at the start of a sentence', async () => {
   const env = setupReader({ body: 'Alice: Hello there.', useTts: false });
   try {

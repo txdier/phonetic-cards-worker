@@ -148,6 +148,19 @@ test('sentence translation slots use a quiet annotation layout without clamping 
   assert.doesNotMatch(translated || '', /line-clamp|overflow:\s*hidden|max-height/);
 });
 
+test('progressive article translation uses quiet progress and pending styles', async () => {
+  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const progress = css.match(/\.pc-article-translation-progress\s*\{([^}]*)\}/)?.[1];
+  const pending = css.match(/\.pc-reader-translation-pending\s*\{([^}]*)\}/)?.[1];
+
+  assert.match(progress || '', /margin:\s*0\s+0\s+1em/);
+  assert.match(progress || '', /color:\s*var\(--ink-dim\)/);
+  assert.match(progress || '', /font-size:\s*\.8em/);
+  assert.match(pending || '', /min-height:\s*2\.5em/);
+  assert.match(pending || '', /color:\s*var\(--ink-dim\)/);
+  assert.match(pending || '', /opacity:\s*\.72/);
+});
+
 test('tag checkboxes render as compact centered color chips', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const choice = css.match(/\.pc-tag-choice\s*\{([^}]*)\}/)?.[1];

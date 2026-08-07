@@ -270,3 +270,133 @@ test('article translation scheduler invalidation makes stale callbacks inert', a
   assert.deepEqual(renderedBatches, []);
   assert.deepEqual(errors, []);
 });
+
+test('translation scheduler retries only transient failures once and exposes the second failure', async () => {
+  const retryableCodes = [
+    'TRANSLATION_TIMEOUT',
+    'TRANSLATION_UNAVAILABLE',
+    'TRANSLATION_FORMAT_INVALID'
+  ];
+
+  for (const code of retryableCodes) {
+    let attempts = 0;
+    const errors = [];
+    const scheduler = createArticleTranslationScheduler({
+      requestBatch() {
+        attempts += 1;
+        const error = new Error(`${code} attempt ${attempts}`);
+        error.code = code;
+        return Promise.reject(error);
+      },
+      onBatch() {},
+      onError(error, details) {
+        errors.push({ error, details });
+      }
+    });
+
+    scheduler.start(translationState());
+    await flush();
+
+    assert.equal(attempts, 2, code);
+    assert.equal(errors.length, 1, code);
+    assert.equal(errors[0].error.message, `${code} attempt 2`);
+    assert.notEqual(errors[0].details?.terminal, true);
+  }
+
+  let attempts = 0;
+  const errors = [];
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch() {
+      attempts += 1;
+      const error = new Error('source changed');
+      error.code = 'TRANSLATION_SOURCE_CHANGED';
+      return Promise.reject(error);
+    },
+    onBatch() {},
+    onError(error) {
+      errors.push(error);
+    }
+  });
+
+  scheduler.start(translationState());
+  await flush();
+
+  assert.equal(attempts, 1);
+  assert.equal(errors.length, 1);
+});
+
+test('translation quota stops every queued batch and reports a terminal error', async () => {
+  const first = deferred();
+  const later = new Map([[1, deferred()], [2, deferred()]]);
+  const started = [];
+  const errors = [];
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch(batch) {
+      started.push(batch.index);
+      return batch.index === 0 ? first.promise : later.get(batch.index).promise;
+    },
+    onBatch() {},
+    onError(error, details) {
+      errors.push({ error, details });
+    }
+  });
+
+  scheduler.start(translationState());
+  first.resolve(translationState([0], 0));
+  await flush();
+  assert.deepEqual(started, [0, 1, 2]);
+
+  const quotaError = new Error('daily translation limit reached');
+  quotaError.code = 'TRANSLATION_DAILY_LIMIT';
+  later.get(1).reject(quotaError);
+  await flush();
+  later.get(2).resolve(translationState([0, 2], 2));
+  await flush();
+
+  assert.deepEqual(started, [0, 1, 2]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].error, quotaError);
+  assert.deepEqual(errors[0].details, { terminal: true });
+});
+
+test('refreshes progressive batches in a new generation and ignores the superseded request', async () => {
+  const calls = [];
+  const rendered = [];
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch(batch, state, refresh) {
+      const gate = deferred();
+      calls.push({ index: batch.index, refresh, gate });
+      return gate.promise;
+    },
+    onBatch(result) {
+      rendered.push(result.marker);
+    },
+    onError(error) {
+      assert.fail(`unexpected scheduler error: ${error.message}`);
+    }
+  });
+
+  scheduler.start(translationState());
+  assert.deepEqual(calls.map(call => [call.index, call.refresh]), [[0, false]]);
+
+  scheduler.start(translationState([0, 1, 2, 3]), { refresh: true });
+  assert.deepEqual(calls.map(call => [call.index, call.refresh]), [
+    [0, false],
+    [0, true]
+  ]);
+
+  calls[0].gate.resolve({ ...translationState([0], 0), marker: 'superseded' });
+  calls[1].gate.resolve({ ...translationState([0], 0), marker: 'new-0' });
+  await flush();
+  assert.deepEqual(calls.map(call => call.index), [0, 0, 1, 2]);
+
+  calls[2].gate.resolve({ ...translationState([0, 1], 1), marker: 'new-1' });
+  calls[3].gate.resolve({ ...translationState([0, 2], 2), marker: 'new-2' });
+  await flush();
+  assert.deepEqual(calls.map(call => call.index), [0, 0, 1, 2, 3]);
+  calls[4].gate.resolve({ ...translationState([0, 1, 2, 3], 3), marker: 'new-3' });
+  await flush();
+
+  assert.ok(calls.slice(1).every(call => call.refresh === true));
+  assert.deepEqual(rendered, ['new-0', 'new-1', 'new-2', 'new-3']);
+});
