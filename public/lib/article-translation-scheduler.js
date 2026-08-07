@@ -150,7 +150,9 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
       }
       refresh = true;
     } else if (suspendedByError) {
-      attemptsByBatch.clear();
+      for (const batch of schedulableBatches(nextState?.batches)) {
+        if (!activeBatchIndexes.has(batch.index)) attemptsByBatch.delete(batch.index);
+      }
     }
     state = nextState;
     if (!refreshBatches.size) refresh = false;

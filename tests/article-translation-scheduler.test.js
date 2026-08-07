@@ -421,3 +421,59 @@ test('article translation invalidation clears pending forced-refresh work', () =
   assert.equal(scheduler.hasPendingWork(), false);
   request.resolve(translationState([0], 0));
 });
+
+test('Continue preserves the first attempt of an active sibling for its automatic retry', async () => {
+  const requests = new Map([
+    [0, [deferred()]],
+    [1, [deferred(), deferred(), deferred()]],
+    [2, [deferred(), deferred()]]
+  ]);
+  const attempts = new Map();
+  const started = [];
+  const errors = [];
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch(batch) {
+      const attempt = attempts.get(batch.index) || 0;
+      attempts.set(batch.index, attempt + 1);
+      started.push(batch.index);
+      return requests.get(batch.index)[attempt].promise;
+    },
+    onBatch() {},
+    onError(error) {
+      errors.push(error.message);
+    }
+  });
+  const retryableError = message => {
+    const error = new Error(message);
+    error.code = 'TRANSLATION_TIMEOUT';
+    return error;
+  };
+
+  scheduler.start(translationState());
+  requests.get(0)[0].resolve(translationState([0], 0));
+  await flush();
+  assert.deepEqual(started, [0, 1, 2]);
+
+  requests.get(1)[0].reject(retryableError('batch one first failure'));
+  await flush();
+  assert.deepEqual(started, [0, 1, 2, 1]);
+  requests.get(1)[1].reject(retryableError('batch one exhausted'));
+  await flush();
+  assert.deepEqual(errors, ['batch one exhausted']);
+
+  scheduler.start(translationState([0]));
+  assert.deepEqual(started, [0, 1, 2, 1, 1]);
+
+  requests.get(2)[0].reject(retryableError('sibling first failure'));
+  await flush();
+  assert.deepEqual(started, [0, 1, 2, 1, 1, 2]);
+  assert.deepEqual(errors, ['batch one exhausted']);
+
+  requests.get(2)[1].reject(retryableError('sibling exhausted'));
+  await flush();
+  assert.equal(started.filter(index => index === 2).length, 2);
+  assert.deepEqual(errors, ['batch one exhausted', 'sibling exhausted']);
+
+  scheduler.invalidate();
+  requests.get(1)[2].resolve(translationState([0, 1], 1));
+});
