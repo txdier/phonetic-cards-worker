@@ -720,9 +720,65 @@ export function createReaderView({
     sentenceTranslationsLoading = false;
   }
 
+  function mergeArticleTranslationState(result) {
+    if (!['partial', 'fresh'].includes(result?.status)) return false;
+    const samePlan = Boolean(
+      articleTranslation
+      && result.sourceHash
+      && result.sourceHash === articleTranslation.sourceHash
+      && result.rulesVersion
+      && result.rulesVersion === articleTranslation.rulesVersion
+    );
+    const translated = new Map(
+      (samePlan ? articleTranslation.paragraphs : []).map(paragraph => [
+        Number(paragraph.index), paragraph
+      ])
+    );
+    for (const paragraph of result.paragraphs || []) {
+      translated.set(Number(paragraph.index), paragraph);
+    }
+    const paragraphs = [...translated.values()]
+      .sort((left, right) => Number(left.index) - Number(right.index));
+    const batches = (result.batches || (samePlan ? articleTranslation.batches : []) || [])
+      .map(batch => ({
+        ...batch,
+        completed: Array.isArray(batch.paragraphIndexes)
+          ? batch.paragraphIndexes.every(index => translated.has(Number(index)))
+          : batch.completed
+      }));
+    const completedBatches = batches.length
+      ? batches.filter(batch => batch.completed).length
+      : result.completedBatches;
+    const totalBatches = Number.isInteger(result.totalBatches)
+      ? result.totalBatches
+      : batches.length || undefined;
+    const status = totalBatches && completedBatches === totalBatches
+      ? 'fresh'
+      : result.status;
+    articleTranslation = {
+      ...(samePlan ? articleTranslation : {}),
+      ...result,
+      status,
+      paragraphs,
+      ...(batches.length ? { batches } : {}),
+      ...(Number.isInteger(completedBatches) ? { completedBatches } : {}),
+      ...(Number.isInteger(totalBatches) ? { totalBatches } : {})
+    };
+    return true;
+  }
+
   function renderBody(container) {
     const body = element('div', 'pc-reader-text');
     body.dataset.role = 'reader-text';
+    if (translationMode === 'full' && articleTranslation?.status === 'partial') {
+      const progress = element(
+        'div',
+        'pc-article-translation-progress',
+        `宸茬炕璇?${articleTranslation.completedBatches}/${articleTranslation.totalBatches} 鎵?`
+      );
+      progress.dataset.role = 'article-translation-progress';
+      body.append(progress);
+    }
     const candidates = highlightCandidates(article);
     for (const paragraph of paragraphs) {
       const sentenceMode = translationMode === 'sentence';
@@ -759,16 +815,47 @@ export function createReaderView({
         translationNode.dataset.role = 'paragraph-translation';
         translationNode.dataset.paragraphIndex = String(paragraph.index);
         body.append(translationNode);
+      } else if (translationMode === 'full') {
+        const pending = element(
+          'div',
+          'pc-reader-translation pc-reader-translation-pending',
+          '绛夊緟缈昏瘧'
+        );
+        pending.dataset.role = 'paragraph-translation-pending';
+        pending.dataset.paragraphIndex = String(paragraph.index);
+        body.append(pending);
       }
     }
     container.append(body);
+  }
+
+  function syncArticleTranslationView() {
+    if (!mounted || !article || translationMode !== 'full') return;
+    root.querySelector('[data-action="translation-menu"]')
+      ?.setAttribute('aria-pressed', 'true');
+    const title = root.querySelector('.pc-reader-title');
+    root.querySelector('[data-role="article-translation-title"]')?.remove();
+    if (title && articleTranslation) {
+      const translatedTitle = element(
+        'div', 'pc-reader-translation-title', articleTranslation.titleZh
+      );
+      translatedTitle.dataset.role = 'article-translation-title';
+      title.after(translatedTitle);
+    }
+    const currentBody = root.querySelector('[data-role="reader-text"]');
+    if (currentBody) {
+      const nextBody = element('div');
+      renderBody(nextBody);
+      currentBody.replaceWith(nextBody.firstElementChild);
+    }
+    syncTranslationPanel();
   }
 
   async function loadArticleTranslation(version) {
     try {
       const result = await api(`/api/articles/${encodeURIComponent(articleId)}/translation`);
       if (!isCurrent(version)) return;
-      articleTranslation = result?.status === 'fresh' ? result : null;
+      if (!mergeArticleTranslationState(result)) articleTranslation = null;
     } catch {
       if (isCurrent(version)) articleTranslation = null;
     }
@@ -893,7 +980,7 @@ export function createReaderView({
       });
       if (!mounted || generation !== articleTranslationGeneration) return false;
       if (result?.status !== 'fresh') throw new Error('文章翻译暂不可用，请稍后重试');
-      articleTranslation = result;
+      mergeArticleTranslationState(result);
       return true;
     } catch (error) {
       if (mounted && generation === articleTranslationGeneration) {
@@ -911,10 +998,6 @@ export function createReaderView({
 
   async function setTranslationMode(mode) {
     if (!TRANSLATION_MODES.includes(mode) || translationBusy) return;
-    if (mode === 'full' && !articleTranslation) {
-      await translateArticle({ action: 'translation-mode', mode: 'full' });
-      if (!articleTranslation) return;
-    }
     if (translationMode === 'sentence' && mode !== 'sentence') {
       suspendSentenceTranslationRestore();
       suspendSentenceTranslationRequests();
@@ -923,6 +1006,17 @@ export function createReaderView({
     saveTranslationMode(storage, mode);
     const restoreToolbarFocus = root.querySelector('[data-role="translation-panel"]')
       ?.contains(document.activeElement) === true;
+    if (mode === 'full' && articleTranslation?.status !== 'fresh') {
+      syncArticleTranslationView();
+      void (async () => {
+        if (!await translateArticle({ action: 'translation-mode', mode: 'full' })) return;
+        if (!mounted || translationMode !== 'full') return;
+        closeTranslationPanel({ restoreFocus: false });
+        syncArticleTranslationView();
+        if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
+      })();
+      return;
+    }
     closeTranslationPanel({ restoreFocus: false });
     render();
     if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();

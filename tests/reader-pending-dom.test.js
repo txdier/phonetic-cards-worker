@@ -407,6 +407,97 @@ function setupReader({
   };
 }
 
+test('partial article translation renders completed paragraphs, pending placeholders, and progress', async () => {
+  const articleRequest = deferred();
+  const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
+  const partial = {
+    status: 'partial',
+    sourceHash: 'a'.repeat(64),
+    rulesVersion: 'article-v2-progressive',
+    titleZh: '娴嬭瘯鏂囩珷',
+    paragraphs: [{ index: 0, translation: '绗竴娈点€?' }],
+    batches: [
+      { index: 0, paragraphIndexes: [0], completed: true },
+      { index: 1, paragraphIndexes: [1], completed: false }
+    ],
+    completedBatches: 1,
+    totalBatches: 2
+  };
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return partial;
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation"]').textContent,
+      '绗竴娈点€?'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation-pending"]')
+        .dataset.paragraphIndex,
+      '1'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]').textContent,
+      '宸茬炕璇?1/2 鎵?'
+    );
+  } finally {
+    articleRequest.reject(new Error('reader closed'));
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('full mode immediately renders pending paragraphs before translation resolves', async () => {
+  const articleRequest = deferred();
+  const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) return { status: 'missing' };
+      if (path === '/api/articles/a1/translation' && init.method === 'PUT') {
+        return articleRequest.promise;
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector(
+      '[data-action="translation-mode"][data-mode="full"]'
+    ));
+
+    assert.equal(
+      env.root.querySelectorAll('[data-role="paragraph-translation-pending"]').length,
+      2
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation-pending"]').textContent,
+      '绛夊緟缈昏瘧'
+    );
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+  } finally {
+    articleRequest.reject(new Error('reader closed'));
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('translation toolbar panel generates and toggles complete paragraph translations', async () => {
   const calls = [];
   const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
