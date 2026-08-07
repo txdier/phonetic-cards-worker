@@ -1,8 +1,38 @@
 const EDGE_PUNCTUATION = /^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu;
 const ENGLISH_LETTER = /[A-Za-z]/;
+const SPEAKER_LABEL = String.raw`[\p{L}][\p{L}\p{N} .\u2019'_-]{0,39}`;
+const SPEAKER_PATTERNS = Object.freeze([
+  new RegExp(`^(?:\\*\\*|__)(${SPEAKER_LABEL})[:\uFF1A](?:\\*\\*|__)[ \\t]*(?:\\n[ \\t]*)?`, 'u'),
+  new RegExp(`^(?:\\*\\*|__)(${SPEAKER_LABEL})(?:\\*\\*|__)[:\uFF1A][ \\t]*(?:\\n[ \\t]*)?`, 'u'),
+  new RegExp(`^(${SPEAKER_LABEL})[:\uFF1A][ \\t]*(?:\\n[ \\t]*)?`, 'u')
+]);
+const NON_SPEAKER_LABELS = new Set([
+  'answer', 'chapter', 'definition', 'example', 'important', 'lesson',
+  'note', 'part', 'question', 'section', 'summary', 'tip', 'warning'
+]);
 
 export function normalizeTerm(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function parseSpeakerPrefix(value) {
+  const text = String(value || '');
+  for (const pattern of SPEAKER_PATTERNS) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const speaker = match[1].trim();
+    const normalized = speaker.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase();
+    if (NON_SPEAKER_LABELS.has(normalized)) return null;
+    if (/^(?:chapter|lesson|part|section)\s+\d+$/i.test(normalized)) return null;
+    return { speaker, length: match[0].length };
+  }
+  return null;
+}
+
+export function stripLeadingSpeakerLabel(value) {
+  const text = String(value || '');
+  const prefix = parseSpeakerPrefix(text);
+  return prefix ? text.slice(prefix.length) : text;
 }
 
 export function splitSentences(value, segmenter = null) {

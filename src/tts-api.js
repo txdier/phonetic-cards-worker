@@ -1,5 +1,9 @@
 import { jsonResponse } from './http.js';
-import { splitArticleParagraphs } from '../public/lib/text.js';
+import {
+  parseSpeakerPrefix,
+  splitArticleParagraphs,
+  stripLeadingSpeakerLabel
+} from '../public/lib/text.js';
 
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
 const CACHE_VERSION = 'v2';
@@ -14,16 +18,6 @@ const DIALOGUE_PROFILE_ORDER = Object.freeze([
   'guy-news',
   'aria-narration',
   'jenny-chat'
-]);
-const SPEAKER_LABEL = String.raw`[\p{L}][\p{L}\p{N} .’'_-]{0,39}`;
-const SPEAKER_PATTERNS = Object.freeze([
-  new RegExp(`^(?:\\*\\*|__)(${SPEAKER_LABEL})[:：](?:\\*\\*|__)[ \\t]*(?:\\n[ \\t]*)?`, 'u'),
-  new RegExp(`^(?:\\*\\*|__)(${SPEAKER_LABEL})(?:\\*\\*|__)[:：][ \\t]*(?:\\n[ \\t]*)?`, 'u'),
-  new RegExp(`^(${SPEAKER_LABEL})[:：][ \\t]*(?:\\n[ \\t]*)?`, 'u')
-]);
-const NON_SPEAKER_LABELS = new Set([
-  'answer', 'chapter', 'definition', 'example', 'important', 'lesson',
-  'note', 'part', 'question', 'section', 'summary', 'tip', 'warning'
 ]);
 
 export async function handleTtsApi(
@@ -143,7 +137,7 @@ async function resolveResource(request, DB, path, userId) {
   const turn = dialogue?.turns.get(sentenceIndex);
   return {
     mode: 'sentence',
-    text: turn?.text || sentence.text,
+    text: turn?.text || stripLeadingSpeakerLabel(sentence.text),
     speakerIndex: turn?.speakerIndex
   };
 }
@@ -156,7 +150,7 @@ function detectDialogue(paragraphs) {
     const prefix = parseSpeakerPrefix(paragraph.text);
     if (!prefix || !paragraph.sentences.length) continue;
     const normalized = normalizeSpeaker(prefix.speaker);
-    if (!normalized || isGenericLabel(normalized)) continue;
+    if (!normalized) continue;
     if (!speakers.has(normalized)) {
       speakers.set(normalized, speakers.size);
     }
@@ -185,31 +179,12 @@ function detectDialogue(paragraphs) {
   return { turns };
 }
 
-function parseSpeakerPrefix(value) {
-  const text = String(value || '');
-  for (const pattern of SPEAKER_PATTERNS) {
-    const match = text.match(pattern);
-    if (match) {
-      return {
-        speaker: match[1].trim(),
-        length: match[0].length
-      };
-    }
-  }
-  return null;
-}
-
 function normalizeSpeaker(value) {
   return String(value || '')
     .normalize('NFKC')
     .trim()
     .replace(/\s+/g, ' ')
     .toLowerCase();
-}
-
-function isGenericLabel(value) {
-  if (NON_SPEAKER_LABELS.has(value)) return true;
-  return /^(?:chapter|lesson|part|section)\s+\d+$/i.test(value);
 }
 
 async function acquireLease(DB, userId, cacheKey, characterCount, budget, date) {

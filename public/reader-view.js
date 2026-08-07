@@ -1,4 +1,10 @@
-import { findTermMatches, normalizeTerm, splitArticleParagraphs, validateSelection } from './lib/text.js';
+import {
+  findTermMatches,
+  normalizeTerm,
+  splitArticleParagraphs,
+  stripLeadingSpeakerLabel,
+  validateSelection
+} from './lib/text.js';
 import { mountConversionForm } from './pending-view.js';
 import { createReadingSession } from './lib/reading-session.js';
 import { createMediaSessionBridge } from './lib/media-session.js';
@@ -305,16 +311,17 @@ export function createReaderView({
     const index = Number(sentenceNode?.dataset.sentenceIndex);
     if (!Number.isInteger(index)) return;
     if (checkSleepTimer()) return;
+    const speechText = stripLeadingSpeakerLabel(sentences[index]?.text || sentenceNode.textContent);
     if (tts?.speakArticleSentence) {
       bindMediaSession();
       pointAloudSentenceIndex = index;
-      tts.speakArticleSentence(articleId, index, sentenceNode.textContent, {
+      tts.speakArticleSentence(articleId, index, speechText, {
         rate: (tts || speech).getRate?.() || 1,
         profile: ttsPreferences.articleProfile,
         nextIndex: index + 1 < sentences.length ? index + 1 : null
       });
     } else {
-      speakDirect(sentenceNode.textContent);
+      speakDirect(speechText);
     }
   }
 
@@ -329,7 +336,7 @@ export function createReaderView({
     if (tts?.startArticle) {
       tts.startArticle(
         articleId,
-        sentences.map(sentence => sentence.text),
+        sentences.map(sentence => stripLeadingSpeakerLabel(sentence.text)),
         index,
         { offsetSeconds, profile: ttsPreferences.articleProfile }
       );
@@ -530,9 +537,19 @@ export function createReaderView({
 
     const controls = element('div', 'pc-sentence-translation-controls');
     if (cached) controls.classList.add('pc-sentence-translation-controls-cached');
-    const button = actionButton(action, label, 'pc-sentence-translation-action');
+    const button = actionButton(action, '', 'pc-sentence-translation-action');
     button.setAttribute('aria-label', label);
     button.disabled = status === 'loading';
+    if (cached) {
+      button.classList.add('pc-sentence-translation-refresh');
+      button.title = label;
+      button.append(svgIcon('replay'));
+    } else {
+      button.append(
+        element('span', 'pc-sentence-translation-glyph', '译'),
+        element('span', 'pc-sentence-translation-action-label', label)
+      );
+    }
     controls.append(button);
     slot.append(controls);
 
@@ -1065,9 +1082,11 @@ export function createReaderView({
     rateValue.dataset.role = 'speech-rate-value';
     rateLabel.append(rate, rateValue);
     toolbar.append(rateLabel);
-    const timerRemaining = element('output', 'pc-sleep-timer-remaining');
+    const timerRemaining = actionButton('speech-timer', '', 'pc-sleep-timer-remaining');
     timerRemaining.dataset.role = 'sleep-timer-remaining';
     timerRemaining.setAttribute('aria-live', 'polite');
+    timerRemaining.setAttribute('aria-expanded', 'false');
+    timerRemaining.disabled = !speechAvailable;
     timerRemaining.hidden = true;
     toolbar.append(timerRemaining);
     const settings = iconButton(
@@ -1832,7 +1851,7 @@ export function createReaderView({
     popoverHost.dataset.role = 'popover-host';
     root.append(header, content, selectionHost, popoverHost, floatingSpeechControls());
     applyReaderPreferences();
-    if (!tts) speech.load(sentences.map(sentence => sentence.text));
+    if (!tts) speech.load(sentences.map(sentence => stripLeadingSpeakerLabel(sentence.text)));
     restorePosition();
     observeSpeechToolbar();
     syncSpeechControls();
@@ -2326,7 +2345,7 @@ export function createReaderView({
       const previousIndex = currentReplayIndex() - 1;
       if (previousIndex >= 0 && ownsAudioControllerPlayback()) {
         if (tts) tts.previousSentence?.();
-        else speakDirect(sentences[previousIndex].text);
+        else speakDirect(stripLeadingSpeakerLabel(sentences[previousIndex].text));
       }
     }
     if (action === 'speech-current' || action === 'speech-floating-current') {
@@ -2334,7 +2353,7 @@ export function createReaderView({
       const replayIndex = currentReplayIndex();
       if (validAloudIndex(replayIndex) && ownsAudioControllerPlayback()) {
         if (tts) tts.replayCurrentSentence?.();
-        else speakDirect(sentences[replayIndex].text);
+        else speakDirect(stripLeadingSpeakerLabel(sentences[replayIndex].text));
       }
     }
     if (action === 'speech-timer' || action === 'speech-floating-timer') {
@@ -2648,7 +2667,7 @@ export function createReaderView({
           tts.speakArticleSentence(
             articleId,
             index,
-            sentences[index].text.trim(),
+            stripLeadingSpeakerLabel(sentences[index].text).trim(),
             {
               rate: audioController.getRate?.() || 1,
               profile: ttsPreferences.articleProfile,

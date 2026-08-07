@@ -32,6 +32,35 @@ test('TTS caches audio and reuses an identical sentence across articles', async 
   assert.equal(second.headers.get('x-tts-cache'), 'hit');
 });
 
+test('TTS omits a standalone speaker label without requiring dialogue classification', async t => {
+  const DB = seededDb();
+  t.after(() => DB.close());
+  DB.exec(`
+    INSERT INTO articles
+      (id, user_id, title, body, author, source, notes, created_at, updated_at)
+    VALUES
+      ('a3', 'u1', 'Single speaker', 'Alice: Hello there. Plain narration.', '', '', '', 1, 1);
+  `);
+  const bodies = [];
+  const response = await handleTtsApi(
+    new Request('https://app/api/tts/articles/a3/sentences/0'),
+    configuredEnv(DB, memoryBucket()),
+    '/api/tts/articles/a3/sentences/0',
+    'u1',
+    {
+      fetch: async (_url, init) => {
+        bodies.push(init.body);
+        return new Response(new Uint8Array([1]));
+      }
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(bodies.length, 1);
+  assert.match(bodies[0], />Hello there\.<\/mstts:express-as>/);
+  assert.doesNotMatch(bodies[0], /Alice:/);
+});
+
 test('TTS refuses generation over the monthly character budget', async t => {
   const DB = seededDb();
   t.after(() => DB.close());
