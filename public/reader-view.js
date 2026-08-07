@@ -767,37 +767,44 @@ export function createReaderView({
       && result.rulesVersion
       && result.rulesVersion === articleTranslation.rulesVersion
     );
-    const translated = new Map(
-      (samePlan ? articleTranslation.paragraphs : []).map(paragraph => [
+    const sameRun = Boolean(
+      samePlan
+      && (result.runToken || '') === (articleTranslation.runToken || '')
+    );
+    const currentRunParagraphs = new Map(
+      (sameRun ? articleTranslation.paragraphs : []).map(paragraph => [
+        Number(paragraph.index), paragraph
+      ])
+    );
+    const displayed = new Map(
+      (samePlan
+        ? articleTranslation.displayParagraphs || articleTranslation.paragraphs
+        : []).map(paragraph => [
         Number(paragraph.index), paragraph
       ])
     );
     for (const paragraph of result.paragraphs || []) {
-      translated.set(Number(paragraph.index), paragraph);
+      currentRunParagraphs.set(Number(paragraph.index), paragraph);
+      displayed.set(Number(paragraph.index), paragraph);
     }
-    const paragraphs = [...translated.values()]
+    const paragraphs = [...currentRunParagraphs.values()]
       .sort((left, right) => Number(left.index) - Number(right.index));
-    const batches = (result.batches || (samePlan ? articleTranslation.batches : []) || [])
-      .map(batch => ({
-        ...batch,
-        completed: Array.isArray(batch.paragraphIndexes)
-          ? batch.paragraphIndexes.every(index => translated.has(Number(index)))
-          : batch.completed
-      }));
-    const completedBatches = batches.length
-      ? batches.filter(batch => batch.completed).length
-      : result.completedBatches;
+    const displayParagraphs = [...displayed.values()]
+      .sort((left, right) => Number(left.index) - Number(right.index));
+    const batches = result.batches || (samePlan ? articleTranslation.batches : []) || [];
+    const completedBatches = Number.isInteger(result.completedBatches)
+      ? result.completedBatches
+      : batches.filter(batch => batch.completed).length;
     const totalBatches = Number.isInteger(result.totalBatches)
       ? result.totalBatches
       : batches.length || undefined;
-    const status = totalBatches && completedBatches === totalBatches
-      ? 'fresh'
-      : result.status;
+    const status = result.status;
     articleTranslation = {
       ...(samePlan ? articleTranslation : {}),
       ...result,
       status,
       paragraphs,
+      displayParagraphs,
       ...(batches.length ? { batches } : {}),
       ...(Number.isInteger(completedBatches) ? { completedBatches } : {}),
       ...(Number.isInteger(totalBatches) ? { totalBatches } : {})
@@ -847,7 +854,8 @@ export function createReaderView({
       }
       body.append(paragraphNode);
       const translated = translationMode === 'full'
-        ? articleTranslation?.paragraphs?.find(item => Number(item.index) === paragraph.index)
+        ? (articleTranslation?.displayParagraphs || articleTranslation?.paragraphs)
+          ?.find(item => Number(item.index) === paragraph.index)
         : null;
       if (translated) {
         const translationNode = element(
@@ -904,7 +912,7 @@ export function createReaderView({
         let translationNode = currentBody.querySelector(
           `[data-role="paragraph-translation"]${selector},[data-role="paragraph-translation-pending"]${selector}`
         );
-        const translated = articleTranslation?.paragraphs?.find(
+        const translated = (articleTranslation?.displayParagraphs || articleTranslation?.paragraphs)?.find(
           item => Number(item.index) === paragraph.index
         );
         if (!translationNode) {
@@ -1067,6 +1075,7 @@ export function createReaderView({
       ?.contains(document.activeElement) === true;
     closeTranslationPanel({ restoreFocus: false });
     render();
+    showArticleTranslationLoadError();
     if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
     if (
       mode === 'full'

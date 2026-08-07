@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { createSessionToken } from '../src/auth.js';
 import worker from '../src/index.js';
 import { articleSourceHash } from '../src/article-translation-progress.js';
@@ -215,6 +216,35 @@ test('progressive article translation migration stores metadata and paragraphs i
       'article_id', 'user_id', 'source_hash', 'rules_version', 'paragraph_index',
       'translation_zh', 'model', 'created_at', 'updated_at', 'run_token'
     ]);
+  } finally {
+    DB.close();
+  }
+});
+
+test('run-token migration backfills a populated progressive generation consistently', () => {
+  const DB = createSqliteDb({ migrationCount: 12 });
+  try {
+    DB.exec(`
+      INSERT INTO users (id, username, created_at) VALUES ('u1', 'one', 1);
+      INSERT INTO articles
+        (id, user_id, title, body, author, source, notes, created_at, updated_at)
+      VALUES ('a1', 'u1', 'Title', 'Body.', '', '', '', 1, 1);
+      INSERT INTO article_translation_progress
+        (article_id, user_id, source_hash, rules_version, title_zh, model, created_at, updated_at)
+      VALUES ('a1', 'u1', '${'a'.repeat(64)}', 'article-v2-progressive', '标题', 'model', 1, 1);
+      INSERT INTO article_translation_paragraphs
+        (article_id, user_id, source_hash, rules_version, paragraph_index,
+         translation_zh, model, created_at, updated_at)
+      VALUES ('a1', 'u1', '${'a'.repeat(64)}', 'article-v2-progressive', 0,
+              '译文。', 'model', 1, 1);
+    `);
+    DB.exec(readFileSync(
+      new URL('../migrations/0013_article_translation_runs.sql', import.meta.url), 'utf8'
+    ));
+    const metadata = DB.get('SELECT run_token FROM article_translation_progress');
+    const paragraph = DB.get('SELECT run_token FROM article_translation_paragraphs');
+    assert.ok(metadata.run_token);
+    assert.equal(paragraph.run_token, metadata.run_token);
   } finally {
     DB.close();
   }

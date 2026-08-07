@@ -434,6 +434,33 @@ test('superseded refreshes never exceed two physical requests', async () => {
   calls[2].gate.resolve(translationState([0], 0));
 });
 
+test('queued refresh bases its CAS on the run that actually settled before it starts', async () => {
+  const calls = [];
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch(batch, state, refresh) {
+      const gate = deferred();
+      calls.push({ batch: batch.index, state: { ...state }, refresh, gate });
+      return gate.promise;
+    },
+    onBatch() {},
+    onError(error) { assert.fail(error.message); }
+  });
+  const cached = { ...translationState([0, 1, 2, 3]), runToken: 'run-base' };
+  scheduler.start(cached, { refresh: true });
+  const firstRunToken = calls[0].state.runToken;
+  scheduler.start(cached, { refresh: true });
+  assert.equal(calls.length, 1);
+  calls[0].gate.resolve({
+    ...translationState([0], 0), runToken: firstRunToken
+  });
+  await flush();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].state.previousRunToken, firstRunToken);
+  assert.notEqual(calls[1].state.runToken, firstRunToken);
+  scheduler.invalidate();
+  calls[1].gate.resolve({ ...translationState([0], 0), runToken: calls[1].state.runToken });
+});
+
 test('article translation invalidation clears pending forced-refresh work', () => {
   const request = deferred();
   const scheduler = createArticleTranslationScheduler({

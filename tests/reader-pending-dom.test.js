@@ -759,6 +759,40 @@ test('article translation state GET failure can recover in-reader without reload
   }
 });
 
+test('switching original to full preserves translation-state retry and recovers', async () => {
+  let gets = 0;
+  const detail = articleDetail({ body: 'Retry after mode switch.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        gets += 1;
+        if (gets === 1) throw new Error('state unavailable');
+        return progressiveArticleTranslation([0], null, {
+          totalBatches: 1, titleZh: '标题', translations: { 0: '恢复译文。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="full"]'));
+    const retry = env.root.querySelector('[data-action="retry-article-translation-state"]');
+    assert.ok(retry);
+    click(env.window, retry);
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '恢复译文。'
+    );
+    assert.equal(gets, 2);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
 test('source and rules conflicts reload authoritative translation state', async () => {
   for (const code of ['TRANSLATION_SOURCE_CHANGED', 'TRANSLATION_RULES_CHANGED']) {
     let gets = 0;
@@ -3796,6 +3830,10 @@ test('refreshes a legacy-compatible fresh translation through every additive pla
     assert.deepEqual(
       [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
       ['新译文一。', '旧译文二。']
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]')?.textContent,
+      '已翻译 1/2 批'
     );
 
     calls[2].gate.resolve(progressiveArticleTranslation([0, 1], 1, {

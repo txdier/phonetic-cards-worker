@@ -21,9 +21,17 @@ test('article translation gives the opening paragraph a small first batch', () =
 test('article translation caps tiny paragraphs to a D1-safe statement count', () => {
   const paragraphs = Array.from({ length: 100 }, (_, index) => ({ index, text: 'x' }));
   const batches = createArticleTranslationBatches(paragraphs);
-  assert.equal(ARTICLE_MAX_PARAGRAPHS_PER_BATCH, 32);
-  assert.ok(batches.every(batch => batch.paragraphs.length <= 32));
+  assert.equal(ARTICLE_MAX_PARAGRAPHS_PER_BATCH, 31);
+  assert.ok(batches.every(
+    batch => batch.paragraphs.length <= ARTICLE_MAX_PARAGRAPHS_PER_BATCH
+  ));
   assert.deepEqual(batches.flatMap(batch => batch.paragraphIndexes), paragraphs.map(item => item.index));
+});
+
+test('article translation reserves the full D1 budget for consistency retries', () => {
+  const worstCaseStatements = 1 + 6 + 2 + 1
+    + (3 + ARTICLE_MAX_PARAGRAPHS_PER_BATCH) + 6;
+  assert.equal(worstCaseStatements, 50);
 });
 
 test('article translation keeps oversized natural paragraphs intact', () => {

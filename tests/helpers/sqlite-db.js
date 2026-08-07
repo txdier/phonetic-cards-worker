@@ -17,10 +17,10 @@ const MIGRATIONS = [
   new URL('../../migrations/0013_article_translation_runs.sql', import.meta.url)
 ];
 
-export function createSqliteDb() {
+export function createSqliteDb({ migrationCount = MIGRATIONS.length } = {}) {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys = ON');
-  for (const migration of MIGRATIONS) {
+  for (const migration of MIGRATIONS.slice(0, migrationCount)) {
     database.exec(readFileSync(migration, 'utf8'));
   }
 

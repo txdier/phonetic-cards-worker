@@ -1,7 +1,7 @@
 export const ARTICLE_FIRST_BATCH_TARGET = 500;
 export const ARTICLE_LATER_BATCH_MIN = 800;
 export const ARTICLE_LATER_BATCH_MAX = 1200;
-export const ARTICLE_MAX_PARAGRAPHS_PER_BATCH = 32;
+export const ARTICLE_MAX_PARAGRAPHS_PER_BATCH = 31;
 
 export function createArticleTranslationBatches(paragraphs) {
   const remaining = [...paragraphs];

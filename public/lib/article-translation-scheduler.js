@@ -14,6 +14,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   let state = null;
   let refresh = false;
   let waitingForFirstBatch = false;
+  let authoritativeRunToken = null;
   const activeBatchIndexes = new Set();
   const attemptsByBatch = new Map();
   const refreshBatches = new Map();
@@ -63,8 +64,10 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
 
   function run(batch) {
     const requestGeneration = generation;
-    const requestState = state;
     const requestRefresh = refresh;
+    const requestState = requestRefresh
+      ? { ...state, previousRunToken: authoritativeRunToken ?? state?.previousRunToken ?? '' }
+      : state;
     attemptsByBatch.set(batch.index, (attemptsByBatch.get(batch.index) || 0) + 1);
     active += 1;
     physicalActive += 1;
@@ -105,6 +108,9 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     }
 
     Promise.resolve(request).then(result => {
+      if (typeof result?.runToken === 'string' && result.runToken) {
+        authoritativeRunToken = result.runToken;
+      }
       if (!settle(batch, requestGeneration)) return;
       state = result;
       if (requestRefresh) refreshedBatchIndexes.add(batch.index);
@@ -145,6 +151,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   function start(nextState, options = {}) {
     if (stopped && options.refresh !== true) return;
     if (options.refresh === true) {
+      if (authoritativeRunToken == null) authoritativeRunToken = nextState?.runToken || '';
       generation += 1;
       active = 0;
       activeBatchIndexes.clear();
@@ -164,6 +171,9 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
       for (const batch of schedulableBatches(nextState?.batches)) {
         if (!activeBatchIndexes.has(batch.index)) attemptsByBatch.delete(batch.index);
       }
+    }
+    if (options.refresh !== true && nextState?.runToken) {
+      authoritativeRunToken = nextState.runToken;
     }
     state = nextState;
     if (!refreshBatches.size) refresh = false;
@@ -189,6 +199,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     queue = [];
     suspended = true;
     state = null;
+    authoritativeRunToken = null;
     activeBatchIndexes.clear();
     attemptsByBatch.clear();
     refresh = false;
