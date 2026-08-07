@@ -1,5 +1,9 @@
 import { jsonResponse } from './http.js';
 import { splitArticleParagraphs } from '../public/lib/text.js';
+import {
+  articleSourceHash,
+  loadArticleTranslationState
+} from './article-translation-progress.js';
 
 export const TRANSLATION_MODEL = '@cf/zai-org/glm-4.7-flash';
 export const TRANSLATION_RULES_VERSION = 'sentence-v2-fast';
@@ -62,13 +66,15 @@ async function getArticleTranslation(DB, articleId, userId) {
     SELECT id, title, body FROM articles WHERE id = ? AND user_id = ?
   `).bind(articleId, userId).first();
   if (!article) return articleNotFound();
+  const progressive = await loadArticleTranslationState(DB, article, userId);
+  if (progressive.status !== 'missing') return jsonResponse(progressive);
   const row = await DB.prepare(`
     SELECT title_zh, paragraphs_json, source_hash, model, updated_at
     FROM article_translations WHERE article_id = ? AND user_id = ?
   `).bind(articleId, userId).first();
-  if (!row) return jsonResponse({ status: 'missing' });
+  if (!row) return jsonResponse(progressive);
   if (row.source_hash !== await articleSourceHash(article.title, article.body)) {
-    return jsonResponse({ status: 'missing' });
+    return jsonResponse(progressive);
   }
   const paragraphs = parseStoredParagraphs(row.paragraphs_json);
   if (!paragraphs) return aiFailure('TRANSLATION_FORMAT_INVALID', 502);
@@ -314,15 +320,6 @@ function parseStoredParagraphs(value) {
   } catch {
     return null;
   }
-}
-
-async function articleSourceHash(title, body) {
-  const digest = await crypto.subtle.digest(
-    'SHA-256', new TextEncoder().encode(JSON.stringify({ title, body }))
-  );
-  return [...new Uint8Array(digest)]
-    .map(value => value.toString(16).padStart(2, '0'))
-    .join('');
 }
 
 async function readObject(request) {

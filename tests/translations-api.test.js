@@ -427,7 +427,42 @@ test('article translation GET never serves a stored translation with a stale sou
   ), { AUTH_SECRET: SECRET, DB });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: 'missing' });
+  const state = await response.json();
+  assert.equal(state.status, 'missing');
+  assert.ok(state.sourceHash);
+  assert.deepEqual(state.paragraphs, []);
+});
+
+test('article translation GET exposes deterministic missing and partial batch state', async t => {
+  const DB = seededArticleDb(`${'First paragraph. '.repeat(30)}\n\nSecond paragraph.`);
+  t.after(() => DB.close());
+
+  const missing = await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), { AUTH_SECRET: SECRET, DB });
+  const state = await missing.json();
+  assert.equal(state.status, 'missing');
+  assert.equal(state.rulesVersion, 'article-v2-progressive');
+  assert.equal(state.completedBatches, 0);
+  assert.ok(state.sourceHash);
+  assert.deepEqual(state.paragraphs, []);
+
+  await DB.prepare(`INSERT INTO article_translation_progress
+    (article_id, user_id, source_hash, rules_version, title_zh, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind('a1', 'u1', state.sourceHash, state.rulesVersion, '\u6807\u9898', 'model', 1, 1).run();
+  await DB.prepare(`INSERT INTO article_translation_paragraphs
+    (article_id, user_id, source_hash, rules_version, paragraph_index,
+     translation_zh, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind('a1', 'u1', state.sourceHash, state.rulesVersion, 0, '\u7b2c\u4e00\u6bb5\u3002', 'model', 1, 1).run();
+
+  const partial = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), { AUTH_SECRET: SECRET, DB })).json();
+  assert.equal(partial.status, 'partial');
+  assert.deepEqual(partial.paragraphs, [{ index: 0, translation: '\u7b2c\u4e00\u6bb5\u3002' }]);
+  assert.deepEqual(partial.batches.map(batch => batch.completed), [true, false]);
 });
 
 test('sentence translation context, cache reuse, and user isolation', async t => {
