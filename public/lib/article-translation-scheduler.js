@@ -15,6 +15,8 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   let waitingForFirstBatch = false;
   const activeBatchIndexes = new Set();
   const attemptsByBatch = new Map();
+  const refreshBatches = new Map();
+  const refreshedBatchIndexes = new Set();
 
   function completedBatchIndexes(nextState = state) {
     return new Set(
@@ -26,15 +28,22 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
 
   function schedulableBatches(batches) {
     const seen = new Set();
-    return (batches || []).filter(batch => {
+    const candidates = refreshBatches.size ? [...refreshBatches.values()] : (batches || []);
+    return candidates.filter(batch => {
       if (seen.has(batch.index)) return false;
       seen.add(batch.index);
-      return (refresh || !batch.completed) && !activeBatchIndexes.has(batch.index);
+      return (
+        refreshBatches.size
+          ? !refreshedBatchIndexes.has(batch.index)
+          : !batch.completed
+      ) && !activeBatchIndexes.has(batch.index);
     });
   }
 
   function nextQueuedBatch() {
-    const completed = refresh ? new Set() : completedBatchIndexes();
+    const completed = refreshBatches.size
+      ? refreshedBatchIndexes
+      : completedBatchIndexes();
     while (queue.length) {
       const batch = queue.shift();
       if (activeBatchIndexes.has(batch.index)) continue;
@@ -61,6 +70,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
 
     function fail(error) {
       if (!settle(batch, requestGeneration)) return;
+      if (stopped) return;
       if (error?.code === 'TRANSLATION_DAILY_LIMIT') {
         stopped = true;
         queue = [];
@@ -93,13 +103,23 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     Promise.resolve(request).then(result => {
       if (!settle(batch, requestGeneration)) return;
       state = result;
+      if (requestRefresh) refreshedBatchIndexes.add(batch.index);
       if (batch.index === 0) waitingForFirstBatch = false;
       onBatch(result);
-      if (!refresh) {
+      if (!requestRefresh) {
         const completed = completedBatchIndexes(result);
         queue = queue.filter(queued => !completed.has(queued.index));
       }
       pump();
+      if (
+        refreshBatches.size
+        && refreshedBatchIndexes.size === refreshBatches.size
+        && active === 0
+      ) {
+        refresh = false;
+        refreshBatches.clear();
+        refreshedBatchIndexes.clear();
+      }
     }, error => {
       fail(error);
     });
@@ -116,16 +136,24 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   }
 
   function start(nextState, options = {}) {
+    if (stopped && options.refresh !== true) return;
     if (options.refresh === true) {
       generation += 1;
       active = 0;
       activeBatchIndexes.clear();
       attemptsByBatch.clear();
+      stopped = false;
+      refreshBatches.clear();
+      refreshedBatchIndexes.clear();
+      for (const batch of nextState?.batches || []) {
+        if (!refreshBatches.has(batch.index)) refreshBatches.set(batch.index, batch);
+      }
+      refresh = true;
     } else if (suspendedByError) {
       attemptsByBatch.clear();
     }
     state = nextState;
-    refresh = options.refresh === true;
+    if (!refreshBatches.size) refresh = false;
     suspended = false;
     stopped = false;
     suspendedByError = false;
@@ -150,9 +178,16 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     state = null;
     activeBatchIndexes.clear();
     attemptsByBatch.clear();
+    refresh = false;
+    refreshBatches.clear();
+    refreshedBatchIndexes.clear();
     stopped = false;
     suspendedByError = false;
   }
 
-  return { start, suspend, invalidate };
+  function hasPendingWork() {
+    return active > 0 || queue.length > 0 || refreshBatches.size > refreshedBatchIndexes.size;
+  }
+
+  return { start, suspend, invalidate, hasPendingWork };
 }

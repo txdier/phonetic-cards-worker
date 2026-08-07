@@ -988,7 +988,13 @@ export function createReaderView({
     closeTranslationPanel({ restoreFocus: false });
     render();
     if (restoreToolbarFocus) root.querySelector('[data-action="translation-menu"]')?.focus();
-    if (mode === 'full' && articleTranslation?.status !== 'fresh') {
+    if (
+      mode === 'full'
+      && (
+        articleTranslation?.status !== 'fresh'
+        || articleTranslationScheduler.hasPendingWork()
+      )
+    ) {
       articleTranslationScheduler.start(articleTranslation);
     }
     if (mode === 'sentence') void loadSentenceTranslations();

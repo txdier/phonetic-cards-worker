@@ -400,3 +400,24 @@ test('refreshes progressive batches in a new generation and ignores the supersed
   assert.ok(calls.slice(1).every(call => call.refresh === true));
   assert.deepEqual(rendered, ['new-0', 'new-1', 'new-2', 'new-3']);
 });
+
+test('article translation invalidation clears pending forced-refresh work', () => {
+  const request = deferred();
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch() {
+      return request.promise;
+    },
+    onBatch() {},
+    onError(error) {
+      assert.fail(`unexpected scheduler error: ${error.message}`);
+    }
+  });
+
+  scheduler.start(translationState([0, 1, 2, 3]), { refresh: true });
+  assert.equal(scheduler.hasPendingWork(), true);
+
+  scheduler.invalidate();
+
+  assert.equal(scheduler.hasPendingWork(), false);
+  request.resolve(translationState([0], 0));
+});
