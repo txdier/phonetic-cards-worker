@@ -6,6 +6,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   ]);
   let generation = 0;
   let active = 0;
+  let physicalActive = 0;
   let queue = [];
   let suspended = true;
   let stopped = false;
@@ -66,6 +67,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     const requestRefresh = refresh;
     attemptsByBatch.set(batch.index, (attemptsByBatch.get(batch.index) || 0) + 1);
     active += 1;
+    physicalActive += 1;
     activeBatchIndexes.add(batch.index);
 
     function fail(error) {
@@ -96,7 +98,9 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
     try {
       request = requestBatch(batch, requestState, requestRefresh);
     } catch (error) {
+      physicalActive -= 1;
       fail(error);
+      pump();
       return false;
     }
 
@@ -122,6 +126,9 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
       }
     }, error => {
       fail(error);
+    }).finally(() => {
+      physicalActive -= 1;
+      pump();
     });
     return true;
   }
@@ -129,7 +136,7 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
   function pump() {
     if (suspended || stopped) return;
     const limit = waitingForFirstBatch ? 1 : 2;
-    while (active < limit) {
+    while (active < limit && physicalActive < limit) {
       const batch = nextQueuedBatch();
       if (!batch || !run(batch)) break;
     }
@@ -149,6 +156,10 @@ export function createArticleTranslationScheduler({ requestBatch, onBatch, onErr
         if (!refreshBatches.has(batch.index)) refreshBatches.set(batch.index, batch);
       }
       refresh = true;
+      const previousRunToken = nextState?.runToken || '';
+      const freshRunToken = globalThis.crypto?.randomUUID?.()
+        || `refresh-${Date.now()}-${Math.random()}`;
+      nextState = { ...nextState, previousRunToken, runToken: freshRunToken };
     } else if (suspendedByError) {
       for (const batch of schedulableBatches(nextState?.batches)) {
         if (!activeBatchIndexes.has(batch.index)) attemptsByBatch.delete(batch.index);

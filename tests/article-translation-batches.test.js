@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ARTICLE_FIRST_BATCH_TARGET,
+  ARTICLE_MAX_PARAGRAPHS_PER_BATCH,
   ARTICLE_LATER_BATCH_MAX,
   createArticleTranslationBatches
 } from '../src/article-translation-batches.js';
@@ -15,6 +16,14 @@ test('article translation gives the opening paragraph a small first batch', () =
   const batches = createArticleTranslationBatches(paragraphs);
   assert.equal(ARTICLE_FIRST_BATCH_TARGET, 500);
   assert.deepEqual(batches.map(batch => batch.paragraphIndexes), [[0], [1, 2]]);
+});
+
+test('article translation caps tiny paragraphs to a D1-safe statement count', () => {
+  const paragraphs = Array.from({ length: 100 }, (_, index) => ({ index, text: 'x' }));
+  const batches = createArticleTranslationBatches(paragraphs);
+  assert.equal(ARTICLE_MAX_PARAGRAPHS_PER_BATCH, 32);
+  assert.ok(batches.every(batch => batch.paragraphs.length <= 32));
+  assert.deepEqual(batches.flatMap(batch => batch.paragraphIndexes), paragraphs.map(item => item.index));
 });
 
 test('article translation keeps oversized natural paragraphs intact', () => {

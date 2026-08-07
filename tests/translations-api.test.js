@@ -209,11 +209,11 @@ test('progressive article translation migration stores metadata and paragraphs i
     ]);
     assert.deepEqual(DB.all('PRAGMA table_info(article_translation_progress)').map(row => row.name), [
       'article_id', 'user_id', 'source_hash', 'rules_version', 'title_zh',
-      'model', 'created_at', 'updated_at'
+      'model', 'created_at', 'updated_at', 'run_token'
     ]);
     assert.deepEqual(DB.all('PRAGMA table_info(article_translation_paragraphs)').map(row => row.name), [
       'article_id', 'user_id', 'source_hash', 'rules_version', 'paragraph_index',
-      'translation_zh', 'model', 'created_at', 'updated_at'
+      'translation_zh', 'model', 'created_at', 'updated_at', 'run_token'
     ]);
   } finally {
     DB.close();
@@ -377,7 +377,9 @@ test('article translation keeps the previous complete translation when a later b
   ), env);
 
   assert.equal(response.status, 429);
-  assert.equal((await response.json()).code, 'TRANSLATION_DAILY_LIMIT');
+  const quota = await response.json();
+  assert.equal(quota.code, 'TRANSLATION_DAILY_LIMIT');
+  assert.equal(quota.error, '今日翻译额度已用完，请明天再试');
   assert.equal(DB.get(
     'SELECT title_zh FROM article_translations WHERE article_id = ?', 'a1'
   ).title_zh, '旧标题');
@@ -1074,6 +1076,49 @@ test('article translation batches overlap and complete in reverse order without 
   assert.equal(progress.title_zh, '\u6807\u9898');
 });
 
+test('newer translation run wins when superseded refresh settles last', async t => {
+  const DB = seededArticleDb('Only paragraph.');
+  t.after(() => DB.close());
+  const pending = [deferredPromise(), deferredPromise()];
+  let calls = 0;
+  const env = {
+    AUTH_SECRET: SECRET,
+    DB,
+    AI: { run() { return pending[calls++].promise; } }
+  };
+  const state = await (await worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation', 'GET'
+  ), env)).json();
+  const request = async runToken => worker.fetch(await authenticatedRequest(
+    '/api/articles/a1/translation/batches/0', 'PUT', {
+      sourceHash: state.sourceHash,
+      rulesVersion: state.rulesVersion,
+      refresh: true,
+      runToken,
+      previousRunToken: state.runToken
+    }
+  ), env);
+  const older = request('refresh-older');
+  const newer = request('refresh-newer');
+  while (calls < 2) await new Promise(resolve => setImmediate(resolve));
+
+  pending[1].resolve({ response: JSON.stringify({
+    titleTranslation: '新标题', paragraphs: [{ index: 0, translation: '新译文。' }]
+  }) });
+  assert.equal((await newer).status, 200);
+  pending[0].resolve({ response: JSON.stringify({
+    titleTranslation: '旧标题', paragraphs: [{ index: 0, translation: '过期译文。' }]
+  }) });
+  const stale = await older;
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).code, 'TRANSLATION_RUN_CHANGED');
+  assert.equal(DB.get('SELECT run_token FROM article_translation_progress').run_token, 'refresh-newer');
+  assert.equal(
+    DB.get('SELECT translation_zh FROM article_translation_paragraphs').translation_zh,
+    '新译文。'
+  );
+});
+
 test('sentence translation context, cache reuse, and user isolation', async t => {
   const DB = seededSentenceArticlesDb();
   t.after(() => DB.close());
@@ -1402,6 +1447,16 @@ async function authenticatedRequest(path, method, body, userId = 'u1') {
     },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
+}
+
+function deferredPromise() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function seededArticleDb(body) {

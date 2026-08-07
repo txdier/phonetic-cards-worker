@@ -380,12 +380,14 @@ test('refreshes progressive batches in a new generation and ignores the supersed
   assert.deepEqual(calls.map(call => [call.index, call.refresh]), [[0, false]]);
 
   scheduler.start(translationState([0, 1, 2, 3]), { refresh: true });
+  assert.deepEqual(calls.map(call => [call.index, call.refresh]), [[0, false]]);
+
+  calls[0].gate.resolve({ ...translationState([0], 0), marker: 'superseded' });
+  await flush();
   assert.deepEqual(calls.map(call => [call.index, call.refresh]), [
     [0, false],
     [0, true]
   ]);
-
-  calls[0].gate.resolve({ ...translationState([0], 0), marker: 'superseded' });
   calls[1].gate.resolve({ ...translationState([0], 0), marker: 'new-0' });
   await flush();
   assert.deepEqual(calls.map(call => call.index), [0, 0, 1, 2]);
@@ -399,6 +401,37 @@ test('refreshes progressive batches in a new generation and ignores the supersed
 
   assert.ok(calls.slice(1).every(call => call.refresh === true));
   assert.deepEqual(rendered, ['new-0', 'new-1', 'new-2', 'new-3']);
+});
+
+test('superseded refreshes never exceed two physical requests', async () => {
+  const calls = [];
+  let physical = 0;
+  let maxPhysical = 0;
+  const scheduler = createArticleTranslationScheduler({
+    requestBatch(batch, state, refresh) {
+      const gate = deferred();
+      physical += 1;
+      maxPhysical = Math.max(maxPhysical, physical);
+      calls.push({ batch: batch.index, refresh, gate });
+      return gate.promise.finally(() => { physical -= 1; });
+    },
+    onBatch() {},
+    onError(error) { assert.fail(error.message); }
+  });
+  scheduler.start(translationState([0]));
+  assert.equal(calls.length, 2);
+  scheduler.start(translationState([0, 1, 2, 3]), { refresh: true });
+  assert.equal(calls.length, 2);
+  calls[0].gate.resolve(translationState([0, 1], 1));
+  await flush();
+  assert.equal(calls.length, 2);
+  calls[1].gate.resolve(translationState([0, 2], 2));
+  await flush();
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2].batch, 0);
+  assert.equal(maxPhysical, 2);
+  scheduler.invalidate();
+  calls[2].gate.resolve(translationState([0], 0));
 });
 
 test('article translation invalidation clears pending forced-refresh work', () => {

@@ -479,13 +479,19 @@ test('partial article translation renders completed paragraphs, pending placehol
         .dataset.paragraphIndex,
       '1'
     );
+    /* Previous mojibake expectation intentionally removed.
     assert.equal(
       env.root.querySelector('[data-role="article-translation-progress"]').textContent,
       '宸茬炕璇?1/2 鎵?'
     );
+    */
     assert.equal(
       env.root.querySelector('[data-role="article-translation-progress"]').getAttribute('role'),
       'status'
+    );
+    assert.equal(
+      env.root.querySelector('[data-role="article-translation-progress"]').textContent,
+      '已翻译 1/2 批'
     );
     assert.equal(
       env.root.querySelector('[data-role="article-translation-progress"]')
@@ -571,6 +577,42 @@ test('reader schedules progressive article batches and resumes only missing work
   }
 });
 
+test('completed article batches preserve focused and speaking sentence nodes', async () => {
+  const gate = deferred();
+  const detail = articleDetail({ body: 'Focused sentence.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        return progressiveArticleTranslation([], null, { totalBatches: 1 });
+      }
+      if (path.endsWith('/translation/batches/0') && init.method === 'PUT') return gate.promise;
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="full"]'));
+    const sentence = env.root.querySelector('[data-sentence-index="0"]');
+    sentence.tabIndex = -1;
+    sentence.classList.add('pc-speaking');
+    sentence.focus();
+    gate.resolve(progressiveArticleTranslation([0], 0, {
+      totalBatches: 1, titleZh: '标题', translations: { 0: '译文。' }
+    }));
+    await waitFor(() => env.root.querySelector('[data-role="paragraph-translation"]'));
+    assert.equal(sentence.isConnected, true);
+    assert.equal(env.window.document.activeElement, sentence);
+    assert.equal(sentence.classList.contains('pc-speaking'), true);
+  } finally {
+    env.cleanup();
+    gate.resolve(progressiveArticleTranslation([0], 0, { totalBatches: 1 }));
+    env.restore();
+  }
+});
+
 test('full mode immediately renders pending paragraphs before translation resolves', async () => {
   const articleRequest = deferred();
   const detail = articleDetail({ body: 'First paragraph.\n\nSecond paragraph.' });
@@ -598,11 +640,17 @@ test('full mode immediately renders pending paragraphs before translation resolv
       env.root.querySelectorAll('[data-role="paragraph-translation-pending"]').length,
       2
     );
+    /* Previous mojibake expectation intentionally removed.
     assert.equal(
       env.root.querySelector('[data-role="paragraph-translation-pending"]').textContent,
       '绛夊緟缈昏瘧'
     );
+    */
     assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+    assert.equal(
+      env.root.querySelector('[data-role="paragraph-translation-pending"]').textContent,
+      '等待翻译'
+    );
   } finally {
     env.cleanup();
     articleRequest.resolve(progressiveArticleTranslation([0], 0, { totalBatches: 2 }));
@@ -673,6 +721,82 @@ test('stale article translation success cannot overwrite a newer loaded state', 
   } finally {
     env.cleanup();
     env.restore();
+  }
+});
+
+test('article translation state GET failure can recover in-reader without reload', async () => {
+  let gets = 0;
+  const detail = articleDetail({ body: 'Recoverable paragraph.', markings: [], pending_terms: [], words: [] });
+  const env = setupReader({
+    body: detail.body,
+    translationMode: 'full',
+    apiImpl: async (path, init = {}) => {
+      if (path === '/api/articles/a1' && !init.method) return detail;
+      if (path === '/api/articles/a1/translation' && !init.method) {
+        gets += 1;
+        if (gets === 1) throw new Error('state unavailable');
+        return progressiveArticleTranslation([0], null, {
+          totalBatches: 1, titleZh: '标题', translations: { 0: '已恢复。' }
+        });
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    }
+  });
+  try {
+    await env.ready();
+    assert.equal(env.window.localStorage.getItem(TRANSLATION_MODE_KEY), 'full');
+    const retry = env.root.querySelector('[data-action="retry-article-translation-state"]');
+    assert.ok(retry);
+    click(env.window, retry);
+    await waitFor(
+      () => env.root.querySelector('[data-role="paragraph-translation"]')?.textContent === '已恢复。'
+    );
+    assert.equal(gets, 2);
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('source and rules conflicts reload authoritative translation state', async () => {
+  for (const code of ['TRANSLATION_SOURCE_CHANGED', 'TRANSLATION_RULES_CHANGED']) {
+    let gets = 0;
+    let puts = 0;
+    const detail = articleDetail({ body: 'Conflict paragraph.', markings: [], pending_terms: [], words: [] });
+    const env = setupReader({
+      body: detail.body,
+      apiImpl: async (path, init = {}) => {
+        if (path === '/api/articles/a1' && !init.method) return detail;
+        if (path === '/api/articles/a1/translation' && !init.method) {
+          gets += 1;
+          return gets === 1
+            ? progressiveArticleTranslation([], null, { totalBatches: 1 })
+            : progressiveArticleTranslation([0], null, {
+              totalBatches: 1, titleZh: '新标题', translations: { 0: `恢复 ${code}` }
+            });
+        }
+        if (path.endsWith('/translation/batches/0') && init.method === 'PUT') {
+          puts += 1;
+          const error = new Error(code);
+          error.code = code;
+          throw error;
+        }
+        throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+      }
+    });
+    try {
+      await env.ready();
+      click(env.window, env.root.querySelector('[data-action="translation-menu"]'));
+      click(env.window, env.root.querySelector('[data-action="translation-mode"][data-mode="full"]'));
+      await waitFor(() => env.root.querySelector('[data-role="paragraph-translation"]'));
+      assert.equal(gets, 2);
+      assert.equal(puts, 1);
+      assert.equal(env.root.querySelector(':scope > [data-inline-error]'), null);
+    } finally {
+      env.cleanup();
+      env.restore();
+    }
   }
 });
 
@@ -3645,7 +3769,7 @@ test('refreshes a legacy-compatible fresh translation through every additive pla
     refresh = env.root.querySelector('[data-action="translate-article"]');
     refresh.focus();
     click(env.window, refresh);
-    assert.deepEqual(calls.map(call => call.index), [0, 0]);
+    assert.deepEqual(calls.map(call => call.index), [0]);
     assert.ok(calls.every(call => call.body.refresh === true));
     trigger = env.root.querySelector('[data-action="translation-menu"]');
     assert.equal(env.window.document.activeElement, trigger);
@@ -3655,7 +3779,7 @@ test('refreshes a legacy-compatible fresh translation through every additive pla
       titleZh: '过期标题',
       translations: { 0: '过期译文。' }
     }));
-    await env.ready();
+    await waitFor(() => calls.length === 2, 'replacement should wait for superseded request settlement');
     assert.deepEqual(
       [...env.root.querySelectorAll('[data-role="paragraph-translation"]')].map(node => node.textContent),
       ['旧译文一。', '旧译文二。']
@@ -3919,7 +4043,7 @@ test('translation quota remains terminal when a sibling request rejects later', 
     quotaError.code = 'TRANSLATION_DAILY_LIMIT';
     quotaRequest.reject(quotaError);
     await waitFor(
-      () => env.root.querySelector(':scope > [data-inline-error]')?.textContent.includes('daily limit'),
+      () => env.root.querySelector(':scope > [data-inline-error]')?.textContent.includes('今日翻译额度已用完'),
       'quota error should become visible'
     );
     assert.equal(env.root.querySelector('[data-action="continue-article-translation"]'), null);
@@ -3929,7 +4053,7 @@ test('translation quota remains terminal when a sibling request rejects later', 
     siblingRequest.reject(siblingError);
     await env.ready();
 
-    assert.match(env.root.querySelector(':scope > [data-inline-error]').textContent, /daily limit/);
+    assert.match(env.root.querySelector(':scope > [data-inline-error]').textContent, /今日翻译额度已用完/);
     assert.equal(env.root.querySelector('[data-action="continue-article-translation"]'), null);
 
     click(env.window, env.root.querySelector('[data-action="translation-menu"]'));

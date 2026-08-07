@@ -85,6 +85,12 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
   if (!batch) return invalidBatch();
 
   const state = await loadArticleTranslationState(env.DB, article, userId);
+  const requestedRunToken = Object.hasOwn(body, 'runToken') ? body.runToken : state.runToken;
+  const activated = await activateArticleTranslationRun(
+    env.DB, article, userId, plan.sourceHash, requestedRunToken,
+    body.refresh === true, body.previousRunToken
+  );
+  if (!activated) return runChanged();
   const hasRequiredTitle = batchIndex !== 0 || Boolean(state.titleZh?.trim());
   if (state.batches[batchIndex].completed && hasRequiredTitle && body.refresh !== true) {
     return jsonResponse({ ...state, completedBatch: batchIndex });
@@ -148,8 +154,8 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
       ),
     env.DB.prepare(`INSERT INTO article_translation_progress
                     (article_id, user_id, source_hash, rules_version, title_zh,
-                     model, created_at, updated_at)
-                    SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                     model, created_at, updated_at, run_token)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
                     FROM articles
                     WHERE id = ? AND user_id = ? AND title = ? AND body = ?
                     ON CONFLICT(article_id) DO UPDATE SET
@@ -157,39 +163,44 @@ async function putArticleTranslationBatch(env, articleId, batchIndex, userId, re
                       source_hash = excluded.source_hash,
                       rules_version = excluded.rules_version,
                       title_zh = CASE
-                        WHEN article_translation_progress.user_id = excluded.user_id
-                          AND article_translation_progress.source_hash = excluded.source_hash
+                        WHEN article_translation_progress.source_hash = excluded.source_hash
                           AND article_translation_progress.rules_version = excluded.rules_version
-                        THEN COALESCE(
-                          excluded.title_zh, article_translation_progress.title_zh
-                        )
+                          AND article_translation_progress.run_token = excluded.run_token
+                        THEN COALESCE(excluded.title_zh, article_translation_progress.title_zh)
                         ELSE excluded.title_zh
                       END,
                       model = excluded.model,
-                      updated_at = excluded.updated_at`)
+                      updated_at = excluded.updated_at,
+                      run_token = excluded.run_token
+                    WHERE article_translation_progress.run_token = excluded.run_token
+                      OR article_translation_progress.source_hash <> excluded.source_hash
+                      OR article_translation_progress.rules_version <> excluded.rules_version`)
       .bind(
         articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
-        titleZh, TRANSLATION_MODEL, now, now,
+        titleZh, TRANSLATION_MODEL, now, now, requestedRunToken,
         articleId, userId, article.title, article.body
       ),
     ...parsed.paragraphs.map(paragraph => env.DB.prepare(`
       INSERT INTO article_translation_paragraphs
         (article_id, user_id, source_hash, rules_version, paragraph_index,
-         translation_zh, model, created_at, updated_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-      FROM articles
-      WHERE id = ? AND user_id = ? AND title = ? AND body = ?
+         translation_zh, model, created_at, updated_at, run_token)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      FROM article_translation_progress
+      WHERE article_id = ? AND user_id = ? AND source_hash = ?
+        AND rules_version = ? AND run_token = ?
       ON CONFLICT(article_id, user_id, source_hash, rules_version, paragraph_index)
       DO UPDATE SET translation_zh = excluded.translation_zh,
                     model = excluded.model,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    run_token = excluded.run_token
     `).bind(
       articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION,
-      paragraph.index, paragraph.translation, TRANSLATION_MODEL, now, now,
-      articleId, userId, article.title, article.body
+      paragraph.index, paragraph.translation, TRANSLATION_MODEL, now, now, requestedRunToken,
+      articleId, userId, plan.sourceHash, ARTICLE_TRANSLATION_RULES_VERSION, requestedRunToken
     ))
   ]);
   if (Number(saveResults[0]?.meta?.changes) !== 1) return sourceChanged();
+  if (Number(saveResults[2]?.meta?.changes) !== 1) return runChanged();
   return jsonResponse({
     ...await loadArticleTranslationState(env.DB, currentArticle, userId),
     completedBatch: batchIndex
@@ -202,6 +213,33 @@ async function loadArticle(DB, articleId, userId) {
   `).bind(articleId, userId).first();
 }
 
+async function activateArticleTranslationRun(
+  DB, article, userId, sourceHash, runToken, refresh, previousRunToken
+) {
+  const now = Date.now();
+  const existing = await DB.prepare(`
+    SELECT source_hash, rules_version, run_token
+    FROM article_translation_progress WHERE article_id = ? AND user_id = ?
+  `).bind(article.id, userId).first();
+  if (!existing) {
+    return true;
+  }
+  const samePlan = existing.source_hash === sourceHash
+    && existing.rules_version === ARTICLE_TRANSLATION_RULES_VERSION;
+  if (!refresh) return !samePlan || existing.run_token === runToken;
+  if (samePlan && existing.run_token === runToken) return true;
+  const expected = previousRunToken ?? existing.run_token;
+  const updated = await DB.prepare(`UPDATE article_translation_progress
+    SET source_hash = ?, rules_version = ?, title_zh = NULL, model = ?,
+        updated_at = ?, run_token = ?
+    WHERE article_id = ? AND user_id = ? AND run_token = ?`)
+    .bind(
+      sourceHash, ARTICLE_TRANSLATION_RULES_VERSION, TRANSLATION_MODEL, now,
+      runToken, article.id, userId, expected
+    ).run();
+  return Number(updated.meta?.changes) === 1;
+}
+
 function isArticleBatchRequest(body) {
   if (
     !body
@@ -210,8 +248,16 @@ function isArticleBatchRequest(body) {
     || typeof body.rulesVersion !== 'string'
     || !body.rulesVersion
     || (Object.hasOwn(body, 'refresh') && typeof body.refresh !== 'boolean')
+    || (Object.hasOwn(body, 'runToken') && !validRunToken(body.runToken))
+    || (Object.hasOwn(body, 'previousRunToken') && !validRunToken(body.previousRunToken, true))
   ) return false;
-  return Object.keys(body).every(key => ['sourceHash', 'rulesVersion', 'refresh'].includes(key));
+  return Object.keys(body).every(key => [
+    'sourceHash', 'rulesVersion', 'runToken', 'previousRunToken', 'refresh'
+  ].includes(key));
+}
+
+function validRunToken(value, allowEmpty = false) {
+  return typeof value === 'string' && value.length <= 128 && (allowEmpty || value.length > 0);
 }
 
 async function getArticleTranslation(DB, articleId, userId) {
@@ -226,7 +272,7 @@ async function getArticleTranslation(DB, articleId, userId) {
     FROM article_translations WHERE article_id = ? AND user_id = ?
   `).bind(articleId, userId).first();
   if (!row) return jsonResponse(progressive);
-  if (row.source_hash !== await articleSourceHash(article.title, article.body)) {
+  if (row.source_hash !== progressive.sourceHash) {
     return jsonResponse(progressive);
   }
   const paragraphs = parseStoredParagraphs(row.paragraphs_json);
@@ -244,6 +290,7 @@ async function getArticleTranslation(DB, articleId, userId) {
     updatedAt: Number(row.updated_at),
     sourceHash: progressive.sourceHash,
     rulesVersion: progressive.rulesVersion,
+    runToken: progressive.runToken,
     batches,
     completedBatches: batches.filter(batch => batch.completed).length,
     totalBatches: batches.length
@@ -530,6 +577,13 @@ function rulesChanged() {
   );
 }
 
+function runChanged() {
+  return jsonResponse(
+    { error: 'translation run changed', code: 'TRANSLATION_RUN_CHANGED' },
+    { status: 409 }
+  );
+}
+
 function tooLong() {
   return jsonResponse(
     { error: 'translation input is too long', code: 'TRANSLATION_TOO_LONG' },
@@ -545,7 +599,12 @@ function sourceChanged() {
 }
 
 function aiFailure(code, status = 503) {
-  return jsonResponse({ error: 'translation unavailable', code }, { status });
+  return jsonResponse({
+    error: code === 'TRANSLATION_DAILY_LIMIT'
+      ? '今日翻译额度已用完，请明天再试'
+      : 'translation unavailable',
+    code
+  }, { status });
 }
 
 function articleNotFound() {
