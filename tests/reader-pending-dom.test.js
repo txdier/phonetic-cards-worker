@@ -277,6 +277,7 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
       previousSentence() { calls.push('previous'); },
       replayCurrentSentence() { calls.push('current'); },
       nextSentence() { calls.push('next'); },
+      syncMediaPosition() { calls.push('sync-media'); return true; },
       speakArticleSentence(nextArticleId, index, text, options = {}) {
         calls.push(['point', nextArticleId, index, text, options.profile]);
         publish({
@@ -301,6 +302,96 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
     emit: publish
   };
 }
+
+test('reader announces HLS preparation and ordinary-player fallback', async () => {
+  const env = setupReader();
+  try {
+    await env.ready();
+    env.tts.emit({
+      state: 'loading',
+      mode: 'article',
+      articleId: 'a1',
+      backgroundMode: 'hls'
+    });
+    assert.equal(
+      env.root.querySelector('[data-role="speech-status"]').textContent,
+      '正在准备后台朗读'
+    );
+
+    env.tts.emit({
+      state: 'loading',
+      mode: 'article',
+      articleId: 'a1',
+      backgroundMode: 'sentence'
+    });
+    assert.equal(
+      env.root.querySelector('[data-role="speech-status"]').textContent,
+      '后台连续播放暂不可用，已切换为普通朗读'
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('reader resynchronizes native media position when the page becomes visible', async () => {
+  const env = setupReader({
+    liveSnapshot: {
+      state: 'speaking',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 0,
+      backgroundMode: 'hls'
+    }
+  });
+  try {
+    await env.ready();
+    Object.defineProperty(env.window.document, 'visibilityState', {
+      configurable: true,
+      value: 'visible'
+    });
+    env.window.document.dispatchEvent(new env.window.Event('visibilitychange'));
+    env.window.dispatchEvent(new env.window.Event('pageshow'));
+
+    assert.deepEqual(
+      env.tts.calls.filter(call => call === 'sync-media'),
+      ['sync-media', 'sync-media']
+    );
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('floating timer icon opens exactly one menu from its pointer activation', async () => {
+  const env = setupReader();
+  try {
+    await env.ready();
+    const button = env.root.querySelector('[data-action="speech-floating-timer"]');
+    const icon = button.querySelector('[data-icon="timer"]');
+    icon.dispatchEvent(new env.window.Event('pointerup', { bubbles: true, cancelable: true }));
+
+    assert.equal(env.root.querySelectorAll('[data-role="sleep-timer-panel"]').length, 1);
+    assert.equal(button.getAttribute('aria-expanded'), 'true');
+
+    icon.dispatchEvent(new env.window.MouseEvent('click', {
+      bubbles: true, cancelable: true, detail: 1
+    }));
+    assert.equal(env.root.querySelectorAll('[data-role="sleep-timer-panel"]').length, 1);
+
+    env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true
+    }));
+    assert.equal(env.window.document.activeElement, button);
+    button.dispatchEvent(new env.window.MouseEvent('click', {
+      bubbles: true, cancelable: true, detail: 0
+    }));
+    assert.equal(env.root.querySelectorAll('[data-role="sleep-timer-panel"]').length, 1);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
 
 function setupReader({
   articleProgress = {

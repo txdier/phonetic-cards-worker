@@ -5,6 +5,9 @@ export function createTtsPlayer({
   fallback
 } = {}) {
   const audio = createAudio(AudioClass);
+  const nativeHlsSupported = Boolean(
+    audio?.canPlayType?.('application/vnd.apple.mpegurl')
+  );
   const subscribers = new Set();
   let articleSession = null;
   let state = 'idle';
@@ -23,6 +26,7 @@ export function createTtsPlayer({
   let activeOperationResolve = null;
   let activeMetadataResolve = null;
   let generation = 0;
+  let backgroundMode = 'sentence';
 
   function snapshot(completionEvent = null) {
     return {
@@ -36,7 +40,8 @@ export function createTtsPlayer({
       rate,
       completion: { ...completion },
       completionEvent,
-      fallbackActive
+      fallbackActive,
+      backgroundMode
     };
   }
 
@@ -75,7 +80,7 @@ export function createTtsPlayer({
     activeController = null;
     settleMetadata(false);
     settleActiveOperation(false);
-    if (pause && activeUrl) audio?.pause?.();
+    if (pause && (activeUrl || audio?.src)) audio?.pause?.();
     releaseUrl();
     return generation;
   }
@@ -101,6 +106,7 @@ export function createTtsPlayer({
     duration = 0;
     completion = emptyCompletion();
     mode = 'once';
+    backgroundMode = 'sentence';
     state = 'loading';
     publish();
     return token;
@@ -228,6 +234,7 @@ export function createTtsPlayer({
     if (!articleSession) return;
     const session = articleSession;
     fallbackActive = true;
+    backgroundMode = 'web-speech';
     pendingIndex = null;
     state = 'idle';
     releaseUrl();
@@ -280,6 +287,8 @@ export function createTtsPlayer({
   async function playArticleIndex(index, { offsetSeconds = 0 } = {}) {
     const session = articleSession;
     if (!session || index < 0 || index >= session.texts.length) return false;
+
+    backgroundMode = 'sentence';
 
     if (fallbackActive) stopFallback();
     session.heldIndex = index;
@@ -447,6 +456,260 @@ export function createTtsPlayer({
     }
   }
 
+  async function playHlsArticle(session, index, {
+    offsetSeconds = 0,
+    mediaRetryCount = 0,
+    eligibleFromStart = null
+  } = {}) {
+    if (!session || articleSession !== session) return false;
+    const token = generation;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    activeController = controller;
+    backgroundMode = 'hls';
+    pendingIndex = index;
+    state = 'loading';
+    mode = 'article';
+    articleId = session.articleId;
+    publish();
+
+    let response;
+    let payload;
+    try {
+      let cursor = null;
+      for (let requestCount = 0; requestCount < 1000; requestCount += 1) {
+        const params = new URLSearchParams();
+        if (session.profile) params.set('profile', session.profile);
+        if (cursor != null) params.set('cursor', String(cursor));
+        const query = params.size ? `?${params}` : '';
+        response = await fetchImpl?.(
+          `/api/tts/articles/${encodeURIComponent(session.articleId)}/hls/prepare${query}`,
+          { credentials: 'same-origin', signal: controller?.signal }
+        );
+        if (!response?.ok || token !== generation || articleSession !== session) {
+          throw new Error('HLS preparation failed');
+        }
+        payload = await response.json();
+        if (payload?.ready !== false) break;
+        if (!Number.isSafeInteger(payload.nextCursor) || payload.nextCursor < 1) {
+          throw new Error('HLS preparation cursor is invalid');
+        }
+        cursor = payload.nextCursor;
+      }
+      if (payload?.ready === false) throw new Error('HLS preparation did not finish');
+    } catch {
+      if (activeController === controller) activeController = null;
+      if (token !== generation || articleSession !== session) return false;
+      backgroundMode = 'sentence';
+      return playArticleIndex(index, { offsetSeconds });
+    }
+    if (activeController === controller) activeController = null;
+
+    const timeline = normalizeHlsTimeline(payload?.sentences, session.texts.length);
+    if (!timeline || !payload?.playlistUrl) {
+      backgroundMode = 'sentence';
+      return playArticleIndex(index, { offsetSeconds });
+    }
+    session.hls = {
+      timeline,
+      totalDuration: Number(payload.durationSeconds) || timeline.at(-1).endSeconds,
+      lastGlobalTime: 0,
+      eligibleFromStart: eligibleFromStart || new Set(),
+      seekPending: true,
+      retryCount: mediaRetryCount,
+      playlistUrl: String(payload.playlistUrl)
+    };
+
+    let metadataResolve;
+    const metadata = new Promise(resolve => {
+      metadataResolve = resolve;
+      activeMetadataResolve = resolve;
+    });
+    const handlePlayRejection = error => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      if (error?.name !== 'NotAllowedError') {
+        audio.onerror?.();
+        return;
+      }
+      session.heldIndex = null;
+      session.heldOffsetSeconds = 0;
+      pendingIndex = null;
+      state = 'paused';
+      syncHlsPosition(session, { countCompletion: false });
+    };
+    session.hls.handlePlayRejection = handlePlayRejection;
+    audio.onloadedmetadata = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      const targetIndex = index;
+      const sentence = session.hls.timeline[targetIndex];
+      const requested = Math.max(
+        0,
+        Number(
+          offsetSeconds
+        ) || 0
+      );
+      const sentenceOffset = requested > sentence.durationSeconds ? 0 : requested;
+      const target = sentence.startSeconds + sentenceOffset;
+      if (sentenceOffset <= 0.001) session.hls.eligibleFromStart.add(sentence.index);
+      session.hls.controlSeekIndex = targetIndex;
+      audio.currentTime = target;
+      session.hls.lastGlobalTime = target;
+      session.hls.seekPending = true;
+      currentTime = sentenceOffset;
+      duration = sentence.durationSeconds;
+      publish();
+      if (activeMetadataResolve === metadataResolve) activeMetadataResolve = null;
+      metadataResolve(true);
+    };
+    audio.ondurationchange = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      syncHlsPosition(session, { countCompletion: false, makeAudible: false });
+    };
+    audio.ontimeupdate = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      syncHlsPosition(session, { countCompletion: !session.hls.seekPending });
+    };
+    audio.onseeking = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      session.hls.seekPending = true;
+    };
+    audio.onseeked = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      const destination = hlsSentenceAt(session.hls.timeline, mediaTime(audio.currentTime));
+      if (!Number.isInteger(session.hls.controlSeekIndex) && destination) {
+        session.hls.eligibleFromStart.delete(destination.index);
+      }
+      session.hls.controlSeekIndex = null;
+      session.hls.lastGlobalTime = mediaTime(audio.currentTime);
+      session.hls.seekPending = false;
+      syncHlsPosition(session, { countCompletion: false });
+    };
+    audio.onplay = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      if (!session.playIntent) {
+        audio.pause?.();
+        state = 'paused';
+        publish();
+        return;
+      }
+      pendingIndex = null;
+      session.heldIndex = null;
+      session.heldOffsetSeconds = 0;
+      session.hls.seekPending = false;
+      session.hls.controlSeekIndex = null;
+      state = 'speaking';
+      syncHlsPosition(session, { countCompletion: false });
+    };
+    audio.onpause = () => {
+      if (
+        token !== generation || articleSession !== session || !session.hls
+        || audio.ended === true || state !== 'speaking'
+      ) return;
+      state = 'paused';
+      syncHlsPosition(session, { countCompletion: false });
+    };
+    audio.onended = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      syncHlsPosition(session, { countCompletion: true });
+      updateCompletion(true);
+      state = 'idle';
+      const completionEvent = completion.counted && !session.completionPublished
+        ? { ...completion }
+        : null;
+      if (completionEvent) session.completionPublished = true;
+      publish(completionEvent);
+      endArticleSession(true);
+    };
+    audio.onerror = () => {
+      if (token !== generation || articleSession !== session || !session.hls) return;
+      syncHlsPosition(session, { countCompletion: false });
+      if (session.hls.retryCount < 1) {
+        const resumeIndex = currentIndex;
+        const resumeOffsetSeconds = currentTime;
+        const eligible = new Set(session.hls.eligibleFromStart);
+        invalidateMedia();
+        session.hls = null;
+        void playHlsArticle(session, resumeIndex, {
+          offsetSeconds: resumeOffsetSeconds,
+          mediaRetryCount: 1,
+          eligibleFromStart: eligible
+        });
+        return;
+      }
+      session.heldIndex = currentIndex;
+      session.heldOffsetSeconds = currentTime;
+      session.hls = null;
+      session.preferHls = false;
+      backgroundMode = 'sentence';
+      state = 'paused';
+      publish();
+    };
+    audio.src = session.hls.playlistUrl;
+
+    const ready = await metadata;
+    if (!ready || token !== generation || articleSession !== session) return false;
+    if (!session.playIntent) {
+      pendingIndex = null;
+      state = 'paused';
+      publish();
+      return false;
+    }
+    try {
+      await audio.play();
+      return true;
+    } catch (error) {
+      handlePlayRejection(error);
+      return false;
+    }
+  }
+
+  function syncHlsPosition(session, {
+    countCompletion = false,
+    makeAudible = true
+  } = {}) {
+    if (!session?.hls?.timeline?.length) return false;
+    const globalTime = Math.max(0, mediaTime(audio.currentTime));
+    const previousTime = session.hls.lastGlobalTime;
+    if (countCompletion && globalTime >= previousTime) {
+      for (const sentence of session.hls.timeline) {
+        if (sentence.endSeconds > previousTime && sentence.endSeconds <= globalTime) {
+          if (session.hls.eligibleFromStart.has(sentence.index)) {
+            session.completed.add(sentence.index);
+          }
+          const nextSentence = session.hls.timeline[sentence.index + 1];
+          if (nextSentence) session.hls.eligibleFromStart.add(nextSentence.index);
+        }
+      }
+    }
+    session.hls.lastGlobalTime = globalTime;
+    const sentence = hlsSentenceAt(session.hls.timeline, globalTime);
+    if (!sentence) return false;
+    if (makeAudible) currentIndex = sentence.index;
+    currentTime = Math.max(0, Math.min(sentence.durationSeconds, globalTime - sentence.startSeconds));
+    duration = sentence.durationSeconds;
+    updateCompletion(false);
+    publish();
+    return true;
+  }
+
+  function seekHls(index) {
+    const session = articleSession;
+    const sentence = session?.hls?.timeline?.[index];
+    if (!session || !sentence) return false;
+    session.playIntent = true;
+    session.hls.eligibleFromStart.add(sentence.index);
+    session.hls.controlSeekIndex = sentence.index;
+    session.hls.seekPending = true;
+    session.hls.lastGlobalTime = sentence.startSeconds;
+    audio.currentTime = sentence.startSeconds;
+    currentIndex = sentence.index;
+    currentTime = 0;
+    duration = sentence.durationSeconds;
+    state = 'speaking';
+    publish();
+    audio.play?.().catch?.(error => session.hls?.handlePlayRejection?.(error));
+    return true;
+  }
+
   async function startArticle(nextArticleId, sentences, startIndex = 0, options = {}) {
     const texts = Array.isArray(sentences)
       ? sentences.map(value => String(value ?? '').trim()).filter(Boolean)
@@ -480,6 +743,7 @@ export function createTtsPlayer({
       heldIndex: nextIndex,
       heldOffsetSeconds: Math.max(0, Number(options.offsetSeconds) || 0),
       profile: options.profile || '',
+      preferHls: nativeHlsSupported && Boolean(fetchImpl),
       resolve: resolveSession,
       legacyUnsubscribe: null
     };
@@ -487,7 +751,11 @@ export function createTtsPlayer({
     const unsubscribe = typeof options.onState === 'function'
       ? subscribeWithoutInitial(options.onState)
       : null;
-    void playArticleIndex(nextIndex, { offsetSeconds: options.offsetSeconds });
+    if (nativeHlsSupported && fetchImpl) {
+      void playHlsArticle(session, nextIndex, { offsetSeconds: options.offsetSeconds });
+    } else {
+      void playArticleIndex(nextIndex, { offsetSeconds: options.offsetSeconds });
+    }
     const completed = await result;
     if (completed || !fallbackActive || completion.reachedEnd || articleSession !== session) {
       unsubscribe?.();
@@ -536,12 +804,14 @@ export function createTtsPlayer({
       if (!articleSession || !Number.isInteger(currentIndex) || currentIndex === 0) {
         return false;
       }
+      if (articleSession.hls) return seekHls(currentIndex - 1);
       articleSession.playIntent = true;
       void playArticleIndex(currentIndex - 1);
       return true;
     },
     replayCurrentSentence() {
       if (!articleSession || !Number.isInteger(currentIndex)) return false;
+      if (articleSession.hls) return seekHls(currentIndex);
       articleSession.playIntent = true;
       void playArticleIndex(currentIndex);
       return true;
@@ -552,6 +822,7 @@ export function createTtsPlayer({
         !Number.isInteger(currentIndex) ||
         currentIndex >= articleSession.texts.length - 1
       ) return false;
+      if (articleSession.hls) return seekHls(currentIndex + 1);
       articleSession.playIntent = true;
       void playArticleIndex(currentIndex + 1);
       return true;
@@ -574,6 +845,11 @@ export function createTtsPlayer({
       }
       if (state !== 'speaking' && state !== 'once') return;
       audio.pause?.();
+      if (articleSession?.hls && mode === 'article') {
+        state = 'paused';
+        syncHlsPosition(articleSession, { countCompletion: false });
+        return;
+      }
       currentTime = mediaTime(audio.currentTime);
       state = 'paused';
       publish();
@@ -588,13 +864,16 @@ export function createTtsPlayer({
       if (articleSession && mode === 'article') {
         articleSession.playIntent = true;
         if (Number.isInteger(articleSession.heldIndex)) {
-          void playArticleIndex(articleSession.heldIndex, {
-            offsetSeconds: articleSession.heldOffsetSeconds
-          });
+          const heldIndex = articleSession.heldIndex;
+          const heldOptions = { offsetSeconds: articleSession.heldOffsetSeconds };
+          if (articleSession.preferHls) void playHlsArticle(articleSession, heldIndex, heldOptions);
+          else void playArticleIndex(heldIndex, heldOptions);
           return;
         }
       }
-      audio.play?.().catch?.(() => {});
+      audio.play?.().catch?.(error => {
+        if (articleSession?.hls) articleSession.hls.handlePlayRejection?.(error);
+      });
     },
     setRate(value) {
       const nextRate = clampRate(value);
@@ -606,6 +885,10 @@ export function createTtsPlayer({
       return rate;
     },
     getRate() { return rate; },
+    syncMediaPosition() {
+      if (!articleSession?.hls) return false;
+      return syncHlsPosition(articleSession, { countCompletion: true });
+    },
     stop() {
       abandonArticleSession();
       invalidateMedia();
@@ -618,6 +901,7 @@ export function createTtsPlayer({
       currentTime = 0;
       duration = 0;
       completion = emptyCompletion();
+      backgroundMode = 'sentence';
       publish();
     }
   };
@@ -634,6 +918,44 @@ function createAudio(AudioClass) {
 
 function emptyCompletion() {
   return { reachedEnd: false, coverage: 0, counted: false };
+}
+
+function normalizeHlsTimeline(value, sentenceCount) {
+  if (!Array.isArray(value) || value.length !== sentenceCount) return null;
+  const timeline = [];
+  let previousEnd = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    const startSeconds = Number(item?.startSeconds);
+    const durationSeconds = Number(item?.durationSeconds);
+    if (
+      item?.index !== index || !Number.isFinite(startSeconds) || startSeconds < 0
+      || !Number.isFinite(durationSeconds) || durationSeconds <= 0
+      || Math.abs(startSeconds - previousEnd) > 0.01
+    ) return null;
+    const sentence = {
+      index,
+      startSeconds,
+      durationSeconds,
+      endSeconds: startSeconds + durationSeconds
+    };
+    timeline.push(sentence);
+    previousEnd = sentence.endSeconds;
+  }
+  return timeline;
+}
+
+function hlsSentenceAt(timeline, value) {
+  if (!timeline?.length) return null;
+  const time = Math.max(0, Number(value) || 0);
+  let low = 0;
+  let high = timeline.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (timeline[middle].startSeconds <= time) low = middle + 1;
+    else high = middle - 1;
+  }
+  return timeline[Math.max(0, Math.min(timeline.length - 1, high))];
 }
 
 function articlePath(articleId, index, profile = '') {

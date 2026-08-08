@@ -201,6 +201,7 @@ export function createReaderView({
   let positionRestored = false;
   let popoverTrigger = null;
   let previousSpeechState = null;
+  let previousBackgroundMode = null;
   let fullSpeechActive = false;
   let suppressNextSentenceClick = false;
   let progressSubmissionId = 0;
@@ -227,6 +228,8 @@ export function createReaderView({
   let speechToolbarObserver = null;
   let startSelectionMode = false;
   let timerPanelTrigger = null;
+  let timerPointerButton = null;
+  let timerPointerAt = -Infinity;
   let settingsPanelTrigger = null;
   let translationPanelTrigger = null;
   let timerBackgroundState = [];
@@ -1904,6 +1907,7 @@ export function createReaderView({
       sentence.classList.toggle('pc-sentence-speaking', speaking);
     }
     const nextState = next?.state || 'idle';
+    const nextBackgroundMode = next?.backgroundMode || null;
     const priorState = speechState;
     const priorIndex = activeAloudSentenceIndex;
     speechState = nextState;
@@ -1928,6 +1932,17 @@ export function createReaderView({
       clearAloudCheckpoint();
     }
     const status = root.querySelector('[data-role="speech-status"]');
+    if (
+      status && nextState === 'loading' && nextBackgroundMode === 'hls'
+      && previousBackgroundMode !== 'hls'
+    ) {
+      status.textContent = '正在准备后台朗读';
+    } else if (
+      status && nextBackgroundMode === 'sentence'
+      && previousBackgroundMode === 'hls'
+    ) {
+      status.textContent = '后台连续播放暂不可用，已切换为普通朗读';
+    }
     if (previousSpeechState == null) {
       previousSpeechState = nextState;
     } else if (status) {
@@ -1950,6 +1965,7 @@ export function createReaderView({
       if (announcement && status.textContent !== announcement) status.textContent = announcement;
       previousSpeechState = nextState;
     }
+    previousBackgroundMode = nextBackgroundMode;
     if (validPlayerPosition) fullSpeechActive = true;
     if (next?.completionEvent?.counted) {
       if (readingSession.markReadAloudComplete().readAloudCompleted) queueEvent('read_aloud_complete');
@@ -2538,6 +2554,15 @@ export function createReaderView({
       }
     }
     if (action === 'speech-timer' || action === 'speech-floating-timer') {
+      if (
+        event.detail !== 0
+        &&
+        target === timerPointerButton
+        && timerRuntime.now() - timerPointerAt <= 750
+      ) {
+        timerPointerButton = null;
+        return;
+      }
       openTimerPanel(target);
     }
     if (action === 'reader-settings') {
@@ -2667,6 +2692,17 @@ export function createReaderView({
   }
 
   function onPointerUp(event) {
+    const timerButton = event.target.closest?.(
+      '[data-action="speech-timer"], [data-action="speech-floating-timer"]'
+    );
+    if (timerButton && root.contains(timerButton)) {
+      readingSession.interact();
+      timerPointerButton = timerButton;
+      timerPointerAt = timerRuntime.now();
+      openTimerPanel(timerButton);
+      event.preventDefault();
+      return;
+    }
     if (!event.target.closest('[data-role="reader-text"]')) return;
     readingSession.interact();
     handleSelection();
@@ -2709,6 +2745,7 @@ export function createReaderView({
   }
 
   function onVisibilityChange() {
+    if (document.visibilityState !== 'hidden') tts?.syncMediaPosition?.();
     readingSession.setVisible(document.visibilityState !== 'hidden');
     if (document.visibilityState === 'hidden' && fullSpeechActive) {
       saveAloudCheckpoint({ immediate: true, state: 'paused' });
@@ -2723,6 +2760,7 @@ export function createReaderView({
   }
 
   function onPageShow() {
+    tts?.syncMediaPosition?.();
     checkSleepTimer();
   }
 

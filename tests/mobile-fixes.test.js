@@ -2,14 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('action icons never intercept delegated clicks on desktop or mobile', async () => {
+test('mobile fixes leave action icons in the pointer hit-test path', async () => {
   const css = await readFile(new URL('../public/mobile-fixes.css', import.meta.url), 'utf8');
-  assert.match(css, /#pc-root\s+\[data-action\]\s+svg\s*,/);
-  assert.match(css, /#pc-root\s+\[data-action\]\s+svg\s+\*\s*\{[^}]*pointer-events:\s*none\s*!important/);
-
-  const mediaIndex = css.indexOf('@media (max-width: 768px)');
-  const clickRuleIndex = css.indexOf('#pc-root [data-action] svg');
-  assert.ok(clickRuleIndex >= 0 && clickRuleIndex < mediaIndex, 'icon click-through must apply on desktop too');
+  assert.doesNotMatch(
+    css,
+    /\[data-action\][^{]*svg[^}]*pointer-events:\s*none/,
+    'iOS must deliver the icon pointer event so the owning button can activate'
+  );
 });
 
 test('iOS install dialog is opaque, viewport constrained, and safe-area aware', async () => {

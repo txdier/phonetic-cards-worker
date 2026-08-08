@@ -1,4 +1,4 @@
-const CACHE_NAME = 'phonetic-cards-shell-v5-network-first';
+const CACHE_NAME = 'phonetic-cards-shell-v6-network-first';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
