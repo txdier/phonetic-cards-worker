@@ -1,15 +1,6 @@
 /* Focused mobile/PWA interaction fixes kept separate from the main design sheet. */
 
 /*
- * Delegated controls read data-action from the button. SVG and path nodes must
- * never become the effective pointer target. This applies on desktop and mobile.
- */
-#pc-root [data-action] svg,
-#pc-root [data-action] svg * {
-  pointer-events: none !important;
-}
-
-/*
  * The iOS installation dialog is appended to <body>, outside #pc-root, so it
  * cannot inherit the application's theme variables. Give it an opaque theme
  * and constrain it to the visual viewport so page content never shows through

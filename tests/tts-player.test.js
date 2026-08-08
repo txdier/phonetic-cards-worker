@@ -56,11 +56,425 @@ class ControlledAudio {
     await Promise.resolve();
   }
 
+  async seeked() {
+    this.onseeked?.();
+    await Promise.resolve();
+  }
+
   async finish() {
     this.onended?.();
     await Promise.resolve();
   }
 }
+
+test('native HLS prepares one media URL and maps a sentence checkpoint after metadata', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
+  const paths = [];
+  const player = createTtsPlayer({
+    fetch: async path => {
+      paths.push(path);
+      return new Response(JSON.stringify({
+        playlistUrl: '/api/tts/articles/a1/hls/stream.m3u8?profile=aria-narration&v=one',
+        sentences: [
+          { index: 0, startSeconds: 0, durationSeconds: 2 },
+          { index: 1, startSeconds: 2, durationSeconds: 3 }
+        ],
+        durationSeconds: 5
+      }), { headers: { 'content-type': 'application/json' } });
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 1, {
+    offsetSeconds: 0.5,
+    profile: 'aria-narration'
+  });
+  await audio.waitForSource();
+
+  assert.deepEqual(paths, [
+    '/api/tts/articles/a1/hls/prepare?profile=aria-narration'
+  ]);
+  assert.match(audio.src, /\/hls\/stream\.m3u8/);
+  assert.equal(player.getSnapshot().currentIndex, null);
+
+  await audio.metadata({ duration: 5 });
+  assert.equal(audio.currentTime, 2.5);
+  await audio.begin();
+  assert.equal(player.getSnapshot().currentIndex, 1);
+  assert.equal(player.getSnapshot().currentTime, 0.5);
+  assert.equal(player.getSnapshot().duration, 3);
+  assert.equal(player.getSnapshot().backgroundMode, 'hls');
+});
+
+test('native HLS crosses sentence boundaries and replays by seeking without changing source', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'probably';
+  const player = createTtsPlayer({
+    fetch: async () => new Response(JSON.stringify({
+      playlistUrl: '/stream.m3u8',
+      sentences: [
+        { index: 0, startSeconds: 0, durationSeconds: 2 },
+        { index: 1, startSeconds: 2, durationSeconds: 3 },
+        { index: 2, startSeconds: 5, durationSeconds: 1 }
+      ],
+      durationSeconds: 6
+    })),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.', 'Three.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 6 });
+  await audio.begin();
+  await audio.timeupdate(2.5);
+
+  assert.equal(player.getSnapshot().currentIndex, 1);
+  assert.equal(player.getSnapshot().currentTime, 0.5);
+  assert.equal(player.getSnapshot().completion.coverage, 1 / 3);
+  const sourceCount = audio.sourceCount;
+
+  assert.equal(player.replayCurrentSentence(), true);
+  assert.equal(audio.currentTime, 2);
+  await audio.seeked();
+  assert.equal(player.getSnapshot().currentIndex, 1);
+  assert.equal(player.previousSentence(), true);
+  assert.equal(audio.currentTime, 0);
+  assert.equal(audio.sourceCount, sourceCount);
+});
+
+test('native HLS preparation failure falls back to the existing sentence player', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  const paths = [];
+  const player = createTtsPlayer({
+    fetch: async path => {
+      paths.push(path);
+      return path.includes('/hls/prepare')
+        ? new Response(JSON.stringify({ code: 'TTS_NOT_CONFIGURED' }), { status: 503 })
+        : cloudResponse();
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.'], 0);
+  await audio.waitForSource();
+
+  assert.match(paths[0], /\/hls\/prepare/);
+  assert.match(paths[1], /\/sentences\/0$/);
+  assert.match(audio.src, /^blob:/);
+  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
+});
+
+test('native HLS retries one media failure from the mapped checkpoint then pauses', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let prepareCalls = 0;
+  const player = createTtsPlayer({
+    fetch: async () => {
+      prepareCalls += 1;
+      return new Response(JSON.stringify({
+      playlistUrl: `/stream.m3u8?v=${prepareCalls}`,
+      sentences: [
+        { index: 0, startSeconds: 0, durationSeconds: 2 },
+        { index: 1, startSeconds: 2, durationSeconds: 3 }
+      ],
+      durationSeconds: 5
+    }));
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 5 });
+  await audio.begin();
+  await audio.timeupdate(2.75);
+  audio.onerror?.();
+  await audio.waitForSource(2);
+
+  assert.equal(prepareCalls, 2);
+  assert.equal(audio.src, '/stream.m3u8?v=2');
+  await audio.metadata({ duration: 5 });
+  assert.equal(audio.currentTime, 2.75);
+  await audio.begin();
+  audio.onerror?.();
+  assert.equal(audio.sourceCount, 2);
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.equal(player.getSnapshot().currentIndex, 1);
+  assert.equal(player.getSnapshot().currentTime, 0.75);
+  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
+  player.resume();
+  await audio.waitForSource(3);
+  assert.match(audio.src, /^blob:/);
+});
+
+test('native HLS preparation stays paused until an explicit resume', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let resolvePrepare;
+  const payload = {
+    playlistUrl: '/stream.m3u8',
+    sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
+    durationSeconds: 2
+  };
+  const player = createTtsPlayer({
+    fetch: () => new Promise(resolve => { resolvePrepare = resolve; }),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.'], 0);
+  await Promise.resolve();
+  player.pause();
+  resolvePrepare(new Response(JSON.stringify(payload)));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.equal(audio.sourceCount, 0);
+  player.resume();
+  await Promise.resolve();
+  resolvePrepare(new Response(JSON.stringify(payload)));
+  await audio.waitForSource();
+  assert.equal(player.getSnapshot().backgroundMode, 'hls');
+});
+
+test('native HLS pause preserves sentence-relative time instead of playlist time', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  const player = createTtsPlayer({
+    fetch: async () => new Response(JSON.stringify({
+      playlistUrl: '/stream.m3u8',
+      sentences: [
+        { index: 0, startSeconds: 0, durationSeconds: 2 },
+        { index: 1, startSeconds: 2, durationSeconds: 3 }
+      ],
+      durationSeconds: 5
+    })),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 5 });
+  await audio.begin();
+  await audio.timeupdate(2.75);
+  player.pause();
+
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.equal(player.getSnapshot().currentIndex, 1);
+  assert.equal(player.getSnapshot().currentTime, 0.75);
+  assert.equal(player.getSnapshot().duration, 3);
+});
+
+test('native HLS autoplay rejection waits paused for a fresh user gesture without retrying media', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let blocked = true;
+  audio.play = () => blocked
+    ? Promise.reject(Object.assign(new Error('autoplay denied'), { name: 'NotAllowedError' }))
+    : Promise.resolve();
+  const player = createTtsPlayer({
+    fetch: async () => new Response(JSON.stringify({
+      playlistUrl: '/stream.m3u8',
+      sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
+      durationSeconds: 2
+    })),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 2 });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(audio.sourceCount, 1);
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.equal(player.getSnapshot().backgroundMode, 'hls');
+  assert.equal(player.getSnapshot().currentIndex, 0);
+
+  blocked = false;
+  player.resume();
+  await audio.begin();
+  assert.equal(audio.sourceCount, 1);
+  assert.equal(player.getSnapshot().state, 'speaking');
+});
+
+test('native HLS treats a non-autoplay play rejection as one media retry', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let prepareCalls = 0;
+  let playCalls = 0;
+  audio.play = () => {
+    playCalls += 1;
+    return playCalls === 1
+      ? Promise.reject(Object.assign(new Error('unsupported media'), { name: 'NotSupportedError' }))
+      : Promise.resolve();
+  };
+  const player = createTtsPlayer({
+    fetch: async () => {
+      prepareCalls += 1;
+      return new Response(JSON.stringify({
+        playlistUrl: `/stream.m3u8?v=${prepareCalls}`,
+        sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
+        durationSeconds: 2
+      }));
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 2 });
+  await audio.waitForSource(2);
+
+  assert.equal(prepareCalls, 2);
+  assert.equal(audio.src, '/stream.m3u8?v=2');
+});
+
+test('native HLS routes a resume rejection through the same media retry', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let prepareCalls = 0;
+  let playCalls = 0;
+  audio.play = () => {
+    playCalls += 1;
+    const name = playCalls === 1 ? 'NotAllowedError' : 'NotSupportedError';
+    return playCalls <= 2
+      ? Promise.reject(Object.assign(new Error(name), { name }))
+      : Promise.resolve();
+  };
+  const player = createTtsPlayer({
+    fetch: async () => {
+      prepareCalls += 1;
+      return new Response(JSON.stringify({
+        playlistUrl: `/stream.m3u8?v=${prepareCalls}`,
+        sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
+        durationSeconds: 2
+      }));
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 2 });
+  await new Promise(resolve => setImmediate(resolve));
+  player.resume();
+  await audio.waitForSource(2);
+
+  assert.equal(prepareCalls, 2);
+  assert.equal(audio.src, '/stream.m3u8?v=2');
+});
+
+test('native HLS follows bounded preparation cursors before assigning the playlist', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  const paths = [];
+  const player = createTtsPlayer({
+    fetch: async path => {
+      paths.push(path);
+      if (!path.includes('cursor=')) {
+        return new Response(JSON.stringify({ ready: false, nextCursor: 20 }), { status: 202 });
+      }
+      return new Response(JSON.stringify({
+        ready: true,
+        playlistUrl: '/stream.m3u8',
+        sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
+        durationSeconds: 2
+      }));
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.'], 0);
+  await audio.waitForSource();
+
+  assert.deepEqual(paths, [
+    '/api/tts/articles/a1/hls/prepare',
+    '/api/tts/articles/a1/hls/prepare?cursor=20'
+  ]);
+  assert.equal(audio.src, '/stream.m3u8');
+});
+
+test('native HLS does not count a checkpointed partial sentence until replayed from its start', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  const player = createTtsPlayer({
+    fetch: async () => new Response(JSON.stringify({
+      playlistUrl: '/stream.m3u8',
+      sentences: [
+        { index: 0, startSeconds: 0, durationSeconds: 2 },
+        { index: 1, startSeconds: 2, durationSeconds: 2 }
+      ],
+      durationSeconds: 4
+    })),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0, { offsetSeconds: 1 });
+  await audio.waitForSource();
+  await audio.metadata({ duration: 4 });
+  await audio.begin();
+  await audio.timeupdate(2.5);
+  assert.equal(player.getSnapshot().completion.coverage, 0);
+
+  assert.equal(player.previousSentence(), true);
+  await audio.seeked();
+  await audio.timeupdate(2.5);
+  assert.equal(player.getSnapshot().completion.coverage, 0.5);
+});
+
+test('native HLS manual scrubbing clears completion eligibility for the destination sentence', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  const player = createTtsPlayer({
+    fetch: async () => new Response(JSON.stringify({
+      playlistUrl: '/stream.m3u8',
+      sentences: [
+        { index: 0, startSeconds: 0, durationSeconds: 2 },
+        { index: 1, startSeconds: 2, durationSeconds: 2 }
+      ],
+      durationSeconds: 4
+    })),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await audio.waitForSource();
+  await audio.metadata({ duration: 4 });
+  await audio.begin();
+  await audio.timeupdate(1);
+  audio.currentTime = 1.5;
+  audio.onseeking?.();
+  await audio.seeked();
+  await audio.timeupdate(2.5);
+
+  assert.equal(player.getSnapshot().completion.coverage, 0);
+});
 
 function fakeUrlApi() {
   let nextId = 0;

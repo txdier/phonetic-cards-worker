@@ -20,6 +20,19 @@ const DIALOGUE_PROFILE_ORDER = Object.freeze([
   'jenny-chat'
 ]);
 
+export function isTtsProfile(value) {
+  return Object.hasOwn(TTS_PROFILES, value);
+}
+
+export function ttsCacheIdentity() {
+  return JSON.stringify({
+    cacheVersion: CACHE_VERSION,
+    outputFormat: OUTPUT_FORMAT,
+    profiles: TTS_PROFILES,
+    dialogueProfileOrder: DIALOGUE_PROFILE_ORDER
+  });
+}
+
 export async function handleTtsApi(
   request,
   env,
@@ -59,7 +72,9 @@ export async function handleTtsApi(
   const profile = TTS_PROFILES[profileName];
   const cacheKey = await audioCacheKey(resource.mode, text, profileName, profile);
   const cached = await env.AUDIO?.get(cacheKey);
-  if (cached) return cachedAudio(cached, 'hit');
+  if (cached) return cachedAudio(cached, 'hit', cacheKey);
+
+  if (runtime.cacheOnly) return unavailable('TTS_NOT_PREPARED');
 
   if (!env.AUDIO || !env.AZURE_TTS_KEY || !env.AZURE_TTS_REGION) {
     return unavailable('TTS_NOT_CONFIGURED');
@@ -90,7 +105,7 @@ export async function handleTtsApi(
     return unavailable('TTS_CACHE_WRITE_FAILED');
   }
   return new Response(audio, {
-    headers: audioHeaders('miss')
+    headers: audioHeaders('miss', cacheKey)
   });
 }
 
@@ -343,17 +358,18 @@ async function usageResponse(env, userId, date) {
   });
 }
 
-function cachedAudio(cached, cacheState) {
+function cachedAudio(cached, cacheState, cacheKey) {
   return new Response(cached.body ?? cached, {
-    headers: audioHeaders(cacheState)
+    headers: audioHeaders(cacheState, cacheKey)
   });
 }
 
-function audioHeaders(cacheState) {
+function audioHeaders(cacheState, cacheKey) {
   return {
     'content-type': 'audio/mpeg',
     'cache-control': 'private, max-age=31536000, immutable',
-    'x-tts-cache': cacheState
+    'x-tts-cache': cacheState,
+    'x-tts-cache-key': cacheKey
   };
 }
 

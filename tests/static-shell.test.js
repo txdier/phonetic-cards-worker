@@ -80,7 +80,7 @@ test('reader settings use theme tokens, responsive measure, and accessible contr
 
 test('service worker upgrades the shell with translation dependencies while APIs stay network-only', async () => {
   const serviceWorker = await readFile(new URL('../public/sw.js', import.meta.url), 'utf8');
-  assert.match(serviceWorker, /phonetic-cards-shell-v5/);
+  assert.match(serviceWorker, /phonetic-cards-shell-v6/);
   assert.match(serviceWorker, /['"]\/lib\/article-translation-scheduler\.js['"]/);
   assert.match(serviceWorker, /['"]\/lib\/translation-preferences\.js['"]/);
   assert.match(serviceWorker, /keys\.filter\(key => key !== CACHE_NAME\).*caches\.delete/s);
@@ -310,6 +310,9 @@ test('mobile speech capsule keeps five complete controls on one row', async () =
   assert.match(action, /min-height:\s*44px/);
   assert.match(action, /touch-action:\s*manipulation/);
   assert.match(action, /white-space:\s*nowrap/);
+  assert.match(action, /position:\s*relative/);
+  assert.match(css, /\.pc-floating-speech-action::after\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/);
+  assert.match(css, /\.pc-floating-speech-action\s*>\s*\*\s*\{[^}]*pointer-events:\s*none/);
   assert.match(css, /\.pc-floating-speech-action:disabled\s*\{[^}]*opacity:\s*\.45/);
   assert.ok(phoneAndCoarseTablet);
   assert.match(phoneAndCoarseTablet, /\.pc-floating-speech\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(44px,\s*1fr\)\)/);

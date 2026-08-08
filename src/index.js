@@ -8,6 +8,7 @@ import { handleReviewsApi } from './reviews-api.js';
 import { handleSentenceTranslationsApi } from './sentence-translations-api.js';
 import { handleStatsApi } from './stats-api.js';
 import { handleTtsApi } from './tts-api.js';
+import { handleTtsHlsApi } from './tts-hls-api.js';
 import { handleTranslationApi } from './translation-api.js';
 import { handleUserPreferencesApi } from './user-preferences-api.js';
 import { handleWordLibraryApi } from './word-library-api.js';
@@ -50,6 +51,11 @@ export default {
           /^\/api\/words\/[a-zA-Z0-9-]+\/reviews$/.test(path)
         ) {
           return await handleReviewsApi(request, env, path, userId);
+        }
+        if (
+          /^\/api\/tts\/articles\/[a-zA-Z0-9-]+\/hls\/(?:prepare|stream\.m3u8|segments\/\d+\.mp3)$/.test(path)
+        ) {
+          return await handleTtsHlsApi(request, env, path, userId);
         }
         if (
           path === '/api/tts/usage' ||
