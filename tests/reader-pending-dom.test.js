@@ -303,20 +303,26 @@ function createReaderTtsFake(initialSnapshot = {}, { publishStart = true } = {})
   };
 }
 
-test('reader announces HLS preparation and ordinary-player fallback', async () => {
+test('reader keeps ordinary playback status while background media changes', async () => {
   const env = setupReader();
   try {
     await env.ready();
+    env.tts.emit({
+      state: 'speaking',
+      mode: 'article',
+      articleId: 'a1',
+      currentIndex: 0,
+      backgroundMode: 'sentence'
+    });
+    const status = env.root.querySelector('[data-role="speech-status"]');
+    const speakingStatus = status.textContent;
     env.tts.emit({
       state: 'loading',
       mode: 'article',
       articleId: 'a1',
       backgroundMode: 'hls'
     });
-    assert.equal(
-      env.root.querySelector('[data-role="speech-status"]').textContent,
-      '正在准备后台朗读'
-    );
+    assert.equal(status.textContent, speakingStatus);
 
     env.tts.emit({
       state: 'loading',
@@ -324,10 +330,39 @@ test('reader announces HLS preparation and ordinary-player fallback', async () =
       articleId: 'a1',
       backgroundMode: 'sentence'
     });
-    assert.equal(
-      env.root.querySelector('[data-role="speech-status"]').textContent,
-      '后台连续播放暂不可用，已切换为普通朗读'
-    );
+    assert.equal(status.textContent, speakingStatus);
+  } finally {
+    env.cleanup();
+    env.restore();
+  }
+});
+
+test('floating controls stay usable during an HLS media handoff', async () => {
+  let observerCallback = null;
+  const env = setupReader({
+    createIntersectionObserver(callback) {
+      observerCallback = callback;
+      return { observe() {}, disconnect() {} };
+    }
+  });
+  try {
+    await env.ready();
+    observerCallback([{ isIntersecting: false }]);
+    env.tts.emit({
+      state: 'speaking', mode: 'article', articleId: 'a1',
+      currentIndex: 1, currentTime: 1, backgroundMode: 'sentence'
+    });
+    env.tts.emit({
+      state: 'loading', mode: 'article', articleId: 'a1',
+      currentIndex: 1, pendingIndex: 2, backgroundMode: 'hls'
+    });
+
+    const floating = env.root.querySelector('[data-role="floating-speech"]');
+    assert.equal(floating.hidden, false);
+    assert.equal(floating.querySelector('[data-action="speech-floating-previous"]').disabled, false);
+    assert.equal(floating.querySelector('[data-action="speech-floating-current"]').disabled, false);
+    click(env.window, floating.querySelector('[data-action="speech-floating-toggle"]'));
+    assert.equal(env.tts.calls.at(-1), 'pause');
   } finally {
     env.cleanup();
     env.restore();
@@ -408,7 +443,8 @@ function setupReader({
   translationMode = null,
   useTts = true,
   now: initialNow = 0,
-  apiImpl = null
+  apiImpl = null,
+  createIntersectionObserver = null
 } = {}) {
   const env = installDom();
   let currentNow = initialNow;
@@ -498,7 +534,8 @@ function setupReader({
         return intervals.length;
       },
       clearInterval() {},
-      requestAnimationFrame: callback => callback()
+      requestAnimationFrame: callback => callback(),
+      ...(createIntersectionObserver ? { createIntersectionObserver } : {})
     },
     mediaRuntime: {
       mediaSession,
