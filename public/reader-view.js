@@ -227,8 +227,6 @@ export function createReaderView({
   let speechToolbarObserver = null;
   let startSelectionMode = false;
   let timerPanelTrigger = null;
-  let timerPointerButton = null;
-  let timerPointerAt = -Infinity;
   let settingsPanelTrigger = null;
   let translationPanelTrigger = null;
   let timerBackgroundState = [];
@@ -2547,16 +2545,9 @@ export function createReaderView({
       }
     }
     if (action === 'speech-timer' || action === 'speech-floating-timer') {
-      if (
-        event.detail !== 0
-        &&
-        target === timerPointerButton
-        && timerRuntime.now() - timerPointerAt <= 750
-      ) {
-        timerPointerButton = null;
-        return;
-      }
       openTimerPanel(target);
+      event.stopPropagation();
+      return;
     }
     if (action === 'reader-settings') {
       if (root.querySelector('[data-role="reader-settings-panel"]')) closeReaderSettings();
@@ -2688,17 +2679,6 @@ export function createReaderView({
   }
 
   function onPointerUp(event) {
-    const timerButton = event.target.closest?.(
-      '[data-action="speech-timer"], [data-action="speech-floating-timer"]'
-    );
-    if (timerButton && root.contains(timerButton)) {
-      readingSession.interact();
-      timerPointerButton = timerButton;
-      timerPointerAt = timerRuntime.now();
-      openTimerPanel(timerButton);
-      event.preventDefault();
-      return;
-    }
     if (!event.target.closest('[data-role="reader-text"]')) return;
     readingSession.interact();
     handleSelection();

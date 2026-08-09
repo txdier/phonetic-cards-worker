@@ -534,6 +534,12 @@ export function createTtsPlayer({
       metadataResolve = resolve;
       activeMetadataResolve = resolve;
     });
+    const settleHlsReady = result => {
+      const resolve = metadataResolve;
+      metadataResolve = null;
+      if (activeMetadataResolve === resolve) activeMetadataResolve = null;
+      resolve?.(result);
+    };
     const handlePlayRejection = error => {
       if (token !== generation || articleSession !== session || !session.hls) return;
       if (error?.name !== 'NotAllowedError') {
@@ -567,8 +573,7 @@ export function createTtsPlayer({
       currentTime = sentenceOffset;
       duration = sentence.durationSeconds;
       publish();
-      if (activeMetadataResolve === metadataResolve) activeMetadataResolve = null;
-      metadataResolve(true);
+      if (target <= 0.001) settleHlsReady(true);
     };
     audio.ondurationchange = () => {
       if (token !== generation || articleSession !== session || !session.hls) return;
@@ -591,7 +596,11 @@ export function createTtsPlayer({
       session.hls.controlSeekIndex = null;
       session.hls.lastGlobalTime = mediaTime(audio.currentTime);
       session.hls.seekPending = false;
-      syncHlsPosition(session, { countCompletion: false });
+      syncHlsPosition(session, {
+        countCompletion: false,
+        makeAudible: state !== 'loading'
+      });
+      settleHlsReady(true);
     };
     audio.onplay = () => {
       if (token !== generation || articleSession !== session || !session.hls) return;
