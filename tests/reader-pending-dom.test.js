@@ -398,7 +398,7 @@ test('reader resynchronizes native media position when the page becomes visible'
   }
 });
 
-test('floating timer icon opens exactly one menu from its pointer activation', async () => {
+test('mobile pointer activation lets the timer button open exactly one menu from its click', async () => {
   const env = setupReader();
   try {
     await env.ready();
@@ -406,13 +406,13 @@ test('floating timer icon opens exactly one menu from its pointer activation', a
     const icon = button.querySelector('[data-icon="timer"]');
     icon.dispatchEvent(new env.window.Event('pointerup', { bubbles: true, cancelable: true }));
 
-    assert.equal(env.root.querySelectorAll('[data-role="sleep-timer-panel"]').length, 1);
-    assert.equal(button.getAttribute('aria-expanded'), 'true');
+    assert.equal(env.root.querySelectorAll('[data-role="sleep-timer-panel"]').length, 0);
 
     icon.dispatchEvent(new env.window.MouseEvent('click', {
       bubbles: true, cancelable: true, detail: 1
     }));
     assert.equal(env.root.querySelectorAll('[data-role="sleep-timer-panel"]').length, 1);
+    assert.equal(button.getAttribute('aria-expanded'), 'true');
 
     env.window.document.dispatchEvent(new env.window.KeyboardEvent('keydown', {
       key: 'Escape', bubbles: true, cancelable: true
