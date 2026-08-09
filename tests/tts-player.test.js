@@ -42,6 +42,7 @@ class ControlledAudio {
   async metadata({ duration }) {
     this.duration = duration;
     this.onloadedmetadata?.();
+    if (!this.deferSeek && typeof this.onseeked === 'function') this.onseeked();
     await Promise.resolve();
   }
 
@@ -109,8 +110,15 @@ test('native HLS preparation does not block the first sentence', async () => {
   await audio.waitForSource(2);
   assert.equal(audio.src, '/stream.m3u8');
   assert.equal(player.getSnapshot().completion.coverage, 0.5);
+  const sentencePlayCalls = audio.playCalls;
+  audio.deferSeek = true;
   await audio.metadata({ duration: 5 });
   assert.equal(audio.currentTime, 2);
+  assert.equal(audio.playCalls, sentencePlayCalls);
+  assert.equal(player.getSnapshot().currentIndex, 0);
+  await audio.seeked();
+  assert.equal(audio.playCalls, sentencePlayCalls + 1);
+  assert.equal(player.getSnapshot().currentIndex, 0);
   await audio.begin();
   assert.equal(player.getSnapshot().currentIndex, 1);
   assert.equal(player.getSnapshot().backgroundMode, 'hls');
