@@ -201,7 +201,6 @@ export function createReaderView({
   let positionRestored = false;
   let popoverTrigger = null;
   let previousSpeechState = null;
-  let previousBackgroundMode = null;
   let fullSpeechActive = false;
   let suppressNextSentenceClick = false;
   let progressSubmissionId = 0;
@@ -1369,7 +1368,10 @@ export function createReaderView({
   }
 
   function speechAction(selectableStart = false) {
-    if (speechState === 'speaking') {
+    if (
+      speechState === 'speaking' ||
+      (speechState === 'loading' && validAloudIndex(activeAloudSentenceIndex))
+    ) {
       return { label: '暂停', ariaLabel: '暂停全文朗读', icon: 'pause' };
     }
     if (
@@ -1437,7 +1439,8 @@ export function createReaderView({
       const hasAvailableAction =
         speechState === 'speaking' ||
         speechState === 'paused' ||
-        speechState === 'idle';
+        speechState === 'idle' ||
+        (speechState === 'loading' && validAloudIndex(activeAloudSentenceIndex));
       floating.hidden = !(
         speechToolbarOffscreen &&
         hasAvailableAction &&
@@ -1907,7 +1910,6 @@ export function createReaderView({
       sentence.classList.toggle('pc-sentence-speaking', speaking);
     }
     const nextState = next?.state || 'idle';
-    const nextBackgroundMode = next?.backgroundMode || null;
     const priorState = speechState;
     const priorIndex = activeAloudSentenceIndex;
     speechState = nextState;
@@ -1932,17 +1934,6 @@ export function createReaderView({
       clearAloudCheckpoint();
     }
     const status = root.querySelector('[data-role="speech-status"]');
-    if (
-      status && nextState === 'loading' && nextBackgroundMode === 'hls'
-      && previousBackgroundMode !== 'hls'
-    ) {
-      status.textContent = '正在准备后台朗读';
-    } else if (
-      status && nextBackgroundMode === 'sentence'
-      && previousBackgroundMode === 'hls'
-    ) {
-      status.textContent = '后台连续播放暂不可用，已切换为普通朗读';
-    }
     if (previousSpeechState == null) {
       previousSpeechState = nextState;
     } else if (status) {
@@ -1965,7 +1956,6 @@ export function createReaderView({
       if (announcement && status.textContent !== announcement) status.textContent = announcement;
       previousSpeechState = nextState;
     }
-    previousBackgroundMode = nextBackgroundMode;
     if (validPlayerPosition) fullSpeechActive = true;
     if (next?.completionEvent?.counted) {
       if (readingSession.markReadAloudComplete().readAloudCompleted) queueEvent('read_aloud_complete');
@@ -2526,7 +2516,10 @@ export function createReaderView({
     }
     if (action === 'speech-primary') {
       if (checkSleepTimer()) return;
-      if (speechState === 'speaking') {
+      if (
+        speechState === 'speaking' ||
+        (speechState === 'loading' && validAloudIndex(activeAloudSentenceIndex))
+      ) {
         audioController.pause();
       } else if (speechState === 'paused') {
         audioController.resume();
@@ -2616,7 +2609,10 @@ export function createReaderView({
     }
     if (action === 'speech-floating-toggle') {
       if (checkSleepTimer()) return;
-      if (speechState === 'speaking') {
+      if (
+        speechState === 'speaking' ||
+        (speechState === 'loading' && validAloudIndex(activeAloudSentenceIndex))
+      ) {
         audioController.pause();
       } else if (speechState === 'paused') {
         audioController.resume();

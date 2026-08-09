@@ -90,6 +90,7 @@ export function createTtsPlayer({
   }
 
   function abandonArticleSession() {
+    articleSession?.hlsPrepareController?.abort?.();
     articleSession?.legacyUnsubscribe?.();
     endArticleSession(false);
     articleSession = null;
@@ -407,8 +408,10 @@ export function createTtsPlayer({
       publish();
       if (nextIndex != null) {
         if (session.playIntent) {
-          void playArticleIndex(nextIndex);
+          if (session.preparedHls) void playHlsArticle(session, nextIndex);
+          else void playArticleIndex(nextIndex);
         } else {
+          session.handoffPending = Boolean(session.preparedHls);
           state = 'paused';
           publish();
         }
@@ -456,23 +459,11 @@ export function createTtsPlayer({
     }
   }
 
-  async function playHlsArticle(session, index, {
-    offsetSeconds = 0,
-    mediaRetryCount = 0,
-    eligibleFromStart = null
-  } = {}) {
-    if (!session || articleSession !== session) return false;
-    const token = generation;
+  async function prepareHlsArticle(session) {
+    if (!session || articleSession !== session || !session.preferHls) return false;
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
-    activeController = controller;
-    backgroundMode = 'hls';
-    pendingIndex = index;
-    state = 'loading';
-    mode = 'article';
-    articleId = session.articleId;
-    publish();
-
-    let response;
+    session.hlsPrepareController?.abort?.();
+    session.hlsPrepareController = controller;
     let payload;
     try {
       let cursor = null;
@@ -481,14 +472,15 @@ export function createTtsPlayer({
         if (session.profile) params.set('profile', session.profile);
         if (cursor != null) params.set('cursor', String(cursor));
         const query = params.size ? `?${params}` : '';
-        response = await fetchImpl?.(
+        const response = await fetchImpl?.(
           `/api/tts/articles/${encodeURIComponent(session.articleId)}/hls/prepare${query}`,
           { credentials: 'same-origin', signal: controller?.signal }
         );
-        if (!response?.ok || token !== generation || articleSession !== session) {
+        if (!response?.ok || articleSession !== session) {
           throw new Error('HLS preparation failed');
         }
         payload = await response.json();
+        if (articleSession !== session) return false;
         if (payload?.ready !== false) break;
         if (!Number.isSafeInteger(payload.nextCursor) || payload.nextCursor < 1) {
           throw new Error('HLS preparation cursor is invalid');
@@ -497,26 +489,44 @@ export function createTtsPlayer({
       }
       if (payload?.ready === false) throw new Error('HLS preparation did not finish');
     } catch {
-      if (activeController === controller) activeController = null;
-      if (token !== generation || articleSession !== session) return false;
-      backgroundMode = 'sentence';
-      return playArticleIndex(index, { offsetSeconds });
+      if (articleSession === session) session.preferHls = false;
+      return false;
+    } finally {
+      if (session.hlsPrepareController === controller) session.hlsPrepareController = null;
     }
-    if (activeController === controller) activeController = null;
 
     const timeline = normalizeHlsTimeline(payload?.sentences, session.texts.length);
-    if (!timeline || !payload?.playlistUrl) {
-      backgroundMode = 'sentence';
-      return playArticleIndex(index, { offsetSeconds });
+    if (!timeline || !payload?.playlistUrl || articleSession !== session) {
+      if (articleSession === session) session.preferHls = false;
+      return false;
     }
-    session.hls = {
+    session.preparedHls = {
       timeline,
       totalDuration: Number(payload.durationSeconds) || timeline.at(-1).endSeconds,
-      lastGlobalTime: 0,
-      eligibleFromStart: eligibleFromStart || new Set(),
-      seekPending: true,
-      retryCount: mediaRetryCount,
       playlistUrl: String(payload.playlistUrl)
+    };
+    return true;
+  }
+
+  async function playHlsArticle(session, index, { offsetSeconds = 0 } = {}) {
+    if (!session || articleSession !== session || !session.preparedHls) return false;
+    const token = invalidateMedia({ pause: false });
+    backgroundMode = 'hls';
+    pendingIndex = index;
+    state = 'loading';
+    mode = 'article';
+    articleId = session.articleId;
+    publish();
+
+    const prepared = session.preparedHls;
+    const timeline = prepared.timeline;
+    session.hls = {
+      timeline,
+      totalDuration: prepared.totalDuration,
+      lastGlobalTime: 0,
+      eligibleFromStart: new Set(),
+      seekPending: true,
+      playlistUrl: prepared.playlistUrl
     };
 
     let metadataResolve;
@@ -622,26 +632,15 @@ export function createTtsPlayer({
     audio.onerror = () => {
       if (token !== generation || articleSession !== session || !session.hls) return;
       syncHlsPosition(session, { countCompletion: false });
-      if (session.hls.retryCount < 1) {
-        const resumeIndex = currentIndex;
-        const resumeOffsetSeconds = currentTime;
-        const eligible = new Set(session.hls.eligibleFromStart);
-        invalidateMedia();
-        session.hls = null;
-        void playHlsArticle(session, resumeIndex, {
-          offsetSeconds: resumeOffsetSeconds,
-          mediaRetryCount: 1,
-          eligibleFromStart: eligible
-        });
-        return;
-      }
       session.heldIndex = currentIndex;
       session.heldOffsetSeconds = currentTime;
       session.hls = null;
+      session.preparedHls = null;
       session.preferHls = false;
       backgroundMode = 'sentence';
-      state = 'paused';
-      publish();
+      void playArticleIndex(session.heldIndex, {
+        offsetSeconds: session.heldOffsetSeconds
+      });
     };
     audio.src = session.hls.playlistUrl;
 
@@ -744,6 +743,9 @@ export function createTtsPlayer({
       heldOffsetSeconds: Math.max(0, Number(options.offsetSeconds) || 0),
       profile: options.profile || '',
       preferHls: nativeHlsSupported && Boolean(fetchImpl),
+      preparedHls: null,
+      hlsPrepareController: null,
+      handoffPending: false,
       resolve: resolveSession,
       legacyUnsubscribe: null
     };
@@ -751,11 +753,8 @@ export function createTtsPlayer({
     const unsubscribe = typeof options.onState === 'function'
       ? subscribeWithoutInitial(options.onState)
       : null;
-    if (nativeHlsSupported && fetchImpl) {
-      void playHlsArticle(session, nextIndex, { offsetSeconds: options.offsetSeconds });
-    } else {
-      void playArticleIndex(nextIndex, { offsetSeconds: options.offsetSeconds });
-    }
+    void playArticleIndex(nextIndex, { offsetSeconds: options.offsetSeconds });
+    if (session.preferHls) void prepareHlsArticle(session);
     const completed = await result;
     if (completed || !fallbackActive || completion.reachedEnd || articleSession !== session) {
       unsubscribe?.();
@@ -837,6 +836,11 @@ export function createTtsPlayer({
       if (articleSession && mode === 'article') articleSession.playIntent = false;
       if (state === 'loading' && articleSession) {
         if (Number.isInteger(pendingIndex)) articleSession.heldIndex = pendingIndex;
+        if (articleSession.hls) {
+          articleSession.hls = null;
+          articleSession.handoffPending = Boolean(articleSession.preparedHls);
+          backgroundMode = 'sentence';
+        }
         invalidateMedia();
         pendingIndex = null;
         state = 'paused';
@@ -866,7 +870,10 @@ export function createTtsPlayer({
         if (Number.isInteger(articleSession.heldIndex)) {
           const heldIndex = articleSession.heldIndex;
           const heldOptions = { offsetSeconds: articleSession.heldOffsetSeconds };
-          if (articleSession.preferHls) void playHlsArticle(articleSession, heldIndex, heldOptions);
+          if (articleSession.handoffPending && articleSession.preparedHls) {
+            articleSession.handoffPending = false;
+            void playHlsArticle(articleSession, heldIndex, heldOptions);
+          }
           else void playArticleIndex(heldIndex, heldOptions);
           return;
         }

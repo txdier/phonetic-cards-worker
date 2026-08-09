@@ -67,7 +67,91 @@ class ControlledAudio {
   }
 }
 
-test('native HLS prepares one media URL and maps a sentence checkpoint after metadata', async () => {
+test('native HLS preparation does not block the first sentence', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let resolvePreparation;
+  const preparation = new Promise(resolve => { resolvePreparation = resolve; });
+  const paths = [];
+  const player = createTtsPlayer({
+    fetch: async path => {
+      paths.push(path);
+      if (path.includes('/hls/prepare')) return preparation;
+      return cloudResponse();
+    },
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(audio.sourceCount, 1);
+  assert.match(audio.src, /^blob:test-/);
+  assert.equal(paths.includes('/api/tts/articles/a1/sentences/0'), true);
+  await audio.begin();
+  assert.equal(player.getSnapshot().state, 'speaking');
+  assert.equal(player.getSnapshot().currentIndex, 0);
+
+  resolvePreparation(new Response(JSON.stringify({
+    playlistUrl: '/stream.m3u8',
+    sentences: [
+      { index: 0, startSeconds: 0, durationSeconds: 2 },
+      { index: 1, startSeconds: 2, durationSeconds: 3 }
+    ],
+    durationSeconds: 5
+  })));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(audio.src, /^blob:test-/);
+
+  await audio.finish();
+  await audio.waitForSource(2);
+  assert.equal(audio.src, '/stream.m3u8');
+  assert.equal(player.getSnapshot().completion.coverage, 0.5);
+  await audio.metadata({ duration: 5 });
+  assert.equal(audio.currentTime, 2);
+  await audio.begin();
+  assert.equal(player.getSnapshot().currentIndex, 1);
+  assert.equal(player.getSnapshot().backgroundMode, 'hls');
+});
+
+test('previous and replay remain responsive while native HLS prepares', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  let resolvePreparation;
+  const player = createTtsPlayer({
+    fetch: path => path.includes('/hls/prepare')
+      ? new Promise(resolve => { resolvePreparation = resolve; })
+      : Promise.resolve(cloudResponse()),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.', 'Three.'], 1);
+  await audio.waitForSource();
+  await audio.begin();
+  assert.equal(player.replayCurrentSentence(), true);
+  await audio.waitForSource(2);
+  await audio.begin();
+  assert.equal(player.previousSentence(), true);
+  await audio.waitForSource(3);
+  await audio.begin();
+  assert.equal(player.getSnapshot().currentIndex, 0);
+
+  resolvePreparation(new Response(JSON.stringify({
+    playlistUrl: '/stream.m3u8',
+    sentences: [
+      { index: 0, startSeconds: 0, durationSeconds: 2 },
+      { index: 1, startSeconds: 2, durationSeconds: 3 },
+      { index: 2, startSeconds: 5, durationSeconds: 1 }
+    ],
+    durationSeconds: 6
+  })));
+});
+
+test('native HLS keeps checkpoint resume on the immediate sentence player', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = type => type === 'application/vnd.apple.mpegurl' ? 'maybe' : '';
   const paths = [];
@@ -95,18 +179,19 @@ test('native HLS prepares one media URL and maps a sentence checkpoint after met
   await audio.waitForSource();
 
   assert.deepEqual(paths, [
+    '/api/tts/articles/a1/sentences/1?profile=aria-narration',
     '/api/tts/articles/a1/hls/prepare?profile=aria-narration'
   ]);
-  assert.match(audio.src, /\/hls\/stream\.m3u8/);
+  assert.match(audio.src, /^blob:test-/);
   assert.equal(player.getSnapshot().currentIndex, null);
 
-  await audio.metadata({ duration: 5 });
-  assert.equal(audio.currentTime, 2.5);
+  await audio.metadata({ duration: 3 });
+  assert.equal(audio.currentTime, 0.5);
   await audio.begin();
   assert.equal(player.getSnapshot().currentIndex, 1);
   assert.equal(player.getSnapshot().currentTime, 0.5);
   assert.equal(player.getSnapshot().duration, 3);
-  assert.equal(player.getSnapshot().backgroundMode, 'hls');
+  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
 });
 
 test('native HLS crosses sentence boundaries and replays by seeking without changing source', async () => {
@@ -129,6 +214,10 @@ test('native HLS crosses sentence boundaries and replays by seeking without chan
 
   void player.startArticle('a1', ['One.', 'Two.', 'Three.'], 0);
   await audio.waitForSource();
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
   await audio.metadata({ duration: 6 });
   await audio.begin();
   await audio.timeupdate(2.5);
@@ -166,18 +255,19 @@ test('native HLS preparation failure falls back to the existing sentence player'
   void player.startArticle('a1', ['One.'], 0);
   await audio.waitForSource();
 
-  assert.match(paths[0], /\/hls\/prepare/);
-  assert.match(paths[1], /\/sentences\/0$/);
+  assert.equal(paths.some(path => path.includes('/hls/prepare')), true);
+  assert.equal(paths.some(path => path.endsWith('/sentences/0')), true);
   assert.match(audio.src, /^blob:/);
   assert.equal(player.getSnapshot().backgroundMode, 'sentence');
 });
 
-test('native HLS retries one media failure from the mapped checkpoint then pauses', async () => {
+test('native HLS media failure resumes the audible sentence through ordinary playback', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = () => 'maybe';
   let prepareCalls = 0;
   const player = createTtsPlayer({
-    fetch: async () => {
+    fetch: async path => {
+      if (!path.includes('/hls/prepare')) return cloudResponse();
       prepareCalls += 1;
       return new Response(JSON.stringify({
       playlistUrl: `/stream.m3u8?v=${prepareCalls}`,
@@ -195,26 +285,20 @@ test('native HLS retries one media failure from the mapped checkpoint then pause
 
   void player.startArticle('a1', ['One.', 'Two.'], 0);
   await audio.waitForSource();
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
   await audio.metadata({ duration: 5 });
   await audio.begin();
   await audio.timeupdate(2.75);
   audio.onerror?.();
-  await audio.waitForSource(2);
-
-  assert.equal(prepareCalls, 2);
-  assert.equal(audio.src, '/stream.m3u8?v=2');
-  await audio.metadata({ duration: 5 });
-  assert.equal(audio.currentTime, 2.75);
-  await audio.begin();
-  audio.onerror?.();
-  assert.equal(audio.sourceCount, 2);
-  assert.equal(player.getSnapshot().state, 'paused');
-  assert.equal(player.getSnapshot().currentIndex, 1);
-  assert.equal(player.getSnapshot().currentTime, 0.75);
-  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
-  player.resume();
   await audio.waitForSource(3);
+
+  assert.equal(prepareCalls, 1);
   assert.match(audio.src, /^blob:/);
+  assert.equal(player.getSnapshot().state, 'loading');
+  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
 });
 
 test('native HLS preparation stays paused until an explicit resume', async () => {
@@ -227,25 +311,61 @@ test('native HLS preparation stays paused until an explicit resume', async () =>
     durationSeconds: 2
   };
   const player = createTtsPlayer({
-    fetch: () => new Promise(resolve => { resolvePrepare = resolve; }),
+    fetch: path => path.includes('/hls/prepare')
+      ? new Promise(resolve => { resolvePrepare = resolve; })
+      : Promise.resolve(cloudResponse()),
     Audio: class { constructor() { return audio; } },
     URL: fakeUrlApi(),
     fallback: fakeFallback()
   });
 
   void player.startArticle('a1', ['One.'], 0);
-  await Promise.resolve();
+  await audio.waitForSource();
+  await audio.begin();
   player.pause();
   resolvePrepare(new Response(JSON.stringify(payload)));
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(player.getSnapshot().state, 'paused');
-  assert.equal(audio.sourceCount, 0);
+  assert.equal(audio.sourceCount, 1);
   player.resume();
-  await Promise.resolve();
-  resolvePrepare(new Response(JSON.stringify(payload)));
+  assert.equal(audio.sourceCount, 1);
+  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
+});
+
+test('pausing an HLS handoff keeps replay on the ordinary sentence player', async () => {
+  const audio = new ControlledAudio();
+  audio.canPlayType = () => 'maybe';
+  const player = createTtsPlayer({
+    fetch: async path => path.includes('/hls/prepare')
+      ? new Response(JSON.stringify({
+        playlistUrl: '/stream.m3u8',
+        sentences: [
+          { index: 0, startSeconds: 0, durationSeconds: 2 },
+          { index: 1, startSeconds: 2, durationSeconds: 3 }
+        ],
+        durationSeconds: 5
+      }))
+      : cloudResponse(),
+    Audio: class { constructor() { return audio; } },
+    URL: fakeUrlApi(),
+    fallback: fakeFallback()
+  });
+
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
   await audio.waitForSource();
-  assert.equal(player.getSnapshot().backgroundMode, 'hls');
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
+  assert.equal(player.getSnapshot().state, 'loading');
+
+  player.pause();
+  assert.equal(player.getSnapshot().state, 'paused');
+  assert.equal(player.replayCurrentSentence(), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(audio.sourceCount, 3);
+  assert.match(audio.src, /^blob:/);
 });
 
 test('native HLS pause preserves sentence-relative time instead of playlist time', async () => {
@@ -267,6 +387,10 @@ test('native HLS pause preserves sentence-relative time instead of playlist time
 
   void player.startArticle('a1', ['One.', 'Two.'], 0);
   await audio.waitForSource();
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
   await audio.metadata({ duration: 5 });
   await audio.begin();
   await audio.timeupdate(2.75);
@@ -281,56 +405,69 @@ test('native HLS pause preserves sentence-relative time instead of playlist time
 test('native HLS autoplay rejection waits paused for a fresh user gesture without retrying media', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = () => 'maybe';
-  let blocked = true;
-  audio.play = () => blocked
-    ? Promise.reject(Object.assign(new Error('autoplay denied'), { name: 'NotAllowedError' }))
-    : Promise.resolve();
+  let playCalls = 0;
+  audio.play = () => {
+    playCalls += 1;
+    return playCalls === 2
+      ? Promise.reject(Object.assign(new Error('autoplay denied'), { name: 'NotAllowedError' }))
+      : Promise.resolve();
+  };
   const player = createTtsPlayer({
-    fetch: async () => new Response(JSON.stringify({
+    fetch: async path => path.includes('/hls/prepare') ? new Response(JSON.stringify({
       playlistUrl: '/stream.m3u8',
-      sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
-      durationSeconds: 2
-    })),
+      sentences: [
+        { index: 0, startSeconds: 0, durationSeconds: 2 },
+        { index: 1, startSeconds: 2, durationSeconds: 3 }
+      ],
+      durationSeconds: 5
+    })) : cloudResponse(),
     Audio: class { constructor() { return audio; } },
     URL: fakeUrlApi(),
     fallback: fakeFallback()
   });
 
-  void player.startArticle('a1', ['One.'], 0);
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
   await audio.waitForSource();
-  await audio.metadata({ duration: 2 });
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
+  await audio.metadata({ duration: 5 });
   await new Promise(resolve => setImmediate(resolve));
 
-  assert.equal(audio.sourceCount, 1);
+  assert.equal(audio.sourceCount, 2);
   assert.equal(player.getSnapshot().state, 'paused');
   assert.equal(player.getSnapshot().backgroundMode, 'hls');
-  assert.equal(player.getSnapshot().currentIndex, 0);
+  assert.equal(player.getSnapshot().currentIndex, 1);
 
-  blocked = false;
   player.resume();
   await audio.begin();
-  assert.equal(audio.sourceCount, 1);
+  assert.equal(audio.sourceCount, 2);
   assert.equal(player.getSnapshot().state, 'speaking');
 });
 
-test('native HLS treats a non-autoplay play rejection as one media retry', async () => {
+test('native HLS treats a non-autoplay play rejection as an ordinary-player fallback', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = () => 'maybe';
   let prepareCalls = 0;
   let playCalls = 0;
   audio.play = () => {
     playCalls += 1;
-    return playCalls === 1
+    return playCalls === 2
       ? Promise.reject(Object.assign(new Error('unsupported media'), { name: 'NotSupportedError' }))
       : Promise.resolve();
   };
   const player = createTtsPlayer({
-    fetch: async () => {
+    fetch: async path => {
+      if (!path.includes('/hls/prepare')) return cloudResponse();
       prepareCalls += 1;
       return new Response(JSON.stringify({
         playlistUrl: `/stream.m3u8?v=${prepareCalls}`,
-        sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
-        durationSeconds: 2
+        sentences: [
+          { index: 0, startSeconds: 0, durationSeconds: 2 },
+          { index: 1, startSeconds: 2, durationSeconds: 3 }
+        ],
+        durationSeconds: 5
       }));
     },
     Audio: class { constructor() { return audio; } },
@@ -338,34 +475,43 @@ test('native HLS treats a non-autoplay play rejection as one media retry', async
     fallback: fakeFallback()
   });
 
-  void player.startArticle('a1', ['One.'], 0);
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
   await audio.waitForSource();
-  await audio.metadata({ duration: 2 });
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
   await audio.waitForSource(2);
+  await audio.metadata({ duration: 5 });
+  await audio.waitForSource(3);
 
-  assert.equal(prepareCalls, 2);
-  assert.equal(audio.src, '/stream.m3u8?v=2');
+  assert.equal(prepareCalls, 1);
+  assert.match(audio.src, /^blob:/);
+  assert.equal(player.getSnapshot().backgroundMode, 'sentence');
 });
 
-test('native HLS routes a resume rejection through the same media retry', async () => {
+test('native HLS routes a resume rejection through the ordinary-player fallback', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = () => 'maybe';
   let prepareCalls = 0;
   let playCalls = 0;
   audio.play = () => {
     playCalls += 1;
-    const name = playCalls === 1 ? 'NotAllowedError' : 'NotSupportedError';
-    return playCalls <= 2
-      ? Promise.reject(Object.assign(new Error(name), { name }))
-      : Promise.resolve();
+    const name = playCalls === 2 ? 'NotAllowedError' : 'NotSupportedError';
+    return playCalls === 1 || playCalls > 3
+      ? Promise.resolve()
+      : Promise.reject(Object.assign(new Error(name), { name }));
   };
   const player = createTtsPlayer({
-    fetch: async () => {
+    fetch: async path => {
+      if (!path.includes('/hls/prepare')) return cloudResponse();
       prepareCalls += 1;
       return new Response(JSON.stringify({
         playlistUrl: `/stream.m3u8?v=${prepareCalls}`,
-        sentences: [{ index: 0, startSeconds: 0, durationSeconds: 2 }],
-        durationSeconds: 2
+        sentences: [
+          { index: 0, startSeconds: 0, durationSeconds: 2 },
+          { index: 1, startSeconds: 2, durationSeconds: 3 }
+        ],
+        durationSeconds: 5
       }));
     },
     Audio: class { constructor() { return audio; } },
@@ -373,15 +519,19 @@ test('native HLS routes a resume rejection through the same media retry', async 
     fallback: fakeFallback()
   });
 
-  void player.startArticle('a1', ['One.'], 0);
+  void player.startArticle('a1', ['One.', 'Two.'], 0);
   await audio.waitForSource();
-  await audio.metadata({ duration: 2 });
+  await audio.begin();
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
+  await audio.metadata({ duration: 5 });
   await new Promise(resolve => setImmediate(resolve));
   player.resume();
-  await audio.waitForSource(2);
+  await audio.waitForSource(3);
 
-  assert.equal(prepareCalls, 2);
-  assert.equal(audio.src, '/stream.m3u8?v=2');
+  assert.equal(prepareCalls, 1);
+  assert.match(audio.src, /^blob:/);
 });
 
 test('native HLS follows bounded preparation cursors before assigning the playlist', async () => {
@@ -391,6 +541,7 @@ test('native HLS follows bounded preparation cursors before assigning the playli
   const player = createTtsPlayer({
     fetch: async path => {
       paths.push(path);
+      if (!path.includes('/hls/prepare')) return cloudResponse();
       if (!path.includes('cursor=')) {
         return new Response(JSON.stringify({ ready: false, nextCursor: 20 }), { status: 202 });
       }
@@ -409,71 +560,80 @@ test('native HLS follows bounded preparation cursors before assigning the playli
   void player.startArticle('a1', ['One.'], 0);
   await audio.waitForSource();
 
-  assert.deepEqual(paths, [
-    '/api/tts/articles/a1/hls/prepare',
-    '/api/tts/articles/a1/hls/prepare?cursor=20'
-  ]);
-  assert.equal(audio.src, '/stream.m3u8');
+  assert.equal(paths.includes('/api/tts/articles/a1/hls/prepare'), true);
+  assert.equal(paths.includes('/api/tts/articles/a1/hls/prepare?cursor=20'), true);
+  assert.match(audio.src, /^blob:/);
 });
 
-test('native HLS does not count a checkpointed partial sentence until replayed from its start', async () => {
+test('native HLS handoff preserves completed sentence coverage without double counting', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = () => 'maybe';
   const player = createTtsPlayer({
-    fetch: async () => new Response(JSON.stringify({
+    fetch: async path => path.includes('/hls/prepare') ? new Response(JSON.stringify({
       playlistUrl: '/stream.m3u8',
       sentences: [
         { index: 0, startSeconds: 0, durationSeconds: 2 },
-        { index: 1, startSeconds: 2, durationSeconds: 2 }
+        { index: 1, startSeconds: 2, durationSeconds: 3 },
+        { index: 2, startSeconds: 5, durationSeconds: 1 }
       ],
-      durationSeconds: 4
-    })),
+      durationSeconds: 6
+    })) : cloudResponse(),
     Audio: class { constructor() { return audio; } },
     URL: fakeUrlApi(),
     fallback: fakeFallback()
   });
 
-  void player.startArticle('a1', ['One.', 'Two.'], 0, { offsetSeconds: 1 });
+  void player.startArticle('a1', ['One.', 'Two.', 'Three.'], 0);
   await audio.waitForSource();
-  await audio.metadata({ duration: 4 });
   await audio.begin();
-  await audio.timeupdate(2.5);
-  assert.equal(player.getSnapshot().completion.coverage, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
+  await audio.metadata({ duration: 6 });
+  await audio.begin();
+  assert.equal(player.getSnapshot().completion.coverage, 1 / 3);
+  await audio.timeupdate(5.5);
+  assert.equal(player.getSnapshot().completion.coverage, 2 / 3);
 
   assert.equal(player.previousSentence(), true);
   await audio.seeked();
-  await audio.timeupdate(2.5);
-  assert.equal(player.getSnapshot().completion.coverage, 0.5);
+  await audio.timeupdate(5.5);
+  assert.equal(player.getSnapshot().completion.coverage, 2 / 3);
 });
 
 test('native HLS manual scrubbing clears completion eligibility for the destination sentence', async () => {
   const audio = new ControlledAudio();
   audio.canPlayType = () => 'maybe';
   const player = createTtsPlayer({
-    fetch: async () => new Response(JSON.stringify({
+    fetch: async path => path.includes('/hls/prepare') ? new Response(JSON.stringify({
       playlistUrl: '/stream.m3u8',
       sentences: [
         { index: 0, startSeconds: 0, durationSeconds: 2 },
-        { index: 1, startSeconds: 2, durationSeconds: 2 }
+        { index: 1, startSeconds: 2, durationSeconds: 3 },
+        { index: 2, startSeconds: 5, durationSeconds: 1 }
       ],
-      durationSeconds: 4
-    })),
+      durationSeconds: 6
+    })) : cloudResponse(),
     Audio: class { constructor() { return audio; } },
     URL: fakeUrlApi(),
     fallback: fakeFallback()
   });
 
-  void player.startArticle('a1', ['One.', 'Two.'], 0);
+  void player.startArticle('a1', ['One.', 'Two.', 'Three.'], 0);
   await audio.waitForSource();
-  await audio.metadata({ duration: 4 });
   await audio.begin();
-  await audio.timeupdate(1);
-  audio.currentTime = 1.5;
+  await new Promise(resolve => setImmediate(resolve));
+  await audio.finish();
+  await audio.waitForSource(2);
+  await audio.metadata({ duration: 6 });
+  await audio.begin();
+  await audio.timeupdate(3);
+  audio.currentTime = 5.5;
   audio.onseeking?.();
   await audio.seeked();
-  await audio.timeupdate(2.5);
+  await audio.timeupdate(6);
 
-  assert.equal(player.getSnapshot().completion.coverage, 0);
+  assert.equal(player.getSnapshot().completion.coverage, 1 / 3);
 });
 
 function fakeUrlApi() {
