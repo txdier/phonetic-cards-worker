@@ -711,7 +711,7 @@
     color: var(--ink-dim); font-size: 11px;
   }
   .pc-state-badge { white-space: nowrap; }
-  .pc-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 20px 0; }
+  .pc-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 14px; margin: 20px 0; }
   .pc-pagination button { min-height: 44px; }
   .pc-relation-dialog {
     width: min(640px, 100%); max-height: min(80vh, 720px); max-height: min(80dvh, 720px);
