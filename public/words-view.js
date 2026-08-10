@@ -57,6 +57,7 @@ export function createWordsView({
   let stats = null;
   let tagLoadError = '';
   let wordFormGeneration = 0;
+  let libraryGeneration = 0;
   let ttsPreferences = loadTtsPreferences(storage);
   const reviewAttempts = new Map();
   let filters = { keyword: '', tag: '', state: '', due: false };
@@ -484,15 +485,22 @@ export function createWordsView({
     </article>`;
   }
 
+  function libraryPageCount() {
+    return Math.max(1, Math.ceil(total / pageSize));
+  }
+
   function libraryBody() {
     const editing = words.find(word => String(word.id) === editingId);
+    const totalPages = libraryPageCount();
     return `<div class="pc-header"><div class="pc-eyebrow">PHONETIC CARDS · 词库</div><div class="pc-title">词库</div><div class="pc-sub">共 <b>${total}</b> 个完整词条</div></div>
       ${filterToolbar()}${wordForm(editing)}
       ${words.length ? `<div class="pc-grid">${words.map(wordCard).join('')}</div>` : '<div class="pc-empty">没有符合条件的词条。</div>'}
       <div class="pc-pagination">
+        ${currentPage > 1 ? '<button data-action="page-first">首页</button>' : ''}
         <button data-action="page-prev" ${currentPage <= 1 ? 'disabled' : ''}>上一页</button>
-        <span>第 ${currentPage} 页</span>
-        <button data-action="page-next" ${currentPage * pageSize >= total ? 'disabled' : ''}>下一页</button>
+        <span>第 ${currentPage} / 共 ${totalPages} 页</span>
+        <button data-action="page-next" ${currentPage >= totalPages ? 'disabled' : ''}>下一页</button>
+        ${totalPages > 2 && currentPage < totalPages ? '<button data-action="page-last">尾页</button>' : ''}
       </div>`;
   }
 
@@ -562,6 +570,7 @@ export function createWordsView({
   }
 
   async function loadLibrary() {
+    const generation = ++libraryGeneration;
     const query = new URLSearchParams();
     if (currentPage !== 1) query.set('page', String(currentPage));
     if (pageSize !== 24) query.set('pageSize', String(pageSize));
@@ -576,7 +585,7 @@ export function createWordsView({
           .then(() => api('/api/tags'))
           .catch(error => ({ tags: [], error }))
       ]);
-      if (!mounted) return;
+      if (!mounted || generation !== libraryGeneration) return;
       const normalized = Array.isArray(wordResult)
         ? { words: wordResult, total: wordResult.length, page: 1, pageSize: wordResult.length || 24 }
         : wordResult;
@@ -588,7 +597,9 @@ export function createWordsView({
       tagLoadError = tagResult?.error?.message || '';
       render();
     } catch (error) {
-      if (mounted) renderInlineError(root, error.message || '词库加载失败');
+      if (mounted && generation === libraryGeneration) {
+        renderInlineError(root, error.message || '词库加载失败');
+      }
     }
   }
 
@@ -784,21 +795,43 @@ export function createWordsView({
   async function deleteWord(id) {
     const index = words.findIndex(word => String(word.id) === id);
     if (index < 0) return;
+    const deletionGeneration = libraryGeneration;
     const [removed] = words.splice(index, 1);
-    total -= 1;
     render();
     const toast = showToast({ message: '已删除', actionLabel: '撤销', duration: deleteUndoMs });
     if ((await toast.closed) === 'action') {
+      if (deletionGeneration !== libraryGeneration) {
+        if (mounted) await loadLibrary();
+        return;
+      }
       words.splice(index, 0, removed);
-      total += 1;
       render();
       return;
     }
     try {
       await api(`/api/words/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!mounted) return;
+      if (deletionGeneration !== libraryGeneration) {
+        await loadLibrary();
+        return;
+      }
+      total -= 1;
+      const lastPage = libraryPageCount();
+      if (currentPage > lastPage) {
+        currentPage = lastPage;
+        render();
+        if (mounted) await loadLibrary();
+      } else {
+        render();
+      }
     } catch (error) {
+      if (!mounted) return;
+      if (deletionGeneration !== libraryGeneration) {
+        await loadLibrary();
+        if (mounted) renderInlineError(root, error.message || '删除失败');
+        return;
+      }
       words.splice(index, 0, removed);
-      total += 1;
       render();
       if (mounted) renderInlineError(root, error.message || '删除失败');
     }
@@ -868,8 +901,16 @@ export function createWordsView({
         relationDialogCleanup = mountRelationDialog({ host: root, word, api, trigger });
       }
     }
+    if (action === 'page-first' && currentPage > 1) { currentPage = 1; loadLibrary(); }
     if (action === 'page-prev' && currentPage > 1) { currentPage -= 1; loadLibrary(); }
-    if (action === 'page-next') { currentPage += 1; loadLibrary(); }
+    if (action === 'page-next' && currentPage < libraryPageCount()) {
+      currentPage += 1;
+      loadLibrary();
+    }
+    if (action === 'page-last' && currentPage < libraryPageCount()) {
+      currentPage = libraryPageCount();
+      loadLibrary();
+    }
     if (action === 'play') {
       event.stopPropagation();
       player.speakWord(target.dataset.id, target.dataset.mode, target.dataset.text, {
