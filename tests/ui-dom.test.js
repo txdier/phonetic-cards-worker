@@ -13,6 +13,7 @@ function installDom(url = 'http://local.test/#/words') {
   const values = {
     window: dom.window,
     document: dom.window.document,
+    FormData: dom.window.FormData,
     localStorage: dom.window.localStorage,
     location: dom.window.location,
     history: dom.window.history,
@@ -426,6 +427,94 @@ test('word library pagination restores the last page after a failed delayed dele
     await new Promise(resolve => setTimeout(resolve, 5));
     assert.ok(env.root.querySelector('[data-id="w-last"]'));
     assert.match(env.root.querySelector('.pc-pagination').textContent, /第 3 \/ 共 3 页/);
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]').textContent, '删除失败');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('successful delayed deletion reloads rather than mutating a newer filtered library view', async () => {
+  const env = installDom();
+  const deletion = deferred();
+  const zebra = { id: 'w-zebra', lemma: 'zebra', zh: '斑马', forms: [], tags: [] };
+  const apple = { id: 'w-apple', lemma: 'apple', zh: '苹果', forms: [], tags: [] };
+  const cleanup = createWordsView({
+    root: env.root,
+    deleteUndoMs: 0,
+    api: async (path, init = {}) => {
+      if (path === '/api/tags') return { tags: [] };
+      if (path === '/api/words' && !init.method) {
+        return { words: [zebra], total: 49, page: 3, pageSize: 24 };
+      }
+      if (path === '/api/words?keyword=apple' && !init.method) {
+        return { words: [apple], total: 1, page: 1, pageSize: 24 };
+      }
+      if (path === '/api/words/w-zebra' && init.method === 'DELETE') return deletion.promise;
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-id="w-zebra"] [data-action="toggle-card-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="del"][data-id="w-zebra"]'));
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    const filters = env.root.querySelector('[data-role="word-filters"]');
+    filters.querySelector('[name="keyword"]').value = 'apple';
+    submit(env.window, filters);
+    await flush();
+    assert.ok(env.root.querySelector('[data-id="w-apple"]'));
+
+    deletion.resolve({ ok: true });
+    await flush();
+    assert.ok(env.root.querySelector('[data-id="w-apple"]'));
+    assert.equal(env.root.querySelector('[data-id="w-zebra"]'), null);
+    assert.match(env.root.querySelector('.pc-sub').textContent, /共 1 个完整词条/);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('failed delayed deletion reloads rather than inserting an old word into a newer filtered view', async () => {
+  const env = installDom();
+  const deletion = deferred();
+  const zebra = { id: 'w-zebra', lemma: 'zebra', zh: '斑马', forms: [], tags: [] };
+  const apple = { id: 'w-apple', lemma: 'apple', zh: '苹果', forms: [], tags: [] };
+  const cleanup = createWordsView({
+    root: env.root,
+    deleteUndoMs: 0,
+    api: async (path, init = {}) => {
+      if (path === '/api/tags') return { tags: [] };
+      if (path === '/api/words' && !init.method) {
+        return { words: [zebra], total: 49, page: 3, pageSize: 24 };
+      }
+      if (path === '/api/words?keyword=apple' && !init.method) {
+        return { words: [apple], total: 1, page: 1, pageSize: 24 };
+      }
+      if (path === '/api/words/w-zebra' && init.method === 'DELETE') return deletion.promise;
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-id="w-zebra"] [data-action="toggle-card-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="del"][data-id="w-zebra"]'));
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    const filters = env.root.querySelector('[data-role="word-filters"]');
+    filters.querySelector('[name="keyword"]').value = 'apple';
+    submit(env.window, filters);
+    await flush();
+    deletion.reject(new Error('删除失败'));
+    await flush();
+
+    assert.ok(env.root.querySelector('[data-id="w-apple"]'));
+    assert.equal(env.root.querySelector('[data-id="w-zebra"]'), null);
+    assert.match(env.root.querySelector('.pc-sub').textContent, /共 1 个完整词条/);
     assert.equal(env.root.querySelector(':scope > [data-inline-error]').textContent, '删除失败');
   } finally {
     cleanup();

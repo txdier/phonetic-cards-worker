@@ -57,6 +57,7 @@ export function createWordsView({
   let stats = null;
   let tagLoadError = '';
   let wordFormGeneration = 0;
+  let libraryGeneration = 0;
   let ttsPreferences = loadTtsPreferences(storage);
   const reviewAttempts = new Map();
   let filters = { keyword: '', tag: '', state: '', due: false };
@@ -569,6 +570,7 @@ export function createWordsView({
   }
 
   async function loadLibrary() {
+    const generation = ++libraryGeneration;
     const query = new URLSearchParams();
     if (currentPage !== 1) query.set('page', String(currentPage));
     if (pageSize !== 24) query.set('pageSize', String(pageSize));
@@ -583,7 +585,7 @@ export function createWordsView({
           .then(() => api('/api/tags'))
           .catch(error => ({ tags: [], error }))
       ]);
-      if (!mounted) return;
+      if (!mounted || generation !== libraryGeneration) return;
       const normalized = Array.isArray(wordResult)
         ? { words: wordResult, total: wordResult.length, page: 1, pageSize: wordResult.length || 24 }
         : wordResult;
@@ -595,7 +597,9 @@ export function createWordsView({
       tagLoadError = tagResult?.error?.message || '';
       render();
     } catch (error) {
-      if (mounted) renderInlineError(root, error.message || '词库加载失败');
+      if (mounted && generation === libraryGeneration) {
+        renderInlineError(root, error.message || '词库加载失败');
+      }
     }
   }
 
@@ -791,16 +795,26 @@ export function createWordsView({
   async function deleteWord(id) {
     const index = words.findIndex(word => String(word.id) === id);
     if (index < 0) return;
+    const deletionGeneration = libraryGeneration;
     const [removed] = words.splice(index, 1);
     render();
     const toast = showToast({ message: '已删除', actionLabel: '撤销', duration: deleteUndoMs });
     if ((await toast.closed) === 'action') {
+      if (deletionGeneration !== libraryGeneration) {
+        if (mounted) await loadLibrary();
+        return;
+      }
       words.splice(index, 0, removed);
       render();
       return;
     }
     try {
       await api(`/api/words/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!mounted) return;
+      if (deletionGeneration !== libraryGeneration) {
+        await loadLibrary();
+        return;
+      }
       total -= 1;
       const lastPage = libraryPageCount();
       if (currentPage > lastPage) {
@@ -811,6 +825,12 @@ export function createWordsView({
         render();
       }
     } catch (error) {
+      if (!mounted) return;
+      if (deletionGeneration !== libraryGeneration) {
+        await loadLibrary();
+        if (mounted) renderInlineError(root, error.message || '删除失败');
+        return;
+      }
       words.splice(index, 0, removed);
       render();
       if (mounted) renderInlineError(root, error.message || '删除失败');
