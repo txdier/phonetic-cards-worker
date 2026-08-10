@@ -354,6 +354,111 @@ test('word library pagination omits the last-page button when there are at most 
   }
 });
 
+test('word library pagination keeps a valid page while deleting and reloads a new last page after commit', async () => {
+  const env = installDom();
+  const calls = [];
+  const lastWord = {
+    id: 'w-last', lemma: 'zebra', zh: '斑马', example: '', stress: '', forms: [], tags: []
+  };
+  const cleanup = createWordsView({
+    root: env.root,
+    deleteUndoMs: 5,
+    api: async (path, init = {}) => {
+      calls.push({ path, init });
+      if (path === '/api/tags') return { tags: [] };
+      if (path === '/api/words' && !init.method) {
+        return { words: [lastWord], total: 49, page: 3, pageSize: 24 };
+      }
+      if (path === '/api/words/w-last' && init.method === 'DELETE') return { ok: true };
+      if (path === '/api/words?page=2' && !init.method) {
+        return { words: [], total: 48, page: 2, pageSize: 24 };
+      }
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-id="w-last"] [data-action="toggle-card-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="del"][data-id="w-last"]'));
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 3 \/ 共 3 页/);
+    click(env.window, env.root.querySelector('[data-action="toast-action"]'));
+    await flush();
+    assert.ok(env.root.querySelector('[data-id="w-last"]'));
+    assert.equal(calls.some(call => call.init.method === 'DELETE'), false);
+
+    click(env.window, env.root.querySelector('[data-id="w-last"] [data-action="toggle-card-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="del"][data-id="w-last"]'));
+    await new Promise(resolve => setTimeout(resolve, 15));
+    await flush();
+    assert.ok(calls.some(call => call.path === '/api/words/w-last' && call.init.method === 'DELETE'));
+    assert.ok(calls.some(call => call.path === '/api/words?page=2' && !call.init.method));
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 2 \/ 共 2 页/);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word library pagination restores the last page after a failed delayed deletion', async () => {
+  const env = installDom();
+  const lastWord = {
+    id: 'w-last', lemma: 'zebra', zh: '斑马', example: '', stress: '', forms: [], tags: []
+  };
+  const cleanup = createWordsView({
+    root: env.root,
+    deleteUndoMs: 0,
+    api: async (path, init = {}) => {
+      if (path === '/api/tags') return { tags: [] };
+      if (path === '/api/words' && !init.method) {
+        return { words: [lastWord], total: 49, page: 3, pageSize: 24 };
+      }
+      if (path === '/api/words/w-last' && init.method === 'DELETE') throw new Error('删除失败');
+      throw new Error(`unexpected request ${init.method || 'GET'} ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    click(env.window, env.root.querySelector('[data-id="w-last"] [data-action="toggle-card-menu"]'));
+    click(env.window, env.root.querySelector('[data-action="del"][data-id="w-last"]'));
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 3 \/ 共 3 页/);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(env.root.querySelector('[data-id="w-last"]'));
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 3 \/ 共 3 页/);
+    assert.equal(env.root.querySelector(':scope > [data-inline-error]').textContent, '删除失败');
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('empty word library reports one page and ignores next-page activation', async () => {
+  const env = installDom();
+  let wordRequests = 0;
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/tags') return { tags: [] };
+      wordRequests += 1;
+      return { words: [], total: 0, page: 1, pageSize: 24 };
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 1 \/ 共 1 页/);
+    const next = env.root.querySelector('[data-action="page-next"]');
+    assert.equal(next.disabled, true);
+    click(env.window, next);
+    await flush();
+    assert.equal(wordRequests, 1);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('word form creates and selects tags without losing entered values', async () => {
   const env = installDom();
   const calls = [];

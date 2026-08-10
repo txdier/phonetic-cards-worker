@@ -484,9 +484,13 @@ export function createWordsView({
     </article>`;
   }
 
+  function libraryPageCount() {
+    return Math.max(1, Math.ceil(total / pageSize));
+  }
+
   function libraryBody() {
     const editing = words.find(word => String(word.id) === editingId);
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const totalPages = libraryPageCount();
     return `<div class="pc-header"><div class="pc-eyebrow">PHONETIC CARDS · 词库</div><div class="pc-title">词库</div><div class="pc-sub">共 <b>${total}</b> 个完整词条</div></div>
       ${filterToolbar()}${wordForm(editing)}
       ${words.length ? `<div class="pc-grid">${words.map(wordCard).join('')}</div>` : '<div class="pc-empty">没有符合条件的词条。</div>'}
@@ -788,20 +792,26 @@ export function createWordsView({
     const index = words.findIndex(word => String(word.id) === id);
     if (index < 0) return;
     const [removed] = words.splice(index, 1);
-    total -= 1;
     render();
     const toast = showToast({ message: '已删除', actionLabel: '撤销', duration: deleteUndoMs });
     if ((await toast.closed) === 'action') {
       words.splice(index, 0, removed);
-      total += 1;
       render();
       return;
     }
     try {
       await api(`/api/words/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      total -= 1;
+      const lastPage = libraryPageCount();
+      if (currentPage > lastPage) {
+        currentPage = lastPage;
+        render();
+        if (mounted) await loadLibrary();
+      } else {
+        render();
+      }
     } catch (error) {
       words.splice(index, 0, removed);
-      total += 1;
       render();
       if (mounted) renderInlineError(root, error.message || '删除失败');
     }
@@ -873,12 +883,12 @@ export function createWordsView({
     }
     if (action === 'page-first' && currentPage > 1) { currentPage = 1; loadLibrary(); }
     if (action === 'page-prev' && currentPage > 1) { currentPage -= 1; loadLibrary(); }
-    if (action === 'page-next' && currentPage < Math.max(1, Math.ceil(total / pageSize))) {
+    if (action === 'page-next' && currentPage < libraryPageCount()) {
       currentPage += 1;
       loadLibrary();
     }
-    if (action === 'page-last') {
-      currentPage = Math.max(1, Math.ceil(total / pageSize));
+    if (action === 'page-last' && currentPage < libraryPageCount()) {
+      currentPage = libraryPageCount();
       loadLibrary();
     }
     if (action === 'play') {
