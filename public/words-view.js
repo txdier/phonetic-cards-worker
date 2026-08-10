@@ -486,13 +486,16 @@ export function createWordsView({
 
   function libraryBody() {
     const editing = words.find(word => String(word.id) === editingId);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
     return `<div class="pc-header"><div class="pc-eyebrow">PHONETIC CARDS · 词库</div><div class="pc-title">词库</div><div class="pc-sub">共 <b>${total}</b> 个完整词条</div></div>
       ${filterToolbar()}${wordForm(editing)}
       ${words.length ? `<div class="pc-grid">${words.map(wordCard).join('')}</div>` : '<div class="pc-empty">没有符合条件的词条。</div>'}
       <div class="pc-pagination">
+        ${currentPage > 1 ? '<button data-action="page-first">首页</button>' : ''}
         <button data-action="page-prev" ${currentPage <= 1 ? 'disabled' : ''}>上一页</button>
-        <span>第 ${currentPage} 页</span>
-        <button data-action="page-next" ${currentPage * pageSize >= total ? 'disabled' : ''}>下一页</button>
+        <span>第 ${currentPage} / 共 ${totalPages} 页</span>
+        <button data-action="page-next" ${currentPage >= totalPages ? 'disabled' : ''}>下一页</button>
+        ${totalPages > 2 && currentPage < totalPages ? '<button data-action="page-last">尾页</button>' : ''}
       </div>`;
   }
 
@@ -868,8 +871,16 @@ export function createWordsView({
         relationDialogCleanup = mountRelationDialog({ host: root, word, api, trigger });
       }
     }
+    if (action === 'page-first' && currentPage > 1) { currentPage = 1; loadLibrary(); }
     if (action === 'page-prev' && currentPage > 1) { currentPage -= 1; loadLibrary(); }
-    if (action === 'page-next') { currentPage += 1; loadLibrary(); }
+    if (action === 'page-next' && currentPage < Math.max(1, Math.ceil(total / pageSize))) {
+      currentPage += 1;
+      loadLibrary();
+    }
+    if (action === 'page-last') {
+      currentPage = Math.max(1, Math.ceil(total / pageSize));
+      loadLibrary();
+    }
     if (action === 'play') {
       event.stopPropagation();
       player.speakWord(target.dataset.id, target.dataset.mode, target.dataset.text, {

@@ -291,6 +291,69 @@ test('word cards expose an accessible edit form and retain FSRS metadata after s
   }
 });
 
+test('word library pagination shows page totals and conditionally renders boundary buttons', async () => {
+  const env = installDom();
+  let requestedPage = 1;
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async path => {
+      if (path === '/api/tags') return { tags: [] };
+      if (path.startsWith('/api/words')) {
+        const url = new URL(path, 'http://local.test');
+        requestedPage = Number(url.searchParams.get('page') || 1);
+        return { words: [], total: 72, page: requestedPage, pageSize: 24 };
+      }
+      throw new Error(`unexpected request GET ${path}`);
+    },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 1 \/ 共 3 页/);
+    assert.equal(env.root.querySelector('[data-action="page-first"]'), null);
+    assert.ok(env.root.querySelector('[data-action="page-last"]'));
+
+    click(env.window, env.root.querySelector('[data-action="page-next"]'));
+    await flush();
+    assert.equal(requestedPage, 2);
+    assert.ok(env.root.querySelector('[data-action="page-first"]'));
+    assert.ok(env.root.querySelector('[data-action="page-last"]'));
+
+    click(env.window, env.root.querySelector('[data-action="page-last"]'));
+    await flush();
+    assert.equal(requestedPage, 3);
+    assert.ok(env.root.querySelector('[data-action="page-first"]'));
+    assert.equal(env.root.querySelector('[data-action="page-last"]'), null);
+    assert.equal(env.root.querySelector('[data-action="page-next"]').disabled, true);
+
+    click(env.window, env.root.querySelector('[data-action="page-first"]'));
+    await flush();
+    assert.equal(requestedPage, 1);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
+test('word library pagination omits the last-page button when there are at most two pages', async () => {
+  const env = installDom();
+  const cleanup = createWordsView({
+    root: env.root,
+    api: async path => path === '/api/tags'
+      ? { tags: [] }
+      : { words: [], total: 48, page: 1, pageSize: 24 },
+    speech: { isSupported: true, speakOnce() {}, stop() {} }
+  });
+  try {
+    await flush();
+    assert.match(env.root.querySelector('.pc-pagination').textContent, /第 1 \/ 共 2 页/);
+    assert.equal(env.root.querySelector('[data-action="page-last"]'), null);
+  } finally {
+    cleanup();
+    env.restore();
+  }
+});
+
 test('word form creates and selects tags without losing entered values', async () => {
   const env = installDom();
   const calls = [];
